@@ -1,0 +1,1201 @@
+"use client";
+
+import { useState, useRef, type ReactNode } from "react";
+import { useBoundProp, defineRegistry } from "@json-render/react";
+import { shadcnComponents } from "@json-render/shadcn";
+import {
+  Bar,
+  BarChart as RechartsBarChart,
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart as RechartsLineChart,
+  Pie,
+  PieChart as RechartsPieChart,
+  XAxis,
+} from "recharts";
+import {
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+  type ChartConfig,
+} from "@/components/ui/chart";
+
+import {
+  Table,
+  TableHeader,
+  TableBody,
+  TableHead,
+  TableRow,
+  TableCell,
+} from "@/components/ui/table";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import {
+  Search,
+  Plus,
+  Star,
+  ChevronRight,
+  TrendingUp,
+  LayoutGrid,
+  Filter,
+  ArrowRight,
+  Check,
+  TrendingDown,
+  Minus,
+  Info,
+  Lightbulb,
+  AlertTriangle,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+} from "lucide-react";
+
+
+import { explorerCatalog } from "./catalog";
+
+
+// =============================================================================
+// Registry
+// =============================================================================
+
+export const manualRegistry: Record<string, any> = {
+  // From @json-render/shadcn (wrapped for resilience)
+  Stack: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const children = allProps?.children || (allProps?.props?.children);
+    const StackComp = shadcnComponents.Stack;
+    return <StackComp props={p} emit={allProps?.emit || (() => { })} on={allProps?.on || {}}>{children}</StackComp>;
+  },
+  Card: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const children = allProps?.children || (allProps?.props?.children);
+    const CardComp = shadcnComponents.Card;
+    return <CardComp props={p} emit={allProps?.emit || (() => { })} on={allProps?.on || {}}>{children}</CardComp>;
+  },
+  SpecEvaluator: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const [sliderValues, setSliderValues] = useState<Record<string, number>>({});
+    const [selectedChips, setSelectedChips] = useState<string[]>([]);
+
+    const taskWeights: Record<string, number> = {
+      "Figma/일러스트": 12,
+      "Photoshop": 18,
+      "레퍼런스/유튜브": 7,
+      "화상회의/Slack": 10
+    };
+
+    const totalHours = Object.values(sliderValues).reduce((a, b) => a + b, 0);
+    const avgPower = totalHours > 0
+      ? Object.entries(sliderValues).reduce((acc, [task, hours]) => acc + (hours * (taskWeights[task] || 10)), 0) / totalHours
+      : 5;
+    const batteryCapacity = 75;
+    const expectedHours = batteryCapacity / avgPower;
+
+    const chipWeights: Record<string, number> = { "크롬": 4, "Figma": 6, "Photoshop": 8, "Premiere Pro": 12, "Notion": 2 };
+    const usedRam = selectedChips.reduce((acc, chip) => acc + (chipWeights[chip] || 3), 0);
+    const totalRam = p.title.includes("16GB") ? 16 : 32;
+
+    const isBattery = p.type === "slider";
+
+    return (
+      <div className="bg-white border border-slate-100/80 rounded-[20px] p-4 my-4 shadow-[0_10px_30px_rgba(0,0,0,0.02)] flex flex-col gap-4 w-full max-w-sm ml-0 animate-in fade-in zoom-in-98 duration-300 font-sans">
+        <style dangerouslySetInnerHTML={{
+          __html: `
+          input[type=range].custom-slider {
+            -webkit-appearance: none;
+            width: 100%;
+            background: transparent;
+          }
+          input[type=range].custom-slider:focus {
+            outline: none;
+          }
+          input[type=range].custom-slider::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 1px;
+            cursor: pointer;
+            background: #f1f5f9;
+            border-radius: 0;
+          }
+          input[type=range].custom-slider::-webkit-slider-thumb {
+            height: 16px;
+            width: 16px;
+            border-radius: 50%;
+            background: #ffffff;
+            cursor: pointer;
+            -webkit-appearance: none;
+            margin-top: -7.5px;
+            border: 1px solid #94a3b8;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+          }
+          input[type=range].custom-slider::-moz-range-track {
+            width: 100%;
+            height: 1px;
+            cursor: pointer;
+            background: #f1f5f9;
+          }
+          input[type=range].custom-slider::-moz-range-thumb {
+            height: 16px;
+            width: 16px;
+            border-radius: 50%;
+            background: #ffffff;
+            cursor: pointer;
+            border: 1px solid #94a3b8;
+          }
+        `}} />
+
+        <div className="flex flex-col gap-1 px-1">
+          <h3 className="text-[15px] font-black text-slate-900 tracking-tight leading-tight">{p.title}</h3>
+          <p className="text-[11px] text-slate-400 font-medium">{p.question}</p>
+        </div>
+
+        {isBattery ? (
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-2.5 px-1">
+              {(p.items || []).map((item: string) => (
+                <div key={item} className="grid grid-cols-[70px_1fr_30px] items-center gap-3">
+                  <span className="text-[11px] font-bold text-slate-500 truncate">{item}</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="8"
+                    step="0.5"
+                    value={sliderValues[item] || 0}
+                    onChange={(e) => setSliderValues(prev => ({ ...prev, [item]: Number(e.target.value) }))}
+                    className="custom-slider"
+                  />
+                  <span className="text-[10px] font-bold text-slate-300 text-right">{(sliderValues[item] || 0)}h</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="h-[1px] bg-slate-50 w-full" />
+
+            <div className="grid grid-cols-2 gap-2">
+              <div className="bg-[#f8f9fa] p-3 rounded-lg flex flex-col border border-slate-100/50 transition-all duration-300">
+                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tight">예상 사용 시간</span>
+                <span className={`text-[18px] font-black tracking-tighter ${totalHours > 0 ? "text-[#1a6e64]" : "text-slate-900"}`}>
+                  {totalHours > 0 ? expectedHours.toFixed(1) : "15.0"}h
+                </span>
+              </div>
+              <div className="bg-[#f8f9fa] p-3 rounded-lg flex flex-col border border-slate-100/50">
+                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tight">평균 소모량</span>
+                <span className="text-[18px] font-black text-slate-900 tracking-tighter">{avgPower.toFixed(1)}w</span>
+              </div>
+            </div>
+
+            <div className={`p-2.5 rounded-lg text-[11px] font-bold border text-center transition-all duration-300 ${expectedHours < 6 ? "bg-amber-50 border-amber-100/50 text-amber-700" : "bg-[#e0f7f4] border-[#80e0d4]/30 text-[#1a6e64]"
+              }`}>
+              {expectedHours < 6 ? "외출 시 충전기를 챙기세요." : "충전 없이 충분히 사용 가능합니다."}
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-5">
+            <div className="flex flex-wrap gap-1.5 px-1">
+              {(p.items || []).map((item: string) => {
+                const isSelected = selectedChips.includes(item);
+                return (
+                  <button
+                    key={item}
+                    onClick={() => setSelectedChips(prev =>
+                      prev.includes(item) ? prev.filter(i => i !== item) : [...prev, item]
+                    )}
+                    className={`px-3 py-1.5 rounded-[10px] text-[12px] font-bold border transition-all duration-200 ${isSelected
+                      ? "bg-[#e0f7f4] border-[#80e0d4] text-[#1a6e64]"
+                      : "bg-white border-slate-100 text-slate-400 hover:border-slate-300 hover:bg-slate-50"
+                      }`}
+                  >
+                    {item}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex flex-col gap-2 px-1">
+              <div className="w-full h-1 bg-slate-100 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-[#80e0d4] transition-all duration-700 ease-out"
+                  style={{ width: `${(usedRam / totalRam) * 100}%` }}
+                />
+              </div>
+              <div className="flex justify-between text-[9px] font-bold text-slate-300 tabular-nums uppercase">
+                <span>0GB</span>
+                <span className="text-[#1a6e64]">{usedRam}GB / {totalRam}GB</span>
+              </div>
+            </div>
+
+            <div className="bg-[#e0f7f4] p-3 rounded-lg border border-[#80e0d4]/30 text-[11px] font-bold text-[#1a6e64] text-center transition-all duration-300">
+              여유 {totalRam - usedRam}GB - {usedRam > totalRam * 0.8 ? "메모리 부족 예상" : "작업 환경 쾌적"}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  },
+  Grid: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const children = allProps?.children || (allProps?.props?.children);
+    const cols = p.cols || 2;
+
+    return (
+      <div
+        className="grid w-full my-6"
+        style={{
+          gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+          gap: `24px`
+        }}
+      >
+        {children}
+      </div>
+    );
+  },
+  Heading: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const HeadingComp = shadcnComponents.Heading;
+    return <HeadingComp props={p} emit={allProps?.emit || (() => { })} on={allProps?.on || {}} />;
+  },
+  Separator: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const SeparatorComp = shadcnComponents.Separator;
+    return <SeparatorComp props={p} emit={allProps?.emit || (() => { })} on={allProps?.on || {}} />;
+  },
+  Accordion: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const children = allProps?.children || (allProps?.props?.children);
+    const AccordionComp = shadcnComponents.Accordion;
+    return <AccordionComp props={p} emit={allProps?.emit || (() => { })} on={allProps?.on || {}}>{children}</AccordionComp>;
+  },
+  Progress: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const ProgressComp = shadcnComponents.Progress;
+    return <ProgressComp props={p} emit={allProps?.emit || (() => { })} on={allProps?.on || {}} />;
+  },
+  Skeleton: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const SkeletonComp = shadcnComponents.Skeleton;
+    return <SkeletonComp props={p} emit={allProps?.emit || (() => { })} on={allProps?.on || {}} />;
+  },
+  Badge: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const children = allProps?.children || (allProps?.props?.children);
+    const BadgeComp = shadcnComponents.Badge;
+    return <BadgeComp props={p} emit={allProps?.emit || (() => { })} on={allProps?.on || {}}>{children}</BadgeComp>;
+  },
+  Alert: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const children = allProps?.children || (allProps?.props?.children);
+    const AlertComp = shadcnComponents.Alert;
+    return <AlertComp props={p} emit={allProps?.emit || (() => { })} on={allProps?.on || {}}>{children}</AlertComp>;
+  },
+
+  // Chat-specific components
+  Text: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    return (
+      <p className={p.muted ? "text-muted-foreground" : ""}>
+        {p.content}
+      </p>
+    );
+  },
+
+  Metric: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const TrendIcon =
+      p.trend === "up"
+        ? TrendingUp
+        : p.trend === "down"
+          ? TrendingDown
+          : Minus;
+    const trendColor =
+      p.trend === "up"
+        ? "text-green-500"
+        : p.trend === "down"
+          ? "text-red-500"
+          : "text-muted-foreground";
+    return (
+      <div className="flex flex-col gap-1">
+        <p className="text-sm text-muted-foreground">{p.label}</p>
+        <div className="flex items-center gap-2">
+          <span className="text-2xl font-bold">{p.value}</span>
+          {p.trend && <TrendIcon className={`h-4 w-4 ${trendColor}`} />}
+        </div>
+        {p.detail && (
+          <p className="text-xs text-muted-foreground">{p.detail}</p>
+        )}
+      </div>
+    );
+  },
+
+  Table: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const rawData = p.data;
+    const items: Array<Record<string, unknown>> = Array.isArray(rawData)
+      ? rawData
+      : Array.isArray((rawData as Record<string, unknown>)?.data)
+        ? ((rawData as Record<string, unknown>).data as Array<
+          Record<string, unknown>
+        >)
+        : [];
+
+    const [sortKey, setSortKey] = useState<string | null>(null);
+    const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+
+    if (items.length === 0) {
+      return (
+        <div className="text-center py-8 text-slate-400 bg-slate-50/50 rounded-2xl border border-dashed border-slate-200">
+          {p.emptyMessage ?? "비교할 데이터가 없습니다."}
+        </div>
+      );
+    }
+
+    const sorted = sortKey
+      ? [...items].sort((a, b) => {
+        const av = a[sortKey];
+        const bv = b[sortKey];
+        if (typeof av === "number" && typeof bv === "number") {
+          return sortDir === "asc" ? av - bv : bv - av;
+        }
+        const as = String(av ?? "");
+        const bs = String(bv ?? "");
+        return sortDir === "asc"
+          ? as.localeCompare(bs, undefined, { numeric: true })
+          : bs.localeCompare(as, undefined, { numeric: true });
+      })
+      : items;
+
+    const handleSort = (key: string) => {
+      if (sortKey === key) {
+        setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+      } else {
+        setSortKey(key);
+        setSortDir("asc");
+      }
+    };
+
+    const columns = p.columns || (items.length > 0 ? Object.keys(items[0]).map(k => ({ key: k, label: k })) : []);
+
+    return (
+      <div className="overflow-x-auto border border-slate-100 rounded-2xl shadow-[0_4px_20px_rgba(0,0,0,0.02)] bg-white my-4">
+        <Table className="min-w-max">
+          <TableHeader className="bg-slate-50/50">
+            <TableRow className="hover:bg-transparent border-slate-100">
+              {columns.map((col: any) => {
+                const SortIcon =
+                  sortKey === col.key
+                    ? sortDir === "asc"
+                      ? ArrowUp
+                      : ArrowDown
+                    : ArrowUpDown;
+                return (
+                  <TableHead key={col.key} className="h-12 py-0 px-6 border-r border-slate-50 last:border-r-0">
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-slate-500 hover:text-slate-900 transition-colors"
+                      onClick={() => handleSort(col.key)}
+                    >
+                      {col.label}
+                      <SortIcon className="h-3.5 w-3.5 text-slate-300" />
+                    </button>
+                  </TableHead>
+                );
+              })}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {sorted.map((item, i) => (
+              <TableRow key={i} className="group hover:bg-slate-50/30 border-slate-50 transition-colors">
+                {columns.map((col: any) => {
+                  const val = String(item[col.key] ?? "");
+                  const isHighlight = val.includes("✓") || val.toLowerCase() === "yes" || val.toLowerCase() === "true";
+                  return (
+                    <TableCell key={col.key} className={`py-4 px-6 text-[14px] border-r border-slate-50 last:border-r-0 ${isHighlight ? "font-bold text-slate-900 bg-slate-50/20" : "text-slate-600"}`}>
+                      {val}
+                    </TableCell>
+                  );
+                })}
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    );
+  },
+
+  Link: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    return (
+      <a
+        href={p.href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-primary underline underline-offset-4 hover:text-primary/80"
+      >
+        {p.text}
+      </a>
+    );
+  },
+
+  BarChart: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const rawData = p.data;
+    const rawItems: Array<Record<string, unknown>> = Array.isArray(rawData)
+      ? rawData
+      : Array.isArray((rawData as Record<string, unknown>)?.data)
+        ? ((rawData as Record<string, unknown>).data as Array<
+          Record<string, unknown>
+        >)
+        : [];
+
+    const { items, valueKey } = processChartData(
+      rawItems,
+      p.xKey,
+      p.yKey,
+      p.aggregate,
+    );
+
+    const chartColor = p.color ?? "var(--chart-1)";
+    const chartConfig = {
+      [valueKey]: {
+        label: valueKey,
+        color: chartColor,
+      },
+    } satisfies ChartConfig;
+
+    if (items.length === 0) {
+      return (
+        <div className="text-center py-4 text-muted-foreground">
+          No data available
+        </div>
+      );
+    }
+
+    return (
+      <div className="w-full">
+        {p.title && (
+          <p className="text-sm font-medium mb-2">{p.title}</p>
+        )}
+        <ChartContainer
+          config={chartConfig}
+          className="min-h-[200px] w-full"
+          style={{ height: p.height ?? 300 }}
+        >
+          <RechartsBarChart accessibilityLayer data={items}>
+            <CartesianGrid vertical={false} />
+            <XAxis
+              dataKey="label"
+              tickLine={false}
+              tickMargin={10}
+              axisLine={false}
+            />
+            <ChartTooltip content={<ChartTooltipContent />} />
+            <Bar
+              dataKey={valueKey}
+              fill={`var(--color-${valueKey})`}
+              radius={4}
+            />
+          </RechartsBarChart>
+        </ChartContainer>
+      </div>
+    );
+  },
+
+  LineChart: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const rawData = p.data;
+    const rawItems: Array<Record<string, unknown>> = Array.isArray(rawData)
+      ? rawData
+      : Array.isArray((rawData as Record<string, unknown>)?.data)
+        ? ((rawData as Record<string, unknown>).data as Array<
+          Record<string, unknown>
+        >)
+        : [];
+
+    const { items, valueKey } = processChartData(
+      rawItems,
+      p.xKey,
+      p.yKey,
+      p.aggregate,
+    );
+
+    const chartColor = p.color ?? "var(--chart-1)";
+    const chartConfig = {
+      [valueKey]: {
+        label: valueKey,
+        color: chartColor,
+      },
+    } satisfies ChartConfig;
+
+    if (items.length === 0) {
+      return (
+        <div className="text-center py-4 text-muted-foreground">
+          No data available
+        </div>
+      );
+    }
+
+    return (
+      <div className="w-full">
+        {p.title && (
+          <p className="text-sm font-medium mb-2">{p.title}</p>
+        )}
+        <ChartContainer
+          config={chartConfig}
+          className="min-h-[200px] w-full [&_svg]:overflow-visible"
+          style={{ height: p.height ?? 300 }}
+        >
+          <RechartsLineChart accessibilityLayer data={items}>
+            <CartesianGrid vertical={false} />
+            <XAxis
+              dataKey="label"
+              tickLine={false}
+              tickMargin={10}
+              axisLine={false}
+              interval={
+                items.length > 12
+                  ? Math.ceil(items.length / 8) - 1
+                  : undefined
+              }
+            />
+            <ChartTooltip content={<ChartTooltipContent />} />
+            <Line
+              type="monotone"
+              dataKey={valueKey}
+              stroke={`var(--color-${valueKey})`}
+              strokeWidth={2}
+              dot={false}
+            />
+          </RechartsLineChart>
+        </ChartContainer>
+      </div>
+    );
+  },
+
+  Tabs: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const children = allProps?.children || (allProps?.props?.children);
+    return (
+      <Tabs defaultValue={p.defaultValue ?? (p.tabs ?? [])[0]?.value}>
+        <TabsList>
+          {(p.tabs ?? []).map((tab: any) => (
+            <TabsTrigger key={tab.value} value={tab.value}>
+              {tab.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+        {children}
+      </Tabs>
+    );
+  },
+
+  TabContent: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const children = allProps?.children || (allProps?.props?.children);
+    return <TabsContent value={p.value}>{children}</TabsContent>;
+  },
+
+  Callout: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const config = (({
+      info: {
+        icon: Info,
+        border: "border-l-blue-500",
+        bg: "bg-blue-500/5",
+        iconColor: "text-blue-500",
+      },
+      tip: {
+        icon: Lightbulb,
+        border: "border-l-emerald-500",
+        bg: "bg-emerald-500/5",
+        iconColor: "text-emerald-500",
+      },
+      warning: {
+        icon: AlertTriangle,
+        border: "border-l-amber-500",
+        bg: "bg-amber-500/5",
+        iconColor: "text-amber-500",
+      },
+      important: {
+        icon: Star,
+        border: "border-l-purple-500",
+        bg: "bg-purple-500/5",
+        iconColor: "text-purple-500",
+      },
+    } as any)[p.type ?? "info"]) ?? {
+      icon: Info,
+      border: "border-l-blue-500",
+      bg: "bg-blue-500/5",
+      iconColor: "text-blue-500",
+    };
+    const Icon = config.icon;
+    return (
+      <div
+        className={`border-l-4 ${config.border} ${config.bg} rounded-r-lg p-4`}
+      >
+        <div className="flex items-start gap-3">
+          <Icon className={`h-5 w-5 mt-0.5 shrink-0 ${config.iconColor}`} />
+          <div className="flex-1 min-w-0">
+            {p.title && (
+              <p className="font-semibold text-sm mb-1">{p.title}</p>
+            )}
+            <p className="text-sm text-muted-foreground">{p.content}</p>
+          </div>
+        </div>
+      </div>
+    );
+  },
+
+  Timeline: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const turns = p.turns ?? [];
+    const items = p.items ?? [];
+
+    // turns 데이터가 있으면 새 스타일, 없으면 items로 fallback
+    const renderTimeline = () => {
+      if (turns.length === 0 && items.length > 0) {
+        return (
+          <div className="relative pl-8 mt-2">
+            <div className="absolute left-[5.5px] top-3 bottom-3 w-px bg-border/60" />
+            <div className="flex flex-col gap-3">
+              {items.map((item: any, i: number) => (
+                <div key={i} className="relative">
+                  <div className="absolute -left-8 top-1.5 h-3 w-3 rounded-full bg-muted-foreground/30 ring-2 ring-background z-10" />
+                  <div
+                    draggable
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData("application/json", JSON.stringify(item));
+                      e.dataTransfer.setData("text/plain", item.name);
+                      e.dataTransfer.effectAllowed = "copy";
+                    }}
+                    className="flex items-center gap-2 bg-white border border-slate-200 rounded-full px-3 h-[30px] shadow-[0_1px_2px_rgba(0,0,0,0.02)] transition-all duration-200 group/chip cursor-grab active:cursor-grabbing"
+                  >
+                    <div className="flex items-baseline gap-1.5 min-w-0 flex-1 px-1">
+                      <span className="text-[12px] font-bold text-slate-800 whitespace-nowrap truncate">{item.name}</span>
+                      {item.min && (
+                        <span className="text-[10px] text-slate-500 font-medium whitespace-nowrap truncate">{item.min}</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      }
+
+      const onTurnClick = allProps.bindings?.onTurnClick;
+
+      return (
+        <div className="relative pl-10 mt-2">
+          <div className="absolute left-[13px] top-3 bottom-3 w-[1.5px] bg-slate-100" />
+          <div className="flex flex-col gap-10">
+            {turns.map((turn: any, i: number) => (
+              <div key={i} className="relative group/turn">
+                {/* 턴 포인트 (Hollow circle) */}
+                <button
+                  onClick={() => onTurnClick?.(turn.turn ?? i + 1)}
+                  className={`absolute -left-[33.5px] top-1.5 h-[13px] w-[13px] rounded-full border-2 border-slate-200 bg-white z-20 transition-all duration-300 ${onTurnClick ? "cursor-pointer hover:border-slate-400 hover:scale-110" : "cursor-default"}`}
+                />
+
+                {/* 턴 요약 (Bold Title) */}
+                {turn.summary && (
+                  <button
+                    onClick={() => onTurnClick?.(turn.turn ?? i + 1)}
+                    className={`block text-left text-[14px] font-bold text-slate-800 mb-2 tracking-tight transition-colors ${onTurnClick ? "cursor-pointer hover:text-primary" : "cursor-default"}`}
+                  >
+                    {turn.summary}
+                  </button>
+                )}
+
+                {/* 추가 내용 (General Discovery Content) */}
+                {turn.content && (
+                  <div className="text-[12px] text-slate-500 leading-relaxed mb-3 pr-4 whitespace-pre-wrap">
+                    {turn.content}
+                  </div>
+                )}
+
+                {/* Chips (Row layout) */}
+                <div className="flex flex-wrap gap-3 pr-4">
+                  {(turn.items ?? []).map((item: any, j: number) => {
+                    const itemIndex = turns.slice(0, i).reduce((acc: number, t: any) => acc + (t.items?.length ?? 0), 0) + j;
+                    return (
+                      <div
+                        key={`${turn.turn || i}-${item.name}-${j}`}
+                        draggable
+                        onDragStart={(e) => {
+                          e.dataTransfer.setData("application/json", JSON.stringify(item));
+                          e.dataTransfer.setData("text/plain", item.name);
+                          e.dataTransfer.effectAllowed = "copy";
+                        }}
+                        onMouseUp={(e) => {
+                          // 드래그가 아닌 단순 클릭인 경우에만 실행
+                          if (e.button === 0) {
+                            onTurnClick?.(turn.turn ?? i + 1, item.name);
+                          }
+                        }}
+                        className="flex items-center gap-2 bg-white border border-slate-200 rounded-full px-3 h-[30px] shadow-[0_1px_2px_rgba(0,0,0,0.02)] transition-all duration-200 group/chip cursor-grab active:cursor-grabbing hover:border-slate-400 hover:shadow-md active:scale-[0.98] animate-chip-in"
+                        style={{ animationDelay: `${itemIndex * 0.08}s` }}
+                      >
+                        <div className="flex items-baseline gap-1.5 min-w-0 flex-1 px-1">
+                          <span className="text-[12px] font-bold text-slate-800 select-none whitespace-nowrap truncate">
+                            {item.name}
+                          </span>
+                          {item.min && (
+                            <span className="text-[10px] text-slate-500 font-medium select-none whitespace-nowrap truncate">
+                              {item.min}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+
+            {turns.length === 0 && (
+              <p className="text-xs text-muted-foreground italic">타임라인에 항목이 없습니다.</p>
+            )}
+          </div>
+        </div>
+      );
+    };
+
+    return (
+      <div className="flex flex-col gap-4 py-2">
+        {renderTimeline()}
+      </div>
+    );
+  },
+
+  PieChart: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const rawData = p.data;
+    const items: Array<Record<string, unknown>> = Array.isArray(rawData)
+      ? rawData
+      : Array.isArray((rawData as Record<string, unknown>)?.data)
+        ? ((rawData as Record<string, unknown>).data as Array<
+          Record<string, unknown>
+        >)
+        : [];
+
+    if (items.length === 0) {
+      return (
+        <div className="text-center py-4 text-muted-foreground">
+          No data available
+        </div>
+      );
+    }
+
+    const chartConfig: ChartConfig = {};
+    items.forEach((item, i) => {
+      const name = String(item[p.nameKey] ?? `Segment ${i + 1}`);
+      chartConfig[name] = {
+        label: name,
+        color: PIE_COLORS[i % PIE_COLORS.length],
+      };
+    });
+
+    return (
+      <div className="w-full">
+        {p.title && (
+          <p className="text-sm font-medium mb-2">{p.title}</p>
+        )}
+        <ChartContainer
+          config={chartConfig}
+          className="mx-auto aspect-square w-full"
+          style={{ height: p.height ?? 300 }}
+        >
+          <RechartsPieChart>
+            <ChartTooltip content={<ChartTooltipContent />} />
+            <Pie
+              data={items.map((item, i) => ({
+                name: String(item[p.nameKey] ?? `Segment ${i + 1}`),
+                value:
+                  typeof item[p.valueKey] === "number"
+                    ? item[p.valueKey]
+                    : parseFloat(String(item[p.valueKey])) || 0,
+                fill: PIE_COLORS[i % PIE_COLORS.length],
+              }))}
+              dataKey="value"
+              nameKey="name"
+              innerRadius="40%"
+              outerRadius="70%"
+              paddingAngle={2}
+            />
+            <Legend />
+          </RechartsPieChart>
+        </ChartContainer>
+      </div>
+    );
+  },
+
+  RadioGroup: (allProps: any) => {
+    const { props: p, bindings } = allProps?.props ? allProps : { props: allProps || {}, bindings: allProps?.bindings };
+    const [value, setValue] = useBoundProp<string>(
+      p.value as string | undefined,
+      bindings?.value,
+    );
+    const current = value ?? "";
+
+    return (
+      <div className="flex flex-col gap-2">
+        {p.label && (
+          <Label className="text-sm font-medium">{p.label}</Label>
+        )}
+        <RadioGroup
+          value={current}
+          onValueChange={(v: string) => setValue(v)}
+        >
+          {(p.options ?? []).map((opt: any) => (
+            <div key={opt.value} className="flex items-center gap-2">
+              <RadioGroupItem value={opt.value} id={`rg-${opt.value}`} />
+              <Label
+                htmlFor={`rg-${opt.value}`}
+                className="font-normal cursor-pointer"
+              >
+                {opt.label}
+              </Label>
+            </div>
+          ))}
+        </RadioGroup>
+      </div>
+    );
+  },
+
+  SelectInput: (allProps: any) => {
+    const { props: p, bindings } = allProps?.props ? allProps : { props: allProps || {}, bindings: allProps?.bindings };
+    const [value, setValue] = useBoundProp<string>(
+      p.value as string | undefined,
+      bindings?.value,
+    );
+    const current = value ?? "";
+
+    return (
+      <div className="flex flex-col gap-2">
+        {p.label && (
+          <Label className="text-sm font-medium">{p.label}</Label>
+        )}
+        <Select value={current} onValueChange={(v: string) => setValue(v)}>
+          <SelectTrigger>
+            <SelectValue placeholder={p.placeholder ?? "Select..."} />
+          </SelectTrigger>
+          <SelectContent>
+            {(p.options ?? []).map((opt: any) => (
+              <SelectItem key={opt.value} value={opt.value}>
+                {opt.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+    );
+  },
+
+  TextInput: (allProps: any) => {
+    const { props: p, bindings } = allProps?.props ? allProps : { props: allProps || {}, bindings: allProps?.bindings };
+    const [value, setValue] = useBoundProp<string>(
+      p.value as string | undefined,
+      bindings?.value,
+    );
+    const current = value ?? "";
+
+    return (
+      <div className="flex flex-col gap-2">
+        {p.label && (
+          <Label className="text-sm font-medium">{p.label}</Label>
+        )}
+        <Input
+          type={p.type ?? "text"}
+          placeholder={p.placeholder ?? ""}
+          value={current}
+          onChange={(e) => setValue(e.target.value)}
+        />
+      </div>
+    );
+  },
+
+  Button: (allProps: any) => {
+    const { props: p, emit } = allProps?.props ? allProps : { props: allProps || {}, emit: allProps?.emit };
+    return (
+      <Button
+        variant={p.variant ?? "default"}
+        size={p.size ?? "default"}
+        disabled={p.disabled ?? false}
+        onClick={() => emit?.("press")}
+      >
+        {p.label}
+      </Button>
+    );
+  },
+  ProductCard: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const specs = Array.isArray(p.specs) ? p.specs : [];
+
+    return (
+      <div
+        className="group relative flex flex-row bg-white border border-slate-100 rounded-[24px] p-2.5 gap-3 transition-all duration-300 hover:border-slate-200 hover:shadow-[0_8px_30px_rgba(0,0,0,0.03)] animate-in fade-in zoom-in-95 w-full h-auto min-h-[120px]"
+      >
+        {/* Product Image Section (Left) */}
+        <div className="relative w-24 aspect-square rounded-[16px] bg-slate-50 overflow-hidden border border-slate-50 shrink-0">
+          {p.imageUrl ? (
+            <img
+              src={p.imageUrl}
+              alt={p.name}
+              className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center bg-slate-50 text-slate-200">
+              <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+            </div>
+          )}
+        </div>
+
+        {/* Product Info Section (Right) */}
+        <div className="flex flex-col flex-1 min-w-0 py-0.5 pr-0.5">
+          {/* Top Header: Rating & Promoted */}
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="flex items-center gap-1">
+              <Star className="w-2 h-2 fill-amber-400 text-amber-400" />
+              <span className="text-[10px] font-black text-slate-700">{p.rating ?? "4.7"}</span>
+            </div>
+          </div>
+
+          <h3 className="text-[14px] font-black text-slate-900 tracking-tight leading-tight mb-0.5 line-clamp-1">
+            {p.name}
+          </h3>
+
+          <p className="text-[10px] text-slate-400 font-medium leading-snug mb-1.5 line-clamp-2">
+            {p.description ?? "최상의 성능과 디자인을 경험하세요"}
+          </p>
+
+          {/* Specs Chips */}
+          <div className="flex flex-wrap gap-1 mb-auto">
+            {specs.slice(0, 2).map((spec: string, i: number) => (
+              <span key={i} className="text-[8.5px] font-bold text-slate-400 bg-slate-50 border border-slate-100/50 px-1.5 py-0.5 rounded-full whitespace-nowrap">
+                {spec}
+              </span>
+            ))}
+          </div>
+
+          {/* Price & Action */}
+          <div className="flex items-center justify-between mt-2">
+            <span className="text-[14px] font-black text-slate-900 tracking-tighter">
+              {p.price}
+            </span>
+            <button
+              className="w-6 h-6 bg-slate-900 text-white rounded-full hover:scale-105 active:scale-95 transition-all flex items-center justify-center flex-shrink-0 shadow-sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                const onItemAdd = allProps.bindings?.onItemAdd;
+                if (onItemAdd) onItemAdd(p.name, p.imageUrl);
+                if (allProps.emit) allProps.emit("press", { product: p.name });
+              }}
+            >
+              <Plus className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  },
+
+  ComparisonSelector: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const { currentItems = [] } = p;
+    const { savedItems = [], isFollowUp = false } = allProps.bindings || {};
+    const emit = allProps.emit;
+    const [isExpanded, setIsExpanded] = useState(false);
+    const [selected, setSelected] = useState<string[]>([]);
+
+    // Filter out items already in the current comparison
+    const availableItems = savedItems.filter((item: any) => {
+      const name = typeof item === 'string' ? item : item.name;
+      return !currentItems.includes(name);
+    });
+
+    if (availableItems.length === 0 && !isExpanded) return null;
+
+    const toggleItem = (item: string) => {
+      setSelected(prev =>
+        prev.includes(item) ? prev.filter(i => i !== item) : [...prev, item]
+      );
+    };
+
+    const handleConfirm = () => {
+      if (selected.length === 0) return;
+      emit?.("compareRequested", {
+        products: [...currentItems, ...selected]
+      });
+      setIsExpanded(false);
+      setSelected([]);
+    };
+
+    return (
+      <div className="mt-4 flex flex-col gap-3 animate-in fade-in slide-in-from-top-2 duration-500">
+        {!isExpanded ? (
+          <div className="flex flex-col gap-2">
+            {isFollowUp && (
+              <div className="flex items-center gap-2 px-1">
+                <span className="text-[12px] font-bold text-primary">비교 결과를 누적해서 볼 수 있게 제공</span>
+              </div>
+            )}
+            <button
+              onClick={() => setIsExpanded(true)}
+              className="flex items-center justify-between w-fit gap-4 text-xs font-semibold bg-white border border-slate-100 rounded-full py-2.5 px-5 shadow-[0_4px_20px_rgba(0,0,0,0.03)] hover:border-slate-300 hover:shadow-[0_8px_30px_rgba(0,0,0,0.06)] transition-all group"
+            >
+              <div className="flex items-center gap-1.5">
+                <span className="text-slate-400">🛒 MY ITEMS</span>
+                <span className="text-slate-700 font-medium">과 함께 비교하기</span>
+              </div>
+              <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform text-slate-400" />
+            </button>
+          </div>
+        ) : (
+          <div className="bg-white border border-slate-100 rounded-2xl p-6 flex flex-col gap-5 shadow-[0_8px_40px_rgba(0,0,0,0.04)] border-slate-100/50">
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center gap-1.5 text-[14px] font-semibold">
+                <span className="text-slate-400">🛒 MY ITEMS</span>
+                <span className="text-slate-800 font-medium">에 담아뒀던 다른 제품도 함께 비교하기</span>
+              </div>
+              <p className="text-[11px] text-slate-900 font-medium">비교에 추가할 제품을 선택해 주세요.</p>
+            </div>
+
+            <div className="flex flex-wrap gap-2 mt-2">
+              {availableItems.map((item: any) => {
+                const name = typeof item === 'string' ? item : item.name;
+                const isSelected = selected.includes(name);
+                return (
+                  <div
+                    key={name}
+                    onClick={() => toggleItem(name)}
+                    className={`flex items-center gap-2 px-4 h-[36px] rounded-full border transition-all cursor-pointer select-none ${isSelected
+                      ? "bg-primary border-primary text-white shadow-md shadow-primary/10"
+                      : "bg-white border-slate-100 text-slate-600 hover:border-slate-300 shadow-[0_1px_2px_rgba(0,0,0,0.02)]"
+                      }`}
+                  >
+                    {isSelected && <Check className="w-3.5 h-3.5 stroke-[3px] animate-in zoom-in duration-200" />}
+                    <span className={`text-[13px] font-semibold leading-none ${isSelected ? "text-white" : "text-slate-700"}`}>
+                      {name}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="flex gap-2 mt-2">
+              <button
+                onClick={() => setIsExpanded(false)}
+                className="flex-1 py-3 bg-slate-50 text-slate-600 rounded-xl text-xs font-bold hover:bg-slate-100 transition-colors"
+              >
+                취소
+              </button>
+              <button
+                onClick={handleConfirm}
+                disabled={selected.length === 0}
+                className="flex-[2] py-3 bg-primary text-white rounded-xl text-xs font-semibold disabled:opacity-30 disabled:cursor-not-allowed hover:opacity-90 transition-all shadow-sm"
+              >
+                {selected.length}개의 제품 추가하여 비교하기
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  },
+};
+
+export const { registry, handlers } = defineRegistry(explorerCatalog, {
+  components: manualRegistry as any,
+});
+
+// =============================================================================
+// Chart Helpers
+// =============================================================================
+
+const PIE_COLORS = [
+  "var(--chart-1)",
+  "var(--chart-2)",
+  "var(--chart-3)",
+  "var(--chart-4)",
+  "var(--chart-5)",
+];
+
+function processChartData(
+  items: Array<Record<string, unknown>>,
+  xKey: string,
+  yKey: string,
+  aggregate: "sum" | "count" | "avg" | null | undefined,
+): { items: Array<Record<string, unknown>>; valueKey: string } {
+  if (items.length === 0) {
+    return { items: [], valueKey: yKey };
+  }
+
+  if (!aggregate) {
+    const formatted = items.map((item) => ({
+      ...item,
+      label: String(item[xKey] ?? ""),
+    }));
+    return { items: formatted, valueKey: yKey };
+  }
+
+  const groups = new Map<string, Array<Record<string, unknown>>>();
+
+  for (const item of items) {
+    const groupKey = String(item[xKey] ?? "unknown");
+    const group = groups.get(groupKey) ?? [];
+    group.push(item);
+    groups.set(groupKey, group);
+  }
+
+  const valueKey = aggregate === "count" ? "count" : yKey;
+  const aggregated: Array<Record<string, unknown>> = [];
+  const sortedKeys = Array.from(groups.keys()).sort();
+
+  for (const key of sortedKeys) {
+    const group = groups.get(key)!;
+    let value: number;
+
+    if (aggregate === "count") {
+      value = group.length;
+    } else if (aggregate === "sum") {
+      value = group.reduce((sum, item) => {
+        const v = item[yKey];
+        return sum + (typeof v === "number" ? v : parseFloat(String(v)) || 0);
+      }, 0);
+    } else {
+      const sum = group.reduce((s, item) => {
+        const v = item[yKey];
+        return s + (typeof v === "number" ? v : parseFloat(String(v)) || 0);
+      }, 0);
+      value = group.length > 0 ? sum / group.length : 0;
+    }
+
+    aggregated.push({ label: key, [valueKey]: value });
+  }
+
+  return { items: aggregated, valueKey };
+}
+
+// =============================================================================
+// Fallback Component
+// =============================================================================
+
+export function Fallback({ type }: { type: string }) {
+  return (
+    <div className="p-4 border border-dashed rounded-lg text-muted-foreground text-sm">
+      Unknown component: {type}
+    </div>
+  );
+}
