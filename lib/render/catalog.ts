@@ -60,18 +60,27 @@ export const explorerCatalog = defineCatalog(schema, {
             label: z.string(),
           }),
         ),
+        winners: z.record(z.string(), z.string()).optional().nullable(),
+        cellBadges: z.array(
+          z.object({
+            row: z.string(),
+            column: z.string(),
+            label: z.string(),
+            type: z.enum(["success", "warning", "info"]),
+          })
+        ).optional().nullable(),
         emptyMessage: z.string().nullable(),
       }),
       description:
-        'Data table. Use { "$state": "/path" } to bind read-only data from state.',
+        'Data table with winner highlights and cell badges.',
       example: {
-        data: { $state: "/stories" },
-        columns: [
-          { key: "title", label: "Title" },
-          { key: "score", label: "Score" },
-        ],
+        data: [{ product: "MacBook Pro 16", price: "₩3,500,000" }],
+        columns: [{ key: "product", label: "제품명" }, { key: "price", label: "가격" }],
+        winners: { price: "Dell XPS 15" },
+        cellBadges: [{ row: "MacBook Pro 16", column: "price", label: "범위 초과", type: "warning" }],
       },
     },
+
 
     Link: {
       props: z.object({
@@ -159,7 +168,6 @@ export const explorerCatalog = defineCatalog(schema, {
             items: z.array(
               z.object({
                 name: z.string().describe("기준 이름 (예: 색 재현율)"),
-                priority: z.enum(["high", "medium", "low"]).describe("우선순위: high(꼭 확인), medium(참고), low(덜 중요)"),
                 min: z.string().nullable().describe("상세 기준/최소 사양 (예: sRGB 100% 이상)"),
               }),
             ),
@@ -174,31 +182,41 @@ export const explorerCatalog = defineCatalog(schema, {
             turn: 1,
             summary: "기본 요구사항 파악",
             items: [
-              { label: "디자인 작업용" },
-              { label: "휴대성 중요" },
+              { name: "용도", min: "디자인 작업용" },
+              { name: "우선순위", min: "휴대성 중요" },
             ],
           },
           {
             turn: 2,
             summary: "상세 하드웨어 사양",
             items: [
-              { label: "Intel i7 / Ryzen 7" },
-              { label: "16GB RAM 이상" },
-              { label: "512GB SSD" },
+              { name: "프로세서", min: "Intel i7 / Ryzen 7" },
+              { name: "메모리", min: "16GB RAM 이상" },
+              { name: "저장장치", min: "512GB SSD" },
             ],
           },
         ],
       },
     },
 
-    SpecEvaluator: {
+    SpecDiagnostic: {
       description:
-        "사용자의 스펙 수치 언급에 따라 맞춤형 진단 UI를 생성합니다.",
+        "스펙이 사용자 용도에 충분한지 판단하기 위해 사용 맥락을 묻는 인터랙티브 진단 컴포넌트. slider(배터리 등 시간 기반 소모 스펙)와 chip(RAM 등 앱 점유 스펙) 두 모드를 지원합니다.",
       props: z.object({
-        type: z.enum(["slider", "chip"]).describe("UI 타입"),
-        title: z.string().describe("진단 도구 제목"),
-        question: z.string().describe("사용자에게 던질 질문"),
-        items: z.array(z.string()).describe("선택지 또는 슬라이더 항목 리스트"),
+        inputType: z.enum(["slider", "chip"]).describe("UI 모드: slider=개별 슬라이더, chip=앱 칩 선택"),
+        title: z.string().describe("진단 카드 제목 (예: '배터리 75Wh - 하루 몇 시간 버틸 수 있을까?')"),
+        question: z.string().describe("사용자에게 던질 질문 (예: '하루에 각 작업을 얼마나 해요?')"),
+        items: z.array(z.object({
+          name: z.string().describe("작업명 또는 앱명"),
+          weight: z.number().describe("slider: 와트(W) 소모량 / chip: GB 점유량"),
+        })).describe("진단 항목 목록"),
+        capacity: z.number().nullable().describe("slider 전용: 배터리 용량(Wh)"),
+        totalCapacity: z.number().nullable().describe("chip 전용: 총 RAM 용량(GB)"),
+        capacityUnit: z.string().nullable().describe("단위 표시 (예: 'GB', 'Wh')"),
+        sliderMax: z.number().nullable().describe("slider 전용: 슬라이더 최대값 (시간 단위)"),
+        verdictGoodThreshold: z.number().describe("판정 기준값: slider=예상 시간(h), chip=사용률(0~1)"),
+        verdictGoodMessage: z.string().describe("충분할 때 메시지"),
+        verdictWarningMessage: z.string().describe("부족할 때 메시지"),
       }),
     },
 
@@ -298,6 +316,33 @@ export const explorerCatalog = defineCatalog(schema, {
         imageUrl: "https://example.com/macbook.jpg",
         specs: ["18GB RAM", "512GB SSD"],
         rating: 4.8
+      }
+    },
+
+    ProductCardList: {
+      props: z.object({
+        cards: z.array(z.object({
+          id: z.string().nullable(),
+          name: z.string(),
+          price: z.string(),
+          description: z.string().nullable(),
+          imageUrl: z.string().nullable(),
+          specs: z.array(z.string()).nullable(),
+          rating: z.number().nullable(),
+        }))
+      }),
+      description: "A list of premium product cards for displaying recommendations.",
+      example: {
+        cards: [
+          {
+            id: "p1",
+            name: "MacBook Pro 14",
+            price: "2,990,000원",
+            imageUrl: "https://example.com/macbook.jpg",
+            specs: ["18GB RAM", "512GB SSD"],
+            rating: 4.8
+          }
+        ]
       }
     },
     Button: {

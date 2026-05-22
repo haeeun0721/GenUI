@@ -44,6 +44,7 @@ import { Label } from "@/components/ui/label";
 import {
   Search,
   Plus,
+  X,
   Star,
   ChevronRight,
   TrendingUp,
@@ -83,98 +84,82 @@ export const manualRegistry: Record<string, any> = {
     const CardComp = shadcnComponents.Card;
     return <CardComp props={p} emit={allProps?.emit || (() => { })} on={allProps?.on || {}}>{children}</CardComp>;
   },
-  SpecEvaluator: (allProps: any) => {
+  SpecDiagnostic: (allProps: any) => {
     const p = allProps?.props || allProps || {};
-    const [sliderValues, setSliderValues] = useState<Record<string, number>>({});
+    const items: Array<{ name: string; weight: number }> = Array.isArray(p.items) ? p.items : [];
+    const isBattery = p.inputType === "slider";
+
+    // slider state: per-item hours
+    const [sliderValues, setSliderValues] = useState<Record<string, number>>(() =>
+      Object.fromEntries(items.map((it) => [it.name, 0]))
+    );
+    // chip state: multi-select
     const [selectedChips, setSelectedChips] = useState<string[]>([]);
 
-    const taskWeights: Record<string, number> = {
-      "Figma/일러스트": 12,
-      "Photoshop": 18,
-      "레퍼런스/유튜브": 7,
-      "화상회의/Slack": 10
-    };
-
+    // ── Battery calculation ──────────────────────────────────────────────────
+    const sliderMax = p.sliderMax ?? 8;
     const totalHours = Object.values(sliderValues).reduce((a, b) => a + b, 0);
     const avgPower = totalHours > 0
-      ? Object.entries(sliderValues).reduce((acc, [task, hours]) => acc + (hours * (taskWeights[task] || 10)), 0) / totalHours
-      : 5;
-    const batteryCapacity = 75;
-    const expectedHours = batteryCapacity / avgPower;
+      ? items.reduce((acc, it) => acc + (sliderValues[it.name] || 0) * it.weight, 0) / totalHours
+      : (items[0]?.weight ?? 10);
+    const capacity = p.capacity ?? 75;
+    const expectedHours = capacity / avgPower;
 
-    const chipWeights: Record<string, number> = { "크롬": 4, "Figma": 6, "Photoshop": 8, "Premiere Pro": 12, "Notion": 2 };
-    const usedRam = selectedChips.reduce((acc, chip) => acc + (chipWeights[chip] || 3), 0);
-    const totalRam = p.title.includes("16GB") ? 16 : 32;
+    const threshold = p.verdictGoodThreshold ?? 6;
+    const isGood = isBattery
+      ? expectedHours >= threshold
+      : selectedChips.reduce((acc, name) => {
+        const it = items.find((i) => i.name === name);
+        return acc + (it?.weight ?? 0);
+      }, 0) / (p.totalCapacity ?? 1) <= threshold;
 
-    const isBattery = p.type === "slider";
+    // ── RAM calculation ──────────────────────────────────────────────────────
+    const totalRam = p.totalCapacity ?? 32;
+    const usedRam = selectedChips.reduce((acc, name) => {
+      const it = items.find((i) => i.name === name);
+      return acc + (it?.weight ?? 0);
+    }, 0);
+    const ramGood = usedRam <= totalRam * (p.verdictGoodThreshold ?? 0.8);
 
     return (
-      <div className="bg-white border border-slate-100/80 rounded-[20px] p-4 my-4 shadow-[0_10px_30px_rgba(0,0,0,0.02)] flex flex-col gap-4 w-full max-w-sm ml-0 animate-in fade-in zoom-in-98 duration-300 font-sans">
+      <div className="bg-white border border-slate-100/80 rounded-[20px] p-4 my-2 flex flex-col gap-4 w-full animate-in fade-in zoom-in-98 duration-300">
         <style dangerouslySetInnerHTML={{
           __html: `
-          input[type=range].custom-slider {
-            -webkit-appearance: none;
-            width: 100%;
-            background: transparent;
-          }
-          input[type=range].custom-slider:focus {
-            outline: none;
-          }
-          input[type=range].custom-slider::-webkit-slider-runnable-track {
-            width: 100%;
-            height: 1px;
-            cursor: pointer;
-            background: #f1f5f9;
-            border-radius: 0;
-          }
-          input[type=range].custom-slider::-webkit-slider-thumb {
-            height: 16px;
-            width: 16px;
-            border-radius: 50%;
-            background: #ffffff;
-            cursor: pointer;
-            -webkit-appearance: none;
-            margin-top: -7.5px;
-            border: 1px solid #94a3b8;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-          }
-          input[type=range].custom-slider::-moz-range-track {
-            width: 100%;
-            height: 1px;
-            cursor: pointer;
-            background: #f1f5f9;
-          }
-          input[type=range].custom-slider::-moz-range-thumb {
-            height: 16px;
-            width: 16px;
-            border-radius: 50%;
-            background: #ffffff;
-            cursor: pointer;
-            border: 1px solid #94a3b8;
-          }
+          input[type=range].sd-slider { -webkit-appearance: none; width: 100%; background: transparent; }
+          input[type=range].sd-slider:focus { outline: none; }
+          input[type=range].sd-slider::-webkit-slider-runnable-track { width: 100%; height: 1px; background: #f1f5f9; border-radius: 0; cursor: pointer; }
+          input[type=range].sd-slider::-webkit-slider-thumb { -webkit-appearance: none; height: 16px; width: 16px; border-radius: 50%; background: #fff; border: 1px solid #94a3b8; box-shadow: 0 1px 3px rgba(0,0,0,0.05); margin-top: -7.5px; cursor: pointer; }
+          input[type=range].sd-slider::-moz-range-track { width: 100%; height: 1px; background: #f1f5f9; cursor: pointer; }
+          input[type=range].sd-slider::-moz-range-thumb { height: 16px; width: 16px; border-radius: 50%; background: #fff; border: 1px solid #94a3b8; cursor: pointer; }
         `}} />
 
+        {/* Title & Question */}
         <div className="flex flex-col gap-1 px-1">
           <h3 className="text-[15px] font-black text-slate-900 tracking-tight leading-tight">{p.title}</h3>
           <p className="text-[11px] text-slate-400 font-medium">{p.question}</p>
         </div>
 
-        {isBattery ? (
+        {/* ── Slider Mode (배터리 등) ── */}
+        {isBattery && (
           <div className="flex flex-col gap-4">
             <div className="flex flex-col gap-2.5 px-1">
-              {(p.items || []).map((item: string) => (
-                <div key={item} className="grid grid-cols-[70px_1fr_30px] items-center gap-3">
-                  <span className="text-[11px] font-bold text-slate-500 truncate">{item}</span>
+              {items.map((item) => (
+                <div key={item.name} className="grid grid-cols-[80px_1fr_32px] items-center gap-3">
+                  <span className="text-[11px] font-bold text-slate-500 truncate">{item.name}</span>
                   <input
                     type="range"
-                    min="0"
-                    max="8"
-                    step="0.5"
-                    value={sliderValues[item] || 0}
-                    onChange={(e) => setSliderValues(prev => ({ ...prev, [item]: Number(e.target.value) }))}
-                    className="custom-slider"
+                    className="sd-slider"
+                    min={0}
+                    max={sliderMax}
+                    step={0.5}
+                    value={sliderValues[item.name] ?? 0}
+                    onChange={(e) =>
+                      setSliderValues((prev) => ({ ...prev, [item.name]: Number(e.target.value) }))
+                    }
                   />
-                  <span className="text-[10px] font-bold text-slate-300 text-right">{(sliderValues[item] || 0)}h</span>
+                  <span className="text-[10px] font-bold text-slate-300 text-right tabular-nums">
+                    {sliderValues[item.name] ?? 0}시간
+                  </span>
                 </div>
               ))}
             </div>
@@ -182,66 +167,84 @@ export const manualRegistry: Record<string, any> = {
             <div className="h-[1px] bg-slate-50 w-full" />
 
             <div className="grid grid-cols-2 gap-2">
-              <div className="bg-[#f8f9fa] p-3 rounded-lg flex flex-col border border-slate-100/50 transition-all duration-300">
+              <div className="bg-[#f8f9fa] p-3 rounded-lg flex flex-col border border-slate-100/50">
                 <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tight">예상 사용 시간</span>
-                <span className={`text-[18px] font-black tracking-tighter ${totalHours > 0 ? "text-[#1a6e64]" : "text-slate-900"}`}>
-                  {totalHours > 0 ? expectedHours.toFixed(1) : "15.0"}h
+                <span className={`text-[18px] font-black tracking-tighter tabular-nums ${totalHours > 0 ? "text-[#1a6e64]" : "text-slate-900"}`}>
+                  {totalHours > 0 ? expectedHours.toFixed(1) : `${(capacity / (items[0]?.weight ?? 10)).toFixed(1)}`}시간
                 </span>
               </div>
               <div className="bg-[#f8f9fa] p-3 rounded-lg flex flex-col border border-slate-100/50">
-                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tight">평균 소모량</span>
-                <span className="text-[18px] font-black text-slate-900 tracking-tighter">{avgPower.toFixed(1)}w</span>
+                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tight">시간당 소모량</span>
+                <span className="text-[18px] font-black text-slate-900 tracking-tighter tabular-nums">
+                  {avgPower.toFixed(1)}w
+                </span>
               </div>
             </div>
 
-            <div className={`p-2.5 rounded-lg text-[11px] font-bold border text-center transition-all duration-300 ${expectedHours < 6 ? "bg-amber-50 border-amber-100/50 text-amber-700" : "bg-[#e0f7f4] border-[#80e0d4]/30 text-[#1a6e64]"
+            <div className={`p-2.5 rounded-lg text-[11px] font-bold border text-center transition-all duration-300 ${isGood
+              ? "bg-[#e0f7f4] border-[#80e0d4]/30 text-[#1a6e64]"
+              : "bg-amber-50 border-amber-100/50 text-amber-700"
               }`}>
-              {expectedHours < 6 ? "외출 시 충전기를 챙기세요." : "충전 없이 충분히 사용 가능합니다."}
+              {isGood ? p.verdictGoodMessage ?? "충전 없이 충분히 사용 가능합니다." : p.verdictWarningMessage ?? "외출 시 충전기를 챙기세요."}
             </div>
           </div>
-        ) : (
+        )}
+
+        {/* ── Chip Mode (RAM 등) ── */}
+        {!isBattery && (
           <div className="flex flex-col gap-5">
             <div className="flex flex-wrap gap-1.5 px-1">
-              {(p.items || []).map((item: string) => {
-                const isSelected = selectedChips.includes(item);
+              {items.map((item) => {
+                const isSelected = selectedChips.includes(item.name);
                 return (
                   <button
-                    key={item}
-                    onClick={() => setSelectedChips(prev =>
-                      prev.includes(item) ? prev.filter(i => i !== item) : [...prev, item]
-                    )}
+                    key={item.name}
+                    onClick={() =>
+                      setSelectedChips((prev) =>
+                        prev.includes(item.name)
+                          ? prev.filter((i) => i !== item.name)
+                          : [...prev, item.name]
+                      )
+                    }
                     className={`px-3 py-1.5 rounded-[10px] text-[12px] font-bold border transition-all duration-200 ${isSelected
                       ? "bg-[#e0f7f4] border-[#80e0d4] text-[#1a6e64]"
                       : "bg-white border-slate-100 text-slate-400 hover:border-slate-300 hover:bg-slate-50"
                       }`}
                   >
-                    {item}
+                    {item.name}
                   </button>
                 );
               })}
             </div>
 
             <div className="flex flex-col gap-2 px-1">
+              <div className="flex justify-between text-[9px] font-bold text-slate-300 tabular-nums">
+                <span>0</span>
+                <span>{Math.round(totalRam / 2)}{p.capacityUnit ?? "GB"}</span>
+                <span>{totalRam}{p.capacityUnit ?? "GB"}</span>
+              </div>
               <div className="w-full h-1 bg-slate-100 rounded-full overflow-hidden">
                 <div
                   className="h-full bg-[#80e0d4] transition-all duration-700 ease-out"
-                  style={{ width: `${(usedRam / totalRam) * 100}%` }}
+                  style={{ width: `${Math.min((usedRam / totalRam) * 100, 100)}%` }}
                 />
-              </div>
-              <div className="flex justify-between text-[9px] font-bold text-slate-300 tabular-nums uppercase">
-                <span>0GB</span>
-                <span className="text-[#1a6e64]">{usedRam}GB / {totalRam}GB</span>
               </div>
             </div>
 
-            <div className="bg-[#e0f7f4] p-3 rounded-lg border border-[#80e0d4]/30 text-[11px] font-bold text-[#1a6e64] text-center transition-all duration-300">
-              여유 {totalRam - usedRam}GB - {usedRam > totalRam * 0.8 ? "메모리 부족 예상" : "작업 환경 쾌적"}
+            <div className={`p-3 rounded-lg border text-[11px] font-bold text-center transition-all duration-300 ${ramGood
+              ? "bg-[#e0f7f4] border-[#80e0d4]/30 text-[#1a6e64]"
+              : "bg-amber-50 border-amber-100/50 text-amber-700"
+              }`}>
+              {usedRam}{p.capacityUnit ?? "GB"} 사용 중 — 여유 {totalRam - usedRam}{p.capacityUnit ?? "GB"} — {ramGood ? p.verdictGoodMessage ?? "작업 환경 쾌적" : p.verdictWarningMessage ?? "메모리 부족 예상"}
             </div>
           </div>
         )}
       </div>
     );
   },
+
+
+
   Grid: (allProps: any) => {
     const p = allProps?.props || allProps || {};
     const children = allProps?.children || (allProps?.props?.children);
@@ -676,7 +679,7 @@ export const manualRegistry: Record<string, any> = {
                       e.dataTransfer.setData("text/plain", item.name);
                       e.dataTransfer.effectAllowed = "copy";
                     }}
-                    className="flex items-center gap-2 bg-white border border-slate-200 rounded-full px-3 h-[30px] shadow-[0_1px_2px_rgba(0,0,0,0.02)] transition-all duration-200 group/chip cursor-grab active:cursor-grabbing"
+                    className="flex items-center gap-2 bg-white border border-slate-200 rounded-full px-3 h-[30px] transition-all duration-200 group/chip cursor-grab active:cursor-grabbing"
                   >
                     <div className="flex items-baseline gap-1.5 min-w-0 flex-1 px-1">
                       <span className="text-[12px] font-bold text-slate-800 whitespace-nowrap truncate">{item.name}</span>
@@ -742,7 +745,7 @@ export const manualRegistry: Record<string, any> = {
                             onTurnClick?.(turn.turn ?? i + 1, item.name);
                           }
                         }}
-                        className="flex items-center gap-2 bg-white border border-slate-200 rounded-full px-3 h-[30px] shadow-[0_1px_2px_rgba(0,0,0,0.02)] transition-all duration-200 group/chip cursor-grab active:cursor-grabbing hover:border-slate-400 hover:shadow-md active:scale-[0.98] animate-chip-in"
+                        className="flex items-center gap-2 bg-white border border-slate-200 rounded-full px-3 h-[30px] transition-all duration-200 group/chip cursor-grab active:cursor-grabbing hover:border-slate-400 active:scale-[0.98] animate-chip-in"
                         style={{ animationDelay: `${itemIndex * 0.08}s` }}
                       >
                         <div className="flex items-baseline gap-1.5 min-w-0 flex-1 px-1">
@@ -937,6 +940,200 @@ export const manualRegistry: Record<string, any> = {
       </Button>
     );
   },
+
+  Table: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const initialColumns: { key: string; label: string }[] = Array.isArray(p.columns) ? p.columns : [];
+    const rows: Record<string, any>[] = Array.isArray(p.data) ? p.data : [];
+    const winners: Record<string, string> = p.winners ?? {};
+    const cellBadges: { row: string; column: string; label: string; type: string }[] =
+      Array.isArray(p.cellBadges) ? p.cellBadges : [];
+
+    const criteriaFromBindings: { name: string; min?: string; priority: string }[] =
+      Array.isArray(allProps.bindings?.droppedCriteria) ? allProps.bindings.droppedCriteria : [];
+    const savedItems: { name: string; price?: string; description?: string; specs?: string[] }[] =
+      Array.isArray(allProps.bindings?.savedItems) ? allProps.bindings.savedItems : [];
+
+    const [visibleColumns, setVisibleColumns] = useState<{ key: string; label: string }[]>(initialColumns);
+    const [extraRows, setExtraRows] = useState<Record<string, any>[]>([]);
+    const [fetchedSpecs, setFetchedSpecs] = useState<Record<string, Record<string, string>>>({});
+    const [loadingColumns, setLoadingColumns] = useState<Set<string>>(new Set());
+
+    const expandableOptions = criteriaFromBindings
+      .filter(c => !visibleColumns.some(col =>
+        col.key === c.name ||
+        col.label === c.name ||
+        col.label.toLowerCase().includes(c.name.toLowerCase())
+      ))
+      .map(c => ({ key: c.name, label: c.name }));
+
+    const addColumn = async (col: { key: string; label: string }) => {
+      setVisibleColumns(prev => [...prev, col]);
+
+      // Collect product info from row data (link optional — falls back to LLM knowledge)
+      const allCurrentRows = [...rows, ...extraRows];
+      const products = allCurrentRows
+        .map(row => ({ name: String(row.product ?? row[visibleColumns[0]?.key ?? 'product'] ?? ''), link: String(row._link ?? '') }))
+        .filter(p => p.name);
+
+      if (products.length === 0) return;
+
+      setLoadingColumns(prev => new Set([...prev, col.key]));
+      try {
+        const res = await fetch('/api/fetch-spec', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ products, criteria: col.key }),
+        });
+        const data = await res.json() as Record<string, string>;
+        setFetchedSpecs(prev => ({ ...prev, [col.key]: data }));
+      } catch (err) {
+        console.error('[Table] fetch-spec failed:', err);
+      } finally {
+        setLoadingColumns(prev => { const s = new Set(prev); s.delete(col.key); return s; });
+      }
+    };
+
+    const removeColumn = (index: number) => {
+      if (index === 0) return;
+      setVisibleColumns(prev => prev.filter((_, i) => i !== index));
+    };
+
+    const firstColKey = visibleColumns[0]?.key ?? 'product';
+    const allRows = [...rows, ...extraRows];
+    const currentProductNames = allRows.map(row => String(row[firstColKey] ?? '').toLowerCase());
+    const addableItems = savedItems.filter(item => !currentProductNames.includes(item.name.toLowerCase()));
+
+    const addItemAsRow = (item: { name: string; price?: string }) => {
+      const newRow: Record<string, any> = { [firstColKey]: item.name };
+      if (item.price) newRow['price'] = item.price;
+      setExtraRows(prev => [...prev, newRow]);
+    };
+
+
+    const renderCell = (row: Record<string, any>, col: { key: string; label: string }, ci: number) => {
+      const productName = String(row[firstColKey] ?? '');
+
+      // Show loading spinner for dynamically added columns being fetched
+      if (ci > 0 && loadingColumns.has(col.key)) {
+        return <span className="inline-block w-4 h-4 border-2 border-slate-200 border-t-slate-500 rounded-full animate-spin" />;
+      }
+
+      // Use fetched spec value if available (from /api/fetch-spec)
+      const fetchedValue = fetchedSpecs[col.key]?.[productName];
+      const rawValue = fetchedValue !== undefined ? fetchedValue : row[col.key];
+      const displayValue = rawValue != null ? String(rawValue) : '—';
+
+      // Check for explicit badge
+      const badge = cellBadges.find(b => b.row === productName && b.column === col.key);
+      if (badge) {
+        const badgeStyle =
+          badge.type === 'warning'
+            ? 'bg-red-50 text-red-500 border border-red-100'
+            : badge.type === 'success'
+              ? 'bg-green-50 text-green-600 border border-green-100'
+              : 'bg-slate-50 text-slate-600 border border-slate-100';
+        return (
+          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${badgeStyle}`}>
+            {badge.label}
+          </span>
+        );
+      }
+
+      // Check if this cell is the winner for this column
+      const isWinner = ci > 0 && winners[col.key] === productName;
+      if (isWinner && displayValue !== '—') {
+        return (
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-green-50 text-green-700 border border-green-200">
+            {displayValue}
+          </span>
+        );
+      }
+
+      return displayValue;
+    };
+
+    return (
+      <div className="w-full overflow-x-auto animate-in fade-in zoom-in-98 duration-300">
+        <table className="w-full text-[13px] border-collapse">
+          <thead>
+            <tr className="border-b border-slate-100">
+              {visibleColumns.map((col, ci) => (
+                <th key={col.key} className="text-left text-[11px] font-semibold text-slate-400 tracking-wide uppercase px-3 py-2.5 whitespace-nowrap">
+                  <div className="flex items-center gap-1.5 group/col">
+                    <span>{col.label}</span>
+                    {ci > 0 && (
+                      <button
+                        onClick={() => removeColumn(ci)}
+                        className="opacity-0 group-hover/col:opacity-100 p-0.5 rounded-full text-slate-300 hover:text-slate-600 hover:bg-slate-100 transition-all"
+                        title="컬럼 제거"
+                      >
+                        <X className="w-2.5 h-2.5" />
+                      </button>
+                    )}
+                  </div>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {allRows.map((row, i) => (
+              <tr key={i} className="border-b border-slate-50 hover:bg-slate-50/50 transition-colors">
+                {visibleColumns.map((col, ci) => (
+                  <td key={col.key} className={`px-3 py-2.5 text-slate-700 ${ci === 0 ? 'font-semibold text-slate-900' : 'font-normal'}`}>
+                    {renderCell(row, col, ci)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        {p.emptyMessage && rows.length === 0 && (
+          <p className="text-center text-[12px] text-slate-400 py-6">{p.emptyMessage}</p>
+        )}
+
+        {allProps.bindings?.isLatestMessage && (expandableOptions.length > 0 || addableItems.length > 0) && (
+          <div className="flex flex-col gap-1.5 mt-3 pt-3 border-t border-slate-100">
+            {expandableOptions.length > 0 && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[11px] text-slate-400 shrink-0 pr-3 border-r border-slate-100 whitespace-nowrap">비교 기준 추가하기</span>
+                {expandableOptions.map(col => (
+                  <button
+                    key={col.key}
+                    onClick={() => addColumn(col)}
+                    className="flex items-center gap-1.5 text-[12px] font-medium text-slate-600 bg-white border border-slate-200 rounded-full px-3 py-1 hover:bg-slate-50 hover:border-slate-300 active:scale-95 transition-all shadow-[0_1px_3px_rgba(0,0,0,0.04)]"
+                  >
+                    <Plus className="w-2.5 h-2.5 text-slate-400" />
+                    {col.label}
+                  </button>
+                ))}
+              </div>
+            )}
+            {addableItems.length > 0 && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[11px] text-slate-400 shrink-0 pr-3 border-r border-slate-100 whitespace-nowrap">제품 함께 비교하기</span>
+                {addableItems.map(item => (
+                  <button
+                    key={item.name}
+                    onClick={() => addItemAsRow(item)}
+                    className="flex items-center gap-1.5 text-[12px] font-medium text-slate-600 bg-white border border-slate-200 rounded-full px-3 py-1 hover:bg-slate-50 hover:border-slate-300 active:scale-95 transition-all shadow-[0_1px_3px_rgba(0,0,0,0.04)]"
+                  >
+                    <Plus className="w-2.5 h-2.5 text-slate-400" />
+                    {item.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+
+      </div>
+    );
+  },
+
+
   ProductCard: (allProps: any) => {
     const p = allProps?.props || allProps || {};
     const specs = Array.isArray(p.specs) ? p.specs : [];
@@ -964,13 +1161,6 @@ export const manualRegistry: Record<string, any> = {
 
         {/* Product Info Section (Right) */}
         <div className="flex flex-col flex-1 min-w-0 py-0.5 pr-0.5">
-          {/* Top Header: Rating & Promoted */}
-          <div className="flex items-center justify-between mb-1.5">
-            <div className="flex items-center gap-1">
-              <Star className="w-2 h-2 fill-amber-400 text-amber-400" />
-              <span className="text-[10px] font-black text-slate-700">{p.rating ?? "4.7"}</span>
-            </div>
-          </div>
 
           <h3 className="text-[14px] font-black text-slate-900 tracking-tight leading-tight mb-0.5 line-clamp-1">
             {p.name}
@@ -991,7 +1181,7 @@ export const manualRegistry: Record<string, any> = {
 
           {/* Price & Action */}
           <div className="flex items-center justify-between mt-2">
-            <span className="text-[14px] font-black text-slate-900 tracking-tighter">
+            <span className="text-[14px] font-medium text-slate-900 tracking-tighter">
               {p.price}
             </span>
             <button
@@ -999,7 +1189,7 @@ export const manualRegistry: Record<string, any> = {
               onClick={(e) => {
                 e.stopPropagation();
                 const onItemAdd = allProps.bindings?.onItemAdd;
-                if (onItemAdd) onItemAdd(p.name, p.imageUrl);
+                if (onItemAdd) onItemAdd(p.name, p.imageUrl, p.price, p.description, p.specs);
                 if (allProps.emit) allProps.emit("press", { product: p.name });
               }}
             >
@@ -1007,6 +1197,21 @@ export const manualRegistry: Record<string, any> = {
             </button>
           </div>
         </div>
+      </div>
+    );
+  },
+
+  ProductCardList: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const cards = Array.isArray(p.cards) ? p.cards : [];
+
+    return (
+      <div className="grid grid-cols-2 gap-3 w-full">
+        {cards.map((card: any, idx: number) => (
+          <div key={card.id || idx}>
+            {manualRegistry.ProductCard({ ...allProps, props: card })}
+          </div>
+        ))}
       </div>
     );
   },

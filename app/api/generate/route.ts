@@ -1,4 +1,4 @@
-import { agent } from "@/lib/agents/conversation";
+import { agent } from "@/lib/agents/conversation_agent";
 import { minuteRateLimit, dailyRateLimit } from "@/lib/rate-limit";
 import {
   convertToModelMessages,
@@ -6,8 +6,9 @@ import {
   createUIMessageStreamResponse,
   type UIMessage,
 } from "ai";
-import { pipeJsonRender } from "@json-render/core";
+import { SPEC_DATA_PART_TYPE } from "@json-render/core";
 import { headers } from "next/headers";
+import { initSidePanelStore, popSidePanelResults, setCurrentRequestId, initChatUIStore, popChatUIResults } from "@/lib/tools/sidebar-store";
 
 export const maxDuration = 60;
 
@@ -32,7 +33,7 @@ export async function POST(req: Request) {
       {
         status: 429,
         headers: { "Content-Type": "application/json" },
-      },
+      }
     );
   }
 
@@ -45,76 +46,46 @@ export async function POST(req: Request) {
       {
         status: 400,
         headers: { "Content-Type": "application/json" },
-      },
+      }
     );
   }
 
+  // Set up per-request store for sidePanel and renderInChat results
+  const requestId = `${Date.now()}-${Math.random()}`;
+  setCurrentRequestId(requestId);
+  initSidePanelStore(requestId);
+  initChatUIStore(requestId);
+
   const modelMessages = await convertToModelMessages(uiMessages);
 
-  // --- Conversation Agent Decision Logger ---
-  const lastUserMessage = uiMessages.findLast((m) => m.role === "user");
-  const userQuery = lastUserMessage?.parts
-    ?.filter((p: { type: string }) => p.type === "text")
-    .map((p: { type: string; text?: string }) => p.text)
-    .join("") ?? "(unknown query)";
-
-  console.log("\n╔══════════════════════════════════════════════╗");
-  console.log("║         CONVERSATION AGENT — NEW REQUEST         ║");
-  console.log("╚══════════════════════════════════════════════╝");
-  console.log(`[User Query] "${userQuery}"`);
-  console.log("──────────────────────────────────────────────");
-
-  const result = await agent.stream({
-    messages: modelMessages,
-    onStepFinish: (step) => {
-      if (step.toolCalls && step.toolCalls.length > 0) {
-        for (const call of step.toolCalls) {
-          const toolName = call.toolName;
-          const isUITool = toolName === "mainPanel" || toolName === "sidePanel";
-          const label = isUITool
-            ? `[ROUTING → ${toolName.toUpperCase()}]`
-            : `[TOOL CALL → ${toolName}]`;
-
-          console.log(`${label}`);
-          if ("args" in call && call.args) {
-            const args = call.args as Record<string, unknown>;
-            const preview = JSON.stringify(args).slice(0, 200);
-            console.log(`  Input: ${preview}${preview.length >= 200 ? "..." : ""}`);
-          }
-        }
-      }
-      if (step.text && step.text.trim()) {
-        try {
-          const parsed = JSON.parse(step.text);
-          console.log("[Agent Decision Output]");
-          console.log(`  intent_summary   : ${parsed.intent_summary ?? "-"}`);
-          console.log(`  needs_data       : ${parsed.needs_data}`);
-          console.log(`  needs_ui         : ${parsed.needs_ui}`);
-          console.log(`  ui_intent_category: ${parsed.ui_intent_category ?? "null"}`);
-          console.log(`  ui_intent_reason : ${parsed.ui_intent_reason ?? "-"}`);
-        } catch {
-          console.log(`[Agent Text] ${step.text.slice(0, 200)}`);
-        }
-      }
-    },
-  });
+  const result = await agent.stream({ messages: modelMessages });
 
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
-      console.log("--- START OF SERVER STREAM ---");
-      const jsonRenderStream = pipeJsonRender(result.toUIMessageStream());
+      const reader = result.toUIMessageStream().getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        writer.write(value);
+      }
 
-      const debugStream = new TransformStream({
-        transform(chunk, controller) {
-          console.log("DEBUG [Server Stream Outgoing]:", JSON.stringify(chunk, null, 2));
-          controller.enqueue(chunk);
-        },
-        flush() {
-          console.log("--- END OF SERVER STREAM ---");
-        }
-      });
+      // After stream is fully consumed, the sidebar tool's execute() has already
+      // run and pushed results into the store.
+      const sidePanelResults = popSidePanelResults(requestId);
+      console.log("[Route] Injecting", sidePanelResults.length, "sidePanel spec(s) as data-spec chunks");
 
-      writer.merge(jsonRenderStream.pipeThrough(debugStream));
+      for (const spec of sidePanelResults) {
+        // page.tsx allSpecs picks up: p.type === "data-spec" && p.data && p.data.type !== "patch"
+        writer.write({ type: SPEC_DATA_PART_TYPE, data: spec } as any);
+      }
+
+      // Inject renderInChat results as data-chat-ui-spec chunks
+      const chatUIResults = popChatUIResults(requestId);
+      console.log("[Route] Injecting", chatUIResults.length, "renderInChat spec(s) as data-chat-ui-spec chunks");
+
+      for (const spec of chatUIResults) {
+        writer.write({ type: "data-chat-ui-spec", data: spec } as any);
+      }
     },
   });
 
