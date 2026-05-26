@@ -1,16 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateText } from "ai";
-import { openai } from "@ai-sdk/openai";
+import { google } from "@ai-sdk/google";
 import FirecrawlApp from "firecrawl";
 
-const MODEL = "gpt-4o-mini";
+const MODEL = "gemini-2.5-flash";
 
 async function scrapeUrl(url: string): Promise<string> {
   const apiKey = process.env.FIRECRAWL_API_KEY;
   if (!apiKey || !url) return "";
   try {
     const app = new FirecrawlApp({ apiKey });
-    const result = await app.scrapeUrl(url, { formats: ["markdown"] });
+    const result = await app.scrape(url, { formats: ["markdown"] });
     const markdown = (result as any).markdown ?? "";
     return markdown.slice(0, 3000);
   } catch (err) {
@@ -29,7 +29,7 @@ async function extractSpecValue(
     : `(No page content available. Use your training knowledge about this product.)`;
 
   const { text } = await generateText({
-    model: openai(MODEL),
+    model: google(MODEL),
     system: `You are a product spec extraction assistant. Extract a specific spec value for a product. Return ONLY the value as a short Korean phrase (2-15 characters). If truly unknown, return "—".`,
     prompt: `Product: ${productName}
 Spec to find: "${criteria}"

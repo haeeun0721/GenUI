@@ -1,11 +1,11 @@
 import { generateText } from "ai";
-import { openai } from "@ai-sdk/openai";
+import { google } from "@ai-sdk/google";
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
-const UI_AGENT_MODEL = "gpt-4o" as const;
+const UI_AGENT_MODEL = "gemini-2.5-flash" as const;
 
 // ---------------------------------------------------------------------------
 // Prompt
@@ -54,8 +54,24 @@ Your sole task is to output a single valid JSON object that defines a UI compone
   }
 }
 - Set 'turn' exactly to ${turnNumber}.
-- 'min' must contain specs and numbers only — no full sentences.
-- 'sourceText' must be the EXACT full sentence from the assistant's response this item was derived from. Copy verbatim — do not paraphrase.
+- Before setting 'min', identify the TYPE of criterion:
+
+  TYPE 1 — QUANTITATIVE (has a measurable threshold) → 'min' REQUIRED. Use sensible defaults if user has not specified exact values.
+    - 프로세서 / CPU     → "인텔 i7 이상 또는 AMD Ryzen 7 이상"
+    - 그래픽 카드 / GPU → "NVIDIA RTX 시리즈 이상"
+    - RAM / 메모리     → "16GB 이상"
+    - 저장 공간 / SSD  → "512GB NVMe SSD 이상"
+    - 흔대성 / 무게     → "무게: 1.5kg 이하"
+    - 디스플레이 / 화면 → "해상도: QHD 이상, 15인치 이상"
+    - 배터리 수명      → "10시간 이상"
+    - 가성비 / 가격대   → "가격: 100만원대 또는 200만원대"
+    DO NOT output vague phrases like "고려 필요", "검토 필요", "중요" — always use a concrete spec value.
+
+  TYPE 2 — CATEGORICAL (list of valid options, no numeric threshold) → OMIT 'min' entirely
+    - 브랜드, 운영체제, 색상, 제조국 등
+
+  TYPE 3 — PRESENCE (feature exists or not, yes/no) → OMIT 'min' entirely
+    - 터치스크린, 방수, Thunderbolt 포트, 지문인식 등
 
 ### Category 2 — Table
 {
@@ -66,7 +82,7 @@ Your sole task is to output a single valid JSON object that defines a UI compone
       { "key": "<spec_key>", "label": "<spec column label>" }
     ],
     "data": [
-      { "product": "<product name>", "_link": "<product link URL from [DATA CONTEXT]>", "<spec_key>": "<value>" }
+      { "product": "<product name>", "_link": "<product link URL — copy the EXACT value from the 'Link:' field in [DATA CONTEXT]>", "<spec_key>": "<value>" }
     ],
     "winners": {
       "<spec_key>": "<product name that wins this spec>"
@@ -75,9 +91,15 @@ Your sole task is to output a single valid JSON object that defines a UI compone
 }
 - Include one column per comparable spec in "columns". Only include specs that appear in the [DATA CONTEXT] for at least one product.
 - Include one row per product in "data". ALWAYS use values from [DATA CONTEXT] (Specs / Description fields) first. Only fall back to your own knowledge if a spec is completely absent from the context.
-- ALWAYS include "_link" in every data row, copied exactly from [DATA CONTEXT]. This is used for dynamic spec fetching when users add new columns.
+- CRITICAL: ALWAYS include "_link" in EVERY data row. Copy the value EXACTLY from the "Link:" line of that product in [DATA CONTEXT]. Do NOT omit or leave it empty. This field is required for live spec fetching when users add new comparison columns.
 - IMPORTANT: If the conversation context contains [CRITERIA: ...] or [My items: ...], also include each criterion's value in every row using the criterion name exactly as the key. Do NOT add criteria to "columns".
-- "winners": ALWAYS include this field. For each non-product column key, set the value to the product name (exactly as it appears in "data") that objectively wins that spec. One winner per column.
+- "winners": ALWAYS include this field. However, determine winners based on the user's PURPOSE stated in [INTENT SUMMARY], NOT purely by objective spec values.
+  - First, identify which specs are MOST RELEVANT to the user's use case (e.g., gaming → GPU/CPU matter; budget → price matters; portability → weight/battery matters).
+  - Only mark a winner for specs that are directly relevant to the user's stated purpose.
+  - For specs where all values are equal, or where the spec is NOT relevant to the user's purpose, omit that key from "winners" entirely.
+  - Example: if user wants "게이밍 노트북", set winners only for GPU and CPU columns — NOT for price unless explicitly requested.
+  - Example: if user wants "가성비", set winners only for the price column.
+  - This makes the winner highlight meaningful for unfamiliar users who need to know which spec matters FOR THEIR GOAL.
 
 
 ### Category 3 — ProductCardList
@@ -198,7 +220,7 @@ Generate a SINGLE valid JSON object following the schema for Category ${category
 
   try {
     const { text } = await generateText({
-      model: openai(UI_AGENT_MODEL),
+      model: google(UI_AGENT_MODEL),
       system: buildUIAgentInstructions(turnNumber),
       prompt,
       temperature: 0,
