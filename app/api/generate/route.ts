@@ -57,8 +57,10 @@ export async function POST(req: Request) {
   initChatUIStore(requestId);
 
   const modelMessages = await convertToModelMessages(uiMessages);
+  console.log(`[Route] Turn ${uiMessages.length} | requestId: ${requestId.slice(0, 10)} | messages: ${uiMessages.length}`);
 
   const result = await agent.stream({ messages: modelMessages });
+  console.log(`[Route] agent.stream() resolved for requestId: ${requestId.slice(0, 10)}`);
 
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
@@ -72,10 +74,11 @@ export async function POST(req: Request) {
       // After stream is fully consumed, the sidebar tool's execute() has already
       // run and pushed results into the store.
       const sidePanelResults = popSidePanelResults(requestId);
-      console.log("[Route] Injecting", sidePanelResults.length, "sidePanel spec(s) as data-spec chunks");
+      console.log(`[Route] sidePanelResults count: ${sidePanelResults.length} | types: ${sidePanelResults.map((s: any) => s?.type).join(', ')}`);
 
       for (const spec of sidePanelResults) {
         // page.tsx allSpecs picks up: p.type === "data-spec" && p.data && p.data.type !== "patch"
+        console.log(`[Route] Writing data-spec: ${JSON.stringify(spec).slice(0, 100)}`);
         writer.write({ type: SPEC_DATA_PART_TYPE, data: spec } as any);
       }
 

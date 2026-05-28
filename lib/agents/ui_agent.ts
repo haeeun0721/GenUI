@@ -67,8 +67,12 @@ Your sole task is to output a single valid JSON object that defines a UI compone
     - 가성비 / 가격대   → "가격: 100만원대 또는 200만원대"
     DO NOT output vague phrases like "고려 필요", "검토 필요", "중요" — always use a concrete spec value.
 
-  TYPE 2 — CATEGORICAL (list of valid options, no numeric threshold) → OMIT 'min' entirely
-    - 브랜드, 운영체제, 색상, 제조국 등
+  TYPE 2 — CATEGORICAL (list of valid options, no numeric threshold) → EXPAND into individual option chips
+    - CRITICAL: Do NOT create a single chip for the category name (e.g. DO NOT make one chip "브랜드").
+    - Instead, create ONE chip per option value that was EXPLICITLY mentioned in [DATA CONTEXT] or [INTENT SUMMARY].
+    - ONLY use values that actually appear in the conversation. Do NOT invent or add options from your training knowledge.
+    - Example: if the user said "삼성이나 LG 중에" → { "name": "삼성" }, { "name": "LG" } — nothing else.
+    - If no specific options were mentioned, create a single chip for the category name with 'min' omitted (treat as TYPE 3).
 
   TYPE 3 — PRESENCE (feature exists or not, yes/no) → OMIT 'min' entirely
     - 터치스크린, 방수, Thunderbolt 포트, 지문인식 등
@@ -79,7 +83,12 @@ Your sole task is to output a single valid JSON object that defines a UI compone
   "props": {
     "columns": [
       { "key": "product", "label": "<product name column label>" },
-      { "key": "<spec_key>", "label": "<spec column label>" }
+      {
+        "key": "<spec_key>",
+        "label": "<spec column label>",
+        "relevance": "<high|medium|low>",
+        "relevanceNote": "<one short Korean phrase explaining why this matters or doesn't for this user>"
+      }
     ],
     "data": [
       { "product": "<product name>", "_link": "<product link URL — copy the EXACT value from the 'Link:' field in [DATA CONTEXT]>", "<spec_key>": "<value>" }
@@ -90,7 +99,11 @@ Your sole task is to output a single valid JSON object that defines a UI compone
   }
 }
 - Include one column per comparable spec in "columns". Only include specs that appear in the [DATA CONTEXT] for at least one product.
-- Include one row per product in "data". ALWAYS use values from [DATA CONTEXT] (Specs / Description fields) first. Only fall back to your own knowledge if a spec is completely absent from the context.
+- Include one row per product in "data". ALWAYS use values from [DATA CONTEXT] (Specs / Description fields) first.
+  - If a spec is missing from [DATA CONTEXT] for a product, use your training knowledge about that specific model to fill it in.
+  - NEVER put "-" or leave a field blank for well-known Korean laptop/electronics brands (Samsung, LG, Apple, Lenovo, Dell, HP, ASUS, etc.) — you know their specs.
+  - Only use "-" if the product is completely obscure and you have zero knowledge of its specs.
+  - Examples of specs you should know from training: 무게 (weight in kg), 디스플레이 (screen size/panel), 프로세서 (CPU model), RAM, 저장공간 (storage), 그래픽 카드 (GPU), 배터리 수명 (battery hours).
 - CRITICAL: ALWAYS include "_link" in EVERY data row. Copy the value EXACTLY from the "Link:" line of that product in [DATA CONTEXT]. Do NOT omit or leave it empty. This field is required for live spec fetching when users add new comparison columns.
 - IMPORTANT: If the conversation context contains [CRITERIA: ...] or [My items: ...], also include each criterion's value in every row using the criterion name exactly as the key. Do NOT add criteria to "columns".
 - "winners": ALWAYS include this field. However, determine winners based on the user's PURPOSE stated in [INTENT SUMMARY], NOT purely by objective spec values.
@@ -101,6 +114,21 @@ Your sole task is to output a single valid JSON object that defines a UI compone
   - Example: if user wants "가성비", set winners only for the price column.
   - This makes the winner highlight meaningful for unfamiliar users who need to know which spec matters FOR THEIR GOAL.
 
+- "relevance" + "relevanceNote" on each column: classify every spec column (NOT the product name column) based on the user's use case from [INTENT SUMMARY].
+  - "high"   → This spec is a deciding factor for this user's specific purpose. The user should pay close attention.
+    Example notes: "영상 편집에 필수", "외출이 잦다면 핵심", "게이밍 성능의 핵심"
+  - "medium" → Relevant but unlikely to be the deciding factor between these options.
+    Example notes: "참고 가능", "보조적 기준"
+  - "low"    → For this user's use case, the difference in this spec is unlikely to matter.
+    Example notes: "이 용도엔 큰 차이 없음", "재택 사용엔 무관", "두 제품 모두 충분"
+  - IMPORTANT: Apply genuine context reasoning, NOT just spec size.
+    - If the user is a student doing document work, RAM 16GB vs 32GB → "low" (both sufficient)
+    - If the user is a gamer, GPU → "high"; battery → "low"
+    - If both products have similar values, lean toward "low"
+  - Always include relevanceNote in Korean (5-15 characters, concise phrase).
+  - For "low" relevance where both/all products are adequate, PREFER phrases like "두 제품 모두 충분", "세 제품 모두 충분" etc. (using the actual count at table generation time). The UI will automatically update the count when products are added later.
+  - Avoid vague phrases like "큰 차이 없음" when you can say "두 제품 모두 충분" instead.
+
 
 ### Category 3 — ProductCardList
 {
@@ -110,18 +138,19 @@ Your sole task is to output a single valid JSON object that defines a UI compone
       {
         "id": "<unique_id>",
         "name": "<product name>",
+        "brand": "<brand name from [DATA CONTEXT]>",
         "price": "<price>",
         "imageUrl": "<image URL from [DATA CONTEXT] — copy exactly as provided>",
         "link": "<product link URL from [DATA CONTEXT]>",
-        "description": "<one-line description>",
-        "specs": ["<spec 1>", "<spec 2>"],
-        "rating": <0.0-5.0>
+        "specs": ["<contextualized spec 1>", "<contextualized spec 2>"]
       }
     ]
   }
 }
 - Include ALL recommended products inside the 'cards' array.
-- ALWAYS copy imageUrl and link from the [DATA CONTEXT] if available. Do NOT generate or guess URLs.
+- ALWAYS copy imageUrl, link, and brand from the [DATA CONTEXT] if available. Do NOT generate or guess URLs.
+- specs: 2-3 items MAX. Do NOT copy raw technical values (e.g., "Intel i7-1360P", "16GB LPDDR5"). Instead, translate into short Korean phrases that reflect meaning for the user's context (e.g., "영상 편집 가능한 성능", "하루 종일 쓸 수 있는 배터리"). Raw numbers or model codes are NOT allowed in specs.
+- Do NOT include description or rating fields.
 
 ### Category 4 — SpecDiagnostic
 

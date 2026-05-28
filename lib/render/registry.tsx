@@ -60,6 +60,7 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  Trophy,
 } from "lucide-react";
 
 
@@ -951,20 +952,39 @@ export const manualRegistry: Record<string, any> = {
 
     const criteriaFromBindings: { name: string; min?: string; priority: string }[] =
       Array.isArray(allProps.bindings?.droppedCriteria) ? allProps.bindings.droppedCriteria : [];
-    const savedItems: { name: string; price?: string; description?: string; specs?: string[] }[] =
+    const savedItems: { name: string; price?: string; description?: string; specs?: string[]; link?: string }[] =
       Array.isArray(allProps.bindings?.savedItems) ? allProps.bindings.savedItems : [];
 
     const [visibleColumns, setVisibleColumns] = useState<{ key: string; label: string }[]>(initialColumns);
     const [extraRows, setExtraRows] = useState<Record<string, any>[]>([]);
     const [fetchedSpecs, setFetchedSpecs] = useState<Record<string, Record<string, string>>>({});
     const [loadingColumns, setLoadingColumns] = useState<Set<string>>(new Set());
+    const [loadingCells, setLoadingCells] = useState<Set<string>>(new Set());
 
+    // 공백을 제거한 normalized 값으로도 비교 (예: "저장 공간" vs "저장공간")
+    const normalize = (s: string) => s.toLowerCase().replace(/\s+/g, '');
     const expandableOptions = criteriaFromBindings
-      .filter(c => !visibleColumns.some(col =>
-        col.key === c.name ||
-        col.label === c.name ||
-        col.label.toLowerCase().includes(c.name.toLowerCase())
-      ))
+      .filter(c => {
+        const parenMatches = c.name.match(/\(([^)]+)\)/g)?.map((m: string) => m.slice(1, -1)) ?? [];
+        const baseName = c.name.replace(/\s*\([^)]+\)/g, '').trim();
+        const variants = [c.name, baseName, ...parenMatches].map((v: string) => v.toLowerCase()).filter(Boolean);
+        const variantsNorm = variants.map(normalize);
+        return !visibleColumns.some(col => {
+          const keyNorm = col.key.toLowerCase();
+          const labelNorm = col.label.toLowerCase();
+          const keyNoSpace = normalize(col.key);
+          const labelNoSpace = normalize(col.label);
+          return variants.some((v: string) =>
+            keyNorm === v || labelNorm === v ||
+            labelNorm.includes(v) || v.includes(labelNorm) ||
+            keyNorm.includes(v) || v.includes(keyNorm)
+          ) || variantsNorm.some((v: string) =>
+            keyNoSpace === v || labelNoSpace === v ||
+            labelNoSpace.includes(v) || v.includes(labelNoSpace) ||
+            keyNoSpace.includes(v) || v.includes(keyNoSpace)
+          );
+        });
+      })
       .map(c => ({ key: c.name, label: c.name }));
 
     const addColumn = async (col: { key: string; label: string }) => {
@@ -1002,19 +1022,71 @@ export const manualRegistry: Record<string, any> = {
     const firstColKey = visibleColumns[0]?.key ?? 'product';
     const allRows = [...rows, ...extraRows];
     const currentProductNames = allRows.map(row => String(row[firstColKey] ?? '').toLowerCase());
-    const addableItems = savedItems.filter(item => !currentProductNames.includes(item.name.toLowerCase()));
+    // 이름이 완전히 일치하지 않을 수 있으므로 부분 매칭으로 비교
+    // (LLM이 생성한 짧은 이름 vs My Items의 전체 이름)
+    const isAlreadyInTable = (itemName: string) => {
+      const itemLower = itemName.toLowerCase();
+      return currentProductNames.some(tableName =>
+        tableName === itemLower ||
+        tableName.includes(itemLower) ||
+        itemLower.includes(tableName)
+      );
+    };
+    const addableItems = savedItems.filter(item => !isAlreadyInTable(item.name));
 
-    const addItemAsRow = (item: { name: string; price?: string }) => {
+    const addItemAsRow = async (item: { name: string; price?: string; link?: string }) => {
       const newRow: Record<string, any> = { [firstColKey]: item.name };
       if (item.price) newRow['price'] = item.price;
       setExtraRows(prev => [...prev, newRow]);
+
+      // 새로 추가된 제품에 대해서만 기존 컬럼들의 값을 fetch
+      // (기존 제품들은 이미 값이 있으므로 건드리지 않음)
+      const columnsToFetch = visibleColumns.slice(1).filter(col => col.key !== 'price');
+      if (columnsToFetch.length === 0) return;
+
+      const product = { name: item.name, link: item.link ?? '' };
+      console.log(`[Table] addItemAsRow: fetching ${columnsToFetch.length} columns for "${item.name}"`);
+
+      // 새 제품의 모든 셀을 로딩 상태로 표시
+      setLoadingCells(prev => {
+        const next = new Set(prev);
+        columnsToFetch.forEach(col => next.add(`${item.name}__${col.key}`));
+        return next;
+      });
+
+      await Promise.all(
+        columnsToFetch.map(async col => {
+          const cellKey = `${item.name}__${col.key}`;
+          try {
+            const res = await fetch('/api/fetch-spec', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ products: [product], criteria: col.key }),
+            });
+            const data = await res.json() as Record<string, string>;
+            console.log(`[Table] addItemAsRow "${col.key}" for "${item.name}":`, data);
+            setFetchedSpecs(prev => ({
+              ...prev,
+              [col.key]: { ...(prev[col.key] ?? {}), ...data },
+            }));
+          } catch (err) {
+            console.error(`[Table] addItemAsRow fetch-spec failed for "${col.key}":`, err);
+          } finally {
+            setLoadingCells(prev => { const s = new Set(prev); s.delete(cellKey); return s; });
+          }
+        })
+      );
     };
 
 
     const renderCell = (row: Record<string, any>, col: { key: string; label: string }, ci: number) => {
       const productName = String(row[firstColKey] ?? '');
 
-      // Show loading spinner for dynamically added columns being fetched
+      // 셀 단위 로딩: 새로 추가된 제품의 해당 셀만 스피너 표시
+      if (ci > 0 && loadingCells.has(`${productName}__${col.key}`)) {
+        return <span className="inline-block w-4 h-4 border-2 border-slate-200 border-t-slate-500 rounded-full animate-spin" />;
+      }
+      // 컬럼 단위 로딩: addColumn으로 추가된 컬럼 전체 로딩
       if (ci > 0 && loadingColumns.has(col.key)) {
         return <span className="inline-block w-4 h-4 border-2 border-slate-200 border-t-slate-500 rounded-full animate-spin" />;
       }
@@ -1043,11 +1115,20 @@ export const manualRegistry: Record<string, any> = {
       // Check if this cell is the winner for this column
       const isWinner = ci > 0 && winners[col.key] === productName;
       if (isWinner && displayValue !== '—') {
-        return (
-          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-green-50 text-green-700 border border-green-200">
-            {displayValue}
-          </span>
-        );
+        const allValuesInColumn = allRows.map(r => {
+          const fv = fetchedSpecs[col.key]?.[String(r[firstColKey] ?? '')];
+          const rv = fv !== undefined ? fv : r[col.key];
+          return rv != null ? String(rv) : '—';
+        });
+        const hasDistinctValues = allValuesInColumn.some(v => v !== displayValue);
+        if (hasDistinctValues) {
+          return (
+            <span className="inline-flex flex-col items-center gap-0.5">
+              <Trophy className="h-3 w-3 text-green-600" />
+              <span className="text-[13px] font-normal text-green-700">{displayValue}</span>
+            </span>
+          );
+        }
       }
 
       return displayValue;
@@ -1058,22 +1139,45 @@ export const manualRegistry: Record<string, any> = {
         <table className="w-full text-[13px] border-collapse">
           <thead>
             <tr className="border-b border-slate-100">
-              {visibleColumns.map((col, ci) => (
-                <th key={col.key} className="text-left text-[11px] font-semibold text-slate-400 tracking-wide uppercase px-3 py-2.5 whitespace-nowrap">
-                  <div className="flex items-center gap-1.5 group/col">
-                    <span>{col.label}</span>
-                    {ci > 0 && (
-                      <button
-                        onClick={() => removeColumn(ci)}
-                        className="opacity-0 group-hover/col:opacity-100 p-0.5 rounded-full text-slate-300 hover:text-slate-600 hover:bg-slate-100 transition-all"
-                        title="컬럼 제거"
-                      >
-                        <X className="w-2.5 h-2.5" />
-                      </button>
-                    )}
-                  </div>
-                </th>
-              ))}
+              {visibleColumns.map((col, ci) => {
+                const rel = (col as any).relevance as 'high' | 'medium' | 'low' | undefined;
+                const relNote = (col as any).relevanceNote as string | undefined;
+
+                // 현재 제품 수에 맞게 한국어 수 표현 동적 교체
+                // 예: "두 제품 모두 충분" → "네 제품 모두 충분" (4개 제품일 때)
+                const korNums = ['한', '두', '세', '네', '다섯', '여섯', '일곱', '여덟', '아홉', '열'];
+                const currentNum = korNums[allRows.length - 1] ?? `${allRows.length}개`;
+                const dynamicNote = relNote?.replace(
+                  /[한두세네다섯여섯일곱여덟아홉열]\s*제품/g,
+                  `${currentNum} 제품`
+                );
+
+                const relStyle = rel === 'high'
+                  ? { dot: 'bg-emerald-400', text: 'text-emerald-600', label: dynamicNote ?? '핵심 기준' }
+                  : rel === 'low'
+                  ? { dot: 'bg-slate-300', text: 'text-slate-400', label: dynamicNote ?? '이 용도엔 무관' }
+                  : rel === 'medium'
+                  ? { dot: 'bg-amber-400', text: 'text-amber-600', label: dynamicNote ?? '참고 가능' }
+                  : null;
+
+                return (
+                  <th key={col.key} className="text-left text-[11px] font-semibold text-slate-400 tracking-wide uppercase px-3 py-2.5 whitespace-nowrap">
+                    <div className="flex items-center gap-1.5 group/col">
+                      <span>{col.label}</span>
+                      {ci > 0 && (
+                        <button
+                          onClick={() => removeColumn(ci)}
+                          className="opacity-0 group-hover/col:opacity-100 p-0.5 rounded-full text-slate-300 hover:text-slate-600 hover:bg-slate-100 transition-all"
+                          title="컬럼 제거"
+                        >
+                          <X className="w-2.5 h-2.5" />
+                        </button>
+                      )}
+                    </div>
+                    {/* relevance annotation — currently hidden */}
+                  </th>
+                );
+              })}
             </tr>
           </thead>
           <tbody>
@@ -1091,6 +1195,13 @@ export const manualRegistry: Record<string, any> = {
 
         {p.emptyMessage && rows.length === 0 && (
           <p className="text-center text-[12px] text-slate-400 py-6">{p.emptyMessage}</p>
+        )}
+
+        {Object.keys(winners).length > 0 && (
+          <div className="flex items-center gap-1.5 mt-2 px-1">
+            <Trophy className="h-3 w-3 text-green-600" />
+            <span className="text-[11px] text-slate-400">대화에서 나눠 목적에 더 적합한 스펙</span>
+          </div>
         )}
 
         {allProps.bindings?.isLatestMessage && (expandableOptions.length > 0 || addableItems.length > 0) && (
@@ -1136,60 +1247,67 @@ export const manualRegistry: Record<string, any> = {
 
   ProductCard: (allProps: any) => {
     const p = allProps?.props || allProps || {};
-    const specs = Array.isArray(p.specs) ? p.specs : [];
 
     return (
       <div
-        className="group relative flex flex-row bg-white border border-slate-100 rounded-[24px] p-2.5 gap-3 transition-all duration-300 hover:border-slate-200 hover:shadow-[0_8px_30px_rgba(0,0,0,0.03)] animate-in fade-in zoom-in-95 w-full h-auto min-h-[120px]"
+        className="group relative flex flex-row bg-white border border-[#EBEBEB] rounded-[8px] p-3 gap-3 transition-all duration-200 hover:border-[#D0D0D0] hover:shadow-[0_2px_12px_rgba(0,0,0,0.07)] animate-in fade-in zoom-in-95 w-full"
       >
-        {/* Product Image Section (Left) */}
-        <div className="relative w-24 aspect-square rounded-[16px] bg-slate-50 overflow-hidden border border-slate-50 shrink-0">
+        {/* Product Image (Left) */}
+        <div className="relative w-[88px] h-[88px] rounded-[4px] bg-[#F5F5F5] overflow-hidden shrink-0">
           {p.imageUrl ? (
             <img
               src={p.imageUrl}
               alt={p.name}
-              className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
+              className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
             />
           ) : (
-            <div className="w-full h-full flex items-center justify-center bg-slate-50 text-slate-200">
-              <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div className="w-full h-full flex items-center justify-center bg-[#F5F5F5] text-[#C8C8C8]">
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
               </svg>
             </div>
           )}
         </div>
 
-        {/* Product Info Section (Right) */}
-        <div className="flex flex-col flex-1 min-w-0 py-0.5 pr-0.5">
-
-          <h3 className="text-[14px] font-black text-slate-900 tracking-tight leading-tight mb-0.5 line-clamp-1">
-            {p.name}
-          </h3>
-
-          <p className="text-[10px] text-slate-400 font-medium leading-snug mb-1.5 line-clamp-2">
-            {p.description ?? "최상의 성능과 디자인을 경험하세요"}
-          </p>
-
-          {/* Specs Chips */}
-          <div className="flex flex-wrap gap-1 mb-auto">
-            {specs.slice(0, 2).map((spec: string, i: number) => (
-              <span key={i} className="text-[8.5px] font-bold text-slate-400 bg-slate-50 border border-slate-100/50 px-1.5 py-0.5 rounded-full whitespace-nowrap">
-                {spec}
+        {/* Product Info (Right) */}
+        <div className="flex flex-col flex-1 min-w-0 justify-between py-0.5">
+          <div className="flex flex-col gap-0.5">
+            {/* Brand */}
+            {p.brand && (
+              <span className="text-[11px] font-bold text-[#1A1A1A] leading-none">
+                {p.brand}
               </span>
-            ))}
+            )}
+            {/* Product Name */}
+            <p className="text-[12.5px] font-normal text-[#333333] leading-snug line-clamp-2 mt-0.5">
+              {p.name}
+            </p>
+            {/* Spec Chips */}
+            {Array.isArray(p.specs) && p.specs.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-1.5">
+                {p.specs.slice(0, 3).map((spec: string, i: number) => (
+                  <span
+                    key={i}
+                    className="text-[10px] text-[#666666] bg-[#F5F5F5] px-2 py-0.5 rounded-full whitespace-nowrap"
+                  >
+                    {spec}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
 
-          {/* Price & Action */}
+          {/* Price & Add Button */}
           <div className="flex items-center justify-between mt-2">
-            <span className="text-[14px] font-medium text-slate-900 tracking-tighter">
+            <span className="text-[15px] font-bold text-[#1A1A1A] tracking-tight">
               {p.price}
             </span>
             <button
-              className="w-6 h-6 bg-slate-900 text-white rounded-full hover:scale-105 active:scale-95 transition-all flex items-center justify-center flex-shrink-0 shadow-sm"
+              className="w-7 h-7 bg-[#1A1A1A] text-white rounded-full hover:scale-105 active:scale-95 transition-all flex items-center justify-center flex-shrink-0"
               onClick={(e) => {
                 e.stopPropagation();
                 const onItemAdd = allProps.bindings?.onItemAdd;
-                if (onItemAdd) onItemAdd(p.name, p.imageUrl, p.price, p.description, p.specs);
+                if (onItemAdd) onItemAdd(p.name, p.imageUrl, p.price, undefined, undefined);
                 if (allProps.emit) allProps.emit("press", { product: p.name });
               }}
             >

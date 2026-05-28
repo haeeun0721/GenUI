@@ -13,7 +13,11 @@ export const renderToSidebar = tool({
         turn_number: z.number().describe("The current turn number (incrementing for each new UI step)."),
     }),
     execute: async ({ ui_context, intent_summary, ui_intent_category, turn_number }) => {
-        console.log(`[Tool: sidePanel] Requesting spec for [Turn ${turn_number}] ${intent_summary}`);
+        // Capture the requestId at the start of execute() before any async calls.
+        // This prevents a race condition where a concurrent request overwrites
+        // the global currentRequestId before generateUISpec() finishes.
+        const capturedRequestId = currentRequestId;
+        console.log(`[Tool: sidePanel] Requesting spec for [Turn ${turn_number}] ${intent_summary} (requestId: ${capturedRequestId})`);
         try {
             const uiSpecString = await generateUISpec(ui_context, intent_summary, ui_intent_category, turn_number);
             console.log("[Tool: sidePanel] Raw Spec String:", uiSpecString); // DEBUG LOG
@@ -36,7 +40,7 @@ export const renderToSidebar = tool({
                         const jsonPart = uiSpecString.substring(firstBrace, lastBrace + 1);
                         const uiSpec = JSON.parse(jsonPart);
                         // Push into request-scoped store so route.ts can emit data-spec chunks
-                        if (currentRequestId) pushSidePanelResult(currentRequestId, uiSpec);
+                        if (capturedRequestId) pushSidePanelResult(capturedRequestId, uiSpec);
                         return uiSpec;
                     }
                 }

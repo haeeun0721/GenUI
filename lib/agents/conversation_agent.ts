@@ -1,5 +1,5 @@
 import { ToolLoopAgent, stepCountIs } from "ai";
-import { openai } from "@ai-sdk/openai";
+import { google } from "@ai-sdk/google";
 import { imageSearch } from "../tools/image-search";
 import { renderToSidebar } from "../tools/sidebar";
 import { renderInChat } from "../tools/render-in-chat";
@@ -9,7 +9,7 @@ import { searchProducts } from "./data_agent";
 // Config
 // ---------------------------------------------------------------------------
 
-const DEFAULT_MODEL = "gpt-4o";
+const DEFAULT_MODEL = "gemini-2.5-flash";
 
 // ---------------------------------------------------------------------------
 // Prompt
@@ -64,15 +64,28 @@ Set needs_data to false when the response can be answered from general knowledge
 
 ## Mandatory Actions
 
-IF ui_intent_category is 1             → You MUST call the 'sidePanel' tool.
+**CRITICAL: Tool calls are NOT optional. You MUST follow these rules on EVERY turn, including the very first message.**
+
+IF ui_intent_category is 1             → You MUST call the 'sidePanel' tool BEFORE writing your text response.
 IF ui_intent_category is 2 or 3       → You MUST first call 'searchProducts' to fetch real product data, THEN call 'renderInChat' with the product data in ui_context.
 IF ui_intent_category is 4            → You MUST call the 'renderInChat' tool (no searchProducts needed).
 IF needs_data is true AND ui_intent_category is NOT 3 AND ui_intent_category is NOT 2 → You MUST call the 'imageSearch' tool before responding.
+
+Do NOT generate any text response before making the required tool call. Call the tool first.
 
 ### searchProducts usage
 - Call searchProducts with a specific Korean query derived from the user's request and any mentioned constraints (budget, use case, brand preference).
 - After searchProducts returns, pass the full contextSummary field into ui_context when calling renderInChat.
 - The UI Agent will use this real product data to populate the ProductCardList or Table.
+
+**CRITICAL — When [My items: product1, product2, ...] are in the user's message:**
+- The user wants to compare THOSE SPECIFIC products. Do NOT do a generic search.
+- Call searchProducts ONCE PER PRODUCT with the EXACT product name as the query and count=1.
+- Example: [My items: 삼성전자 갤럭시북4 NT750XGR-A71A, LG 그램 프로 17 RTX5050]
+  → searchProducts({ query: "삼성전자 갤럭시북4 NT750XGR-A71A", count: 1 })
+  → searchProducts({ query: "LG 그램 프로 17 외장그래픽 RTX5050 노트북", count: 1 })
+  → Combine both contextSummary outputs and pass them together into renderInChat.
+- This prevents wrong product variants from being returned by a generic search.
 
 ---
 
@@ -97,7 +110,7 @@ Write a natural Korean response based on the current context.
 // ---------------------------------------------------------------------------
 
 export const agent = new ToolLoopAgent({
-  model: openai(process.env.OPENAI_MODEL ?? DEFAULT_MODEL),
+  model: google(process.env.GOOGLE_MODEL ?? DEFAULT_MODEL),
   instructions: AGENT_INSTRUCTIONS,
   tools: {
     imageSearch,
@@ -106,5 +119,5 @@ export const agent = new ToolLoopAgent({
     renderInChat,
   },
   stopWhen: stepCountIs(6),
-  temperature: 0.5,
+  temperature: 0,
 });

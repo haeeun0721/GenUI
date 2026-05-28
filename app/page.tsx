@@ -365,7 +365,7 @@ const MessageBubble = memo(({
       .join("");
 
     const userText = rawText
-      .replace(/\[CONTEXT:.*?\]/gs, "")
+      .split(/\n{1,2}\[CONTEXT:/)[0]
       .replace(/\[CRITERIA:(.*?)\]/gs, (_, criteria) => `[Decision Criteria : ${criteria.trim()}] `)
       .trim();
 
@@ -651,7 +651,7 @@ export default function ChatPage() {
   const allSpecs = useMemo(() => {
     const specs: any[] = [];
     messages.forEach((m) => {
-      // Path 1: toolInvocations ??real-time during streaming
+      // Path 1a: toolInvocations — populated after stream completes
       ((m as any).toolInvocations ?? []).forEach((ti: any) => {
         if (ti.toolName === "renderToSidebar" || ti.toolName === "sidePanel") {
           const res = ti.result || (ti as any).args?.spec;
@@ -659,7 +659,25 @@ export default function ChatPage() {
         }
       });
 
-      // Path 2: data-spec parts ??injected by route.ts after stream ends (authoritative)
+      // Path 1b: parts-based tool-result — reliable fallback for turn 1
+      // (toolInvocations may not be populated yet on the first turn)
+      (m.parts ?? []).forEach((p: any) => {
+        const isToolResult =
+          p.type === "tool-result" ||
+          (p.type === "tool-invocation" && p.toolInvocation?.state === "result");
+        if (isToolResult) {
+          const toolName =
+            p.toolName ||
+            p.toolInvocation?.toolName ||
+            "";
+          if (toolName === "renderToSidebar" || toolName === "sidePanel") {
+            const res = p.result ?? p.output ?? p.toolInvocation?.result;
+            if (res) specs.push(typeof res === "string" ? (() => { try { return JSON.parse(res); } catch { return null; } })() : res);
+          }
+        }
+      });
+
+      // Path 2: data-spec parts — injected by route.ts after stream ends (authoritative)
       (m.parts ?? []).forEach((p: any) => {
         if (p.type === "ui-spec" && p.spec) specs.push(p.spec);
         if (p.type === "data-spec" && p.data) {
@@ -672,9 +690,10 @@ export default function ChatPage() {
       });
     });
 
-    // Deduplicate: toolInvocations (streaming) and data-spec (post-stream) may carry the same spec
+    // Deduplicate: multiple paths may carry the same spec
     const seen = new Set<string>();
     return specs.filter((spec) => {
+      if (!spec) return false;
       try {
         const key = JSON.stringify(spec);
         if (seen.has(key)) return false;
@@ -684,7 +703,7 @@ export default function ChatPage() {
         return true;
       }
     });
-  }, [messages, isStreaming]);
+  }, [messages]);
 
   const sidebarSpec = useMemo(() => {
     let combinedTurns: any[] = [];
@@ -854,7 +873,7 @@ export default function ChatPage() {
         <div className="w-full max-w-lg flex flex-col gap-10 px-8 animate-in fade-in zoom-in-95 duration-700">
           {/* Branding */}
           <div className="flex flex-col gap-1">
-            <h1 className="text-[48px] font-bold text-slate-900 tracking-tight leading-none">GenFrame</h1>
+            <h1 className="text-[48px] font-bold text-slate-900 tracking-tight leading-none">GenSpace</h1>
           </div>
 
           {/* Participant ID */}
@@ -886,35 +905,39 @@ export default function ChatPage() {
 
 
   return (
-    <div className="h-screen flex flex-col w-full overflow-hidden bg-background">
-      <div className="flex-1 flex justify-center w-full overflow-hidden bg-background">
+    <div className="h-screen flex flex-col w-full overflow-hidden bg-white">
+      {/* Full-width white header */}
+      <div className="shrink-0 bg-white border-b border-[#E5DED7] px-8 py-4 flex items-center">
+        <h1 className="text-[22px] font-bold text-slate-900 tracking-tight leading-tight">GenSpace</h1>
+      </div>
+
+      <div className="flex-1 flex justify-center w-full overflow-hidden bg-white">
         <div className="flex w-full max-w-[1800px] h-full overflow-hidden gap-16">
-          <aside className="w-[440px] h-full p-6 pt-24 pb-20 flex-shrink-0 bg-muted/5 border-r border-slate-50 z-10 flex flex-col">
-            <div className="flex-1 flex flex-col min-h-0 bg-[#FAFAFA] border border-[#EBEBEB] rounded-3xl shadow-none p-6">
+          <aside className="w-[440px] h-full p-4 pt-6 pb-6 flex-shrink-0 bg-transparent z-10 flex flex-col">
+            <div className="flex-1 flex flex-col min-h-0 bg-white border border-[#E5E5E5] rounded-[8px] p-6">
               <div className="flex flex-col gap-1 mb-2 flex-shrink-0">
                 <>
-                  <p className="text-[10px] font-black text-slate-400 tracking-widest uppercase"> DECISION JOURNEY</p>
-                  <p className="text-[11px] text-muted-foreground">대화를 통해 알게된 정보와 기준을 정리합니다.</p>
+                  <p className="text-[12px] font-black text-slate-600 tracking-widest uppercase"> 📚 Decision Journey </p>
                 </>
               </div>
               <div className="flex-1 overflow-y-auto styled-scrollbar mt-2 pr-1">
-                {sidebarSpec && (
+                {sidebarSpec ? (
                   <ExplorerRenderer
                     spec={sidebarSpec}
                     bindings={sidebarBindings}
                   />
+                ) : (
+                  <div className="flex flex-col items-center justify-center h-full gap-2 py-12">
+                    <p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">
+                      대화를 시작하면<br />여기에 탐색 기록이 쌓여요
+                    </p>
+                  </div>
                 )}
               </div>
             </div>
           </aside>
 
-          <div className="flex-1 flex flex-col h-full overflow-hidden relative bg-white">
-            {/* GenFrame header */}
-            <div className="shrink-0 px-8 pt-6 pb-3">
-              <div className="max-w-4xl mx-auto">
-                <h1 className="text-[22px] font-bold text-slate-900 tracking-tight leading-tight">GenFrame</h1>
-              </div>
-            </div>
+          <div className="flex-1 flex flex-col h-full overflow-hidden relative bg-white shadow-[0_0_12px_rgba(0,0,0,0.04)]">
 
             <main
               ref={scrollContainerRef}
@@ -1007,52 +1030,60 @@ export default function ChatPage() {
                       setSearchCriteria((prev) => [...prev, { name: label, priority: "medium" }]);
                     }
                   }}
-                  className="flex items-center flex-wrap gap-2 bg-white border border-slate-100 rounded-[28px] p-1.5 pl-3 shadow-xl shadow-slate-100/50 hover:shadow-slate-200/50 transition-all focus-within:border-slate-300"
+                  className="flex flex-col gap-1.5 bg-white border border-slate-100 rounded-[28px] p-1.5 pl-3 shadow-xl shadow-slate-100/50 hover:shadow-slate-200/50 transition-all focus-within:border-slate-300"
                 >
-                  {mentionChips.map((chip, i) => (
-                    <div key={i} className="flex items-center gap-1.5 bg-slate-50 border border-slate-100 rounded-full px-2 py-0.5 animate-in zoom-in-95 duration-200">
-                      <span className="text-[12px] font-bold text-slate-800">{chip.name}</span>
-                      <button
-                        onClick={() => setMentionChips(prev => prev.filter((_, idx) => idx !== i))}
-                        className="ml-1 p-0.5 text-slate-300 hover:text-slate-900 transition-colors"
-                      >
-                        <X className="w-2.5 h-2.5" />
-                      </button>
+                  {/* Chips row — wraps freely above the textarea */}
+                  {(mentionChips.length > 0 || searchCriteria.length > 0) && (
+                    <div className="flex flex-wrap gap-1.5 pt-1 px-0.5">
+                      {mentionChips.map((chip, i) => (
+                        <div key={i} className="flex items-center gap-1.5 bg-slate-50 border border-slate-100 rounded-full px-2 py-0.5 animate-in zoom-in-95 duration-200">
+                          <span className="text-[12px] font-bold text-slate-800">{chip.name}</span>
+                          <button
+                            onClick={() => setMentionChips(prev => prev.filter((_, idx) => idx !== i))}
+                            className="ml-1 p-0.5 text-slate-300 hover:text-slate-900 transition-colors"
+                          >
+                            <X className="w-2.5 h-2.5" />
+                          </button>
+                        </div>
+                      ))}
+                      {searchCriteria.map((c, i) => (
+                        <div key={i} className="flex items-center gap-1.5 bg-slate-50 border border-slate-100 rounded-full px-2 py-0.5 animate-in zoom-in-95 duration-200">
+                          <span className="text-[12px] font-bold text-slate-800">{c.name}</span>
+                          {c.min && <span className="text-[10px] text-slate-500 font-medium">{c.min}</span>}
+                          <button
+                            onClick={() => setSearchCriteria(prev => prev.filter((_, idx) => idx !== i))}
+                            className="ml-1 p-0.5 text-slate-300 hover:text-slate-900 transition-colors"
+                          >
+                            <X className="w-2.5 h-2.5" />
+                          </button>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                  {searchCriteria.map((c, i) => (
-                    <div key={i} className="flex items-center gap-1.5 bg-slate-50 border border-slate-100 rounded-full px-2 py-0.5 animate-in zoom-in-95 duration-200">
-                      <span className="text-[12px] font-bold text-slate-800">{c.name}</span>
-                      {c.min && <span className="text-[10px] text-slate-500 font-medium">{c.min}</span>}
-                      <button
-                        onClick={() => setSearchCriteria(prev => prev.filter((_, idx) => idx !== i))}
-                        className="ml-1 p-0.5 text-slate-300 hover:text-slate-900 transition-colors"
-                      >
-                        <X className="w-2.5 h-2.5" />
-                      </button>
-                    </div>
-                  ))}
-                  <textarea
-                    ref={inputRef}
-                    value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                    placeholder={(searchCriteria.length > 0 || mentionChips.length > 0) ? "" : "무엇이든 물어보세요"}
-                    rows={1}
-                    className="flex-1 bg-transparent border-none focus:ring-0 focus:outline-none focus-visible:ring-0 resize-none text-slate-800 placeholder:text-slate-400 py-2.5 text-[15px] font-medium min-w-[80px] max-h-[160px]"
-                  />
-                  <button
-                    onClick={() => handleSubmit()}
-                    disabled={(!input.trim() && searchCriteria.length === 0 && mentionChips.length === 0) || isStreaming}
-                    className="w-9 h-9 rounded-full bg-slate-900 flex items-center justify-center text-white hover:bg-black active:scale-95 transition-all shadow-md shrink-0 ml-1"
-                  >
-                    {isStreaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4 stroke-[2.5px]" />}
-                  </button>
+                  )}
+                  {/* Textarea + send button always on their own row */}
+                  <div className="flex items-center gap-1">
+                    <textarea
+                      ref={inputRef}
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      onKeyDown={handleKeyDown}
+                      placeholder={(searchCriteria.length > 0 || mentionChips.length > 0) ? "" : "무엇이든 물어보세요"}
+                      rows={1}
+                      className="flex-1 bg-transparent border-none focus:ring-0 focus:outline-none focus-visible:ring-0 resize-none text-slate-800 placeholder:text-slate-400 py-2.5 text-[15px] font-medium min-w-0 max-h-[160px]"
+                    />
+                    <button
+                      onClick={() => handleSubmit()}
+                      disabled={(!input.trim() && searchCriteria.length === 0 && mentionChips.length === 0) || isStreaming}
+                      className="w-9 h-9 rounded-full bg-slate-900 flex items-center justify-center text-white hover:bg-black active:scale-95 transition-all shadow-md shrink-0 ml-1"
+                    >
+                      {isStreaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4 stroke-[2.5px]" />}
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
-          <aside className="w-[360px] p-6 pt-24 pb-20 flex-shrink-0 bg-muted/5 overflow-auto no-scrollbar border-l border-slate-50 z-10">
+          <aside className="w-[360px] p-4 pt-6 pb-6 flex-shrink-0 bg-transparent overflow-auto no-scrollbar z-10">
             <div className="flex flex-col gap-6">
               <div
                 onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add("bg-primary/5", "border-primary/30"); }}
@@ -1082,13 +1113,15 @@ export default function ChatPage() {
                     setDroppedCriteria((prev) => [...prev, { name: label, priority: "medium" }]);
                   }
                 }}
-                className="flex flex-col gap-4 p-6 bg-[#FAFAFA] border border-[#EBEBEB] rounded-3xl shadow-none min-h-[250px]"
+                className="flex flex-col gap-4 p-6 bg-white border border-[#E5E5E5] rounded-[8px] min-h-[250px] h-full"
               >
-                <div className="flex flex-col gap-1">
-                  <p className="text-[10px] font-black text-slate-400 tracking-widest uppercase"> DECISION CRITERIA</p>
-                  <p className="text-[11px] text-muted-foreground leading-tight"> 의사결정 기준으로 삼을 만한 것들을 이곳으로 드래그해주세요. </p>
+                <div className="flex items-center justify-between">
+                  <p className="text-[12px] font-black text-slate-600 tracking-widest uppercase"> 🎯 DECISION CRITERIA</p>
+                  {droppedCriteria.length > 0 && (
+                    <span className="text-[12px] font-normal text-slate-300">{droppedCriteria.length}개</span>
+                  )}
                 </div>
-                <div className="flex flex-col gap-3">
+                <div className="flex flex-col gap-3 flex-1">
                   {droppedCriteria.length > 0 ? (
                     <div className="flex flex-col gap-3 w-full items-start">
                       {droppedCriteria.map((criterion, i) => (
@@ -1131,9 +1164,9 @@ export default function ChatPage() {
                                   setEditingCriteriaIdx(i);
                                   setEditingMinText(criterion.min || "");
                                 }}
-                                title={criterion.min || "?�력"}
+                                title={criterion.min || "입력"}
                               >
-                                {criterion.min || "?�력"}
+                                {criterion.min || "입력"}
                               </span>
                             )}
                           </div>
@@ -1160,22 +1193,26 @@ export default function ChatPage() {
                       ))}
                     </div>
                   ) : (
-                    <div className="flex-1 flex items-center justify-center py-6">
-                      <p className="text-[11px] text-slate-200 font-medium whitespace-nowrap">여기에 드롭하세요</p>
+                    <div className="flex-1 flex items-center justify-center">
+                      <p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">
+                        기준 칩을 드래그해<br />여기에 고정해두세요
+                      </p>
                     </div>
                   )}
                 </div>
               </div>
 
-              <div className="flex flex-col gap-4 p-6 bg-[#FAFAFA] border border-[#EBEBEB] rounded-3xl shadow-none min-h-[250px]">
-                <div className="flex flex-col gap-1">
-                  <p className="text-[10px] font-black text-slate-400 tracking-widest uppercase"> MY ITEMS</p>
-                  <p className="text-[11px] text-muted-foreground leading-tight">마음에 드는 옵션의 '+' 버튼을 눌러 추가할 수 있어요</p>
+              <div className="flex flex-col gap-4 p-6 bg-white border border-[#E5E5E5] rounded-[8px] min-h-[250px] h-full">
+                <div className="flex items-center justify-between">
+                  <p className="text-[12px] font-black text-slate-600 tracking-widest uppercase"> 📦 MY ITEMS</p>
+                  {droppedItems.length > 0 && (
+                    <span className="text-[12px] font-normal text-slate-300">{droppedItems.length}개</span>
+                  )}
                 </div>
-                <div className="flex flex-col gap-2">
+                <div className="flex flex-col gap-2 flex-1">
                   {droppedItems.length > 0 ? (
                     droppedItems.map((item, i) => (
-                      <div key={i} onClick={() => insertMention(item.name)} className="group relative rounded-2xl bg-white border border-slate-200 p-3 flex items-center gap-3 animate-in zoom-in-95 duration-200 hover:border-slate-300 transition-all cursor-pointer">
+                      <div key={i} onClick={() => insertMention(item.name)} className="group relative rounded-[8px] bg-white border border-slate-200 p-3 flex items-center gap-3 animate-in zoom-in-95 duration-200 hover:border-slate-300 transition-all cursor-pointer">
                         <button
                           onClick={(e) => { e.stopPropagation(); setDroppedItems((prev) => prev.filter((c) => c.name !== item.name)); }}
                           className="absolute top-2 right-2 text-slate-300 hover:text-slate-700 transition-colors z-10"
@@ -1202,8 +1239,10 @@ export default function ChatPage() {
                       </div>
                     ))
                   ) : (
-                    <div className="flex-1 flex items-center justify-center py-6">
-                      <p className="text-[11px] text-slate-200 font-medium whitespace-nowrap">여기에 드롭하세요</p>
+                    <div className="flex-1 flex items-center justify-center">
+                      <p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">
+                        관심 제품의 '+' 를 눌러<br />여기에 담아보세요
+                      </p>
                     </div>
                   )}
                 </div>
@@ -1215,3 +1254,6 @@ export default function ChatPage() {
     </div >
   );
 }
+
+
+

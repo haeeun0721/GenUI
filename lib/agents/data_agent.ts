@@ -53,23 +53,6 @@ function formatPrice(lprice: string): string {
   return `${parseInt(lprice).toLocaleString("ko-KR")}원~`;
 }
 
-/**
- * 한국어 비율이 너무 낮거나 해외 병행수입으로 판단되는 상품을 걸러냅니다.
- */
-function isKoreanProduct(item: NaverShoppingItem): boolean {
-  const title = cleanTitle(item.title);
-  const koreanChars = (title.match(/[가-힣]/g) ?? []).length;
-  const totalChars = title.replace(/\s/g, "").length;
-  const koreanRatio = totalChars > 0 ? koreanChars / totalChars : 0;
-  if (koreanRatio < 0.10) return false;
-
-  const foreignPatterns = [
-    /computadora/i, /portatil/i, /ordenador/i,
-    /laptop\s+computer/i, /\bnotebook\s+pc\b/i, /\bist\s+computer/i,
-  ];
-  return !foreignPatterns.some((p) => p.test(title));
-}
-
 // ---------------------------------------------------------------------------
 // Naver Shopping API
 // ---------------------------------------------------------------------------
@@ -87,9 +70,7 @@ async function fetchNaverShopping(
     );
   }
 
-  // 필터링 후에도 count개를 확보하기 위해 넉넉하게 요청 (최대 20개)
-  const fetchCount = Math.min(count * 3, 20);
-  const url = `https://openapi.naver.com/v1/search/shop.json?query=${encodeURIComponent(query)}&display=${fetchCount}&sort=sim`;
+  const url = `https://openapi.naver.com/v1/search/shop.json?query=${encodeURIComponent(query)}&display=${count}&sort=sim`;
 
   const response = await fetch(url, {
     headers: {
@@ -103,12 +84,7 @@ async function fetchNaverShopping(
   }
 
   const data = await response.json();
-  const allItems: NaverShoppingItem[] = data.items ?? [];
-
-  const filtered = allItems.filter(isKoreanProduct);
-  console.log(`[DATA_AGENT] Naver raw: ${allItems.length}개 → 필터 후: ${filtered.length}개 (요청: ${count}개)`);
-
-  return filtered.slice(0, count);
+  return data.items ?? [];
 }
 
 // ---------------------------------------------------------------------------
@@ -123,9 +99,14 @@ async function scrapeProductSpecs(
 
   try {
     const app = new FirecrawlApp({ apiKey });
-    const result = await app.scrape(url, { formats: ["markdown"] });
+    const result = await app.scrape(url, {
+      formats: ["markdown"],
+      waitFor: 3000,  // Naver Shopping은 JS 렌더링 페이지 — 3초 대기
+    });
     const markdown = (result as any).markdown ?? "";
-    return markdown.slice(0, 3000);
+    const trimmed = markdown.slice(0, 4000);
+    console.log(`[DATA_AGENT] Scraped ${url.slice(0, 60)}...: ${trimmed.length} chars`);
+    return trimmed;
   } catch (err) {
     console.warn(`[DATA_AGENT] Firecrawl failed for ${url}:`, err);
     return "";
@@ -137,10 +118,10 @@ async function scrapeProductSpecs(
 // ---------------------------------------------------------------------------
 
 async function extractSpecsFromPage(
-  rawTitle: string,
+  productName: string,
   pageContent: string,
   userQuery: string
-): Promise<{ shortName: string; description: string; specs: string[] }> {
+): Promise<{ description: string; specs: string[] }> {
   const contextNote = pageContent
     ? `Product page content:\n${pageContent}`
     : `(No page content available — infer from product name)`;
@@ -149,37 +130,23 @@ async function extractSpecsFromPage(
     model: google(DATA_AGENT_MODEL),
     system: `You are a product spec extraction assistant. Extract key specs from product page content and return ONLY valid JSON. No markdown, no extra text.`,
     prompt: `User is looking for: "${userQuery}"
-Raw product title from Naver: ${rawTitle}
+Product: ${productName}
 
 ${contextNote}
 
-1. Write a SHORT, clean product name (Korean, max 20 chars). Include only brand + model. Strip SEO keywords like "가벼운", "고사양", "추천", "인강용", "사무용", etc.
-   Examples:
-   - "LG 그램 프로 17 외장그래픽 RTX5050 노트북 가벼운 고사양 32GB" → "LG 그램 프로 17"
-   - "삼성전자 갤럭시북4 NT750XGR-A71A 노트북 최신형 학생용" → "삼성 갤럭시북4"
-   - "애플 맥북프로 M4 14인치 16GB 512GB 스페이스그레이" → "맥북프로 M4 14"
-2. Extract 3-4 key specs as short Korean phrases.
-3. Write a one-line Korean description.
-
+Extract 3-4 key specs as short Korean phrases, and write a one-line Korean description.
 Output format (JSON only):
-{ "shortName": "짧은 상품명", "description": "한 줄 설명", "specs": ["스펙1", "스펙2", "스펙3"] }`,
+{ "description": "한 줄 설명", "specs": ["스펙1", "스펙2", "스펙3"] }`,
     temperature: 0,
   });
 
   try {
     const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
-      return {
-        shortName: parsed.shortName || rawTitle,
-        description: parsed.description || rawTitle,
-        specs: parsed.specs || [],
-      };
-    }
+    if (jsonMatch) return JSON.parse(jsonMatch[0]);
   } catch {
     // fallback
   }
-  return { shortName: rawTitle, description: rawTitle, specs: [] };
+  return { description: productName, specs: [] };
 }
 
 // ---------------------------------------------------------------------------
@@ -195,7 +162,7 @@ async function enrichProducts(
     items.map((item) => scrapeProductSpecs(item.link))
   );
 
-  // Step 2: Extract specs + short name for each product via LLM (in parallel)
+  // Step 2: Extract specs for each product via LLM (in parallel)
   const enriched = await Promise.all(
     items.map((item, i) =>
       extractSpecsFromPage(cleanTitle(item.title), pageContents[i], userQuery)
@@ -204,7 +171,7 @@ async function enrichProducts(
 
   return items.map((item, i) => ({
     id: item.productId || `product-${i}`,
-    name: enriched[i].shortName,          // 정규화된 짧은 이름 사용
+    name: cleanTitle(item.title),
     price: formatPrice(item.lprice),
     image: item.image,
     link: item.link,
@@ -214,7 +181,6 @@ async function enrichProducts(
     specs: enriched[i].specs,
   }));
 }
-
 
 // ---------------------------------------------------------------------------
 // Data Agent Tool (exposed to Conversation Agent)
