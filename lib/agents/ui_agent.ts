@@ -24,70 +24,74 @@ Your sole task is to output a single valid JSON object that defines a UI compone
 
 ## Component Selection Rules
 
-| Category | Label                  | Required Component                                 |
-|----------|------------------------|----------------------------------------------------|
-| 1        | Attribute Exploration  | Timeline (ALWAYS)                                  |
-| 2        | Comparative Evaluation | Table (products as rows, specs as columns)         |
-| 3        | Product Recommendation | ProductCardList (one card per recommended product) |
-| 4        | Spec Interpretation    | SpecDiagnostic (slider or choice based on spec type) |
+| Category | Label                  | Required Component                                          |
+|----------|------------------------|-------------------------------------------------------------|
+| 1        | Attribute Exploration  | KnowledgeMap (ALWAYS)                                       |
+| 2        | Comparative Evaluation | Table (products as rows, specs as columns)                  |
+| 3        | Product Recommendation | ProductCardList (one card per recommended product)          |
+| 4        | Spec Interpretation    | SpecDiagnostic (slider or chip based on spec nature)        |
 
 ---
 
 ## JSON Schemas
 
-### Category 1 — Timeline
+### Category 1a — KnowledgeMap (Criteria Exploration)
+Use when the user asks about DECISION CRITERIA: what to look for, what specs matter, what to consider when buying.
 {
-  "type": "Timeline",
+  "type": "KnowledgeMap",
   "props": {
-    "turns": [
+    "categories": [
       {
-        "turn": ${turnNumber},
-        "summary": "<one-line summary of this turn's topic>",
+        "label": "<category name in Korean — short intuitive noun, e.g. a word for concepts/features/price/brand/purpose>",
         "items": [
           {
-            "name": "<attribute or criterion name>",
-            "min": "<key spec or value only — extremely concise>"
+            "name": "<attribute or criterion name in Korean>"
           }
         ]
       }
     ]
   }
 }
-- Set 'turn' exactly to ${turnNumber}.
-- Before setting 'min', identify the TYPE of criterion:
 
-  TYPE 1 — QUANTITATIVE (has a measurable threshold) → 'min' REQUIRED. Use sensible defaults if user has not specified exact values.
-    - 프로세서 / CPU     → "인텔 i7 이상 또는 AMD Ryzen 7 이상"
-    - 그래픽 카드 / GPU → "NVIDIA RTX 시리즈 이상"
-    - RAM / 메모리     → "16GB 이상"
-    - 저장 공간 / SSD  → "512GB NVMe SSD 이상"
-    - 흔대성 / 무게     → "무게: 1.5kg 이하"
-    - 디스플레이 / 화면 → "해상도: QHD 이상, 15인치 이상"
-    - 배터리 수명      → "10시간 이상"
-    - 가성비 / 가격대   → "가격: 100만원대 또는 200만원대"
-    DO NOT output vague phrases like "고려 필요", "검토 필요", "중요" — always use a concrete spec value.
+### Category 1b — ConceptCard (Concept Explanation)
+Use when the user asks WHAT something IS: definitions, how a feature works, why it exists.
+{
+  "type": "ConceptCard",
+  "props": {
+    "term": "<Korean term being explained>",
+    "summary": "<one-sentence definition in Korean, max 30 chars>",
+    "points": [
+      "<key point 1 in Korean — concise bullet>",
+      "<key point 2 in Korean — concise bullet>",
+      "<key point 3 in Korean — concise bullet (optional)>"
+    ]
+  }
+}
 
-  TYPE 2 — CATEGORICAL (list of valid options, no numeric threshold) → EXPAND into individual option chips
-    - CRITICAL: Do NOT create a single chip for the category name (e.g. DO NOT make one chip "브랜드").
-    - Instead, create ONE chip per option value that was EXPLICITLY mentioned in [DATA CONTEXT] or [INTENT SUMMARY].
-    - ONLY use values that actually appear in the conversation. Do NOT invent or add options from your training knowledge.
-    - Example: if the user said "삼성이나 LG 중에" → { "name": "삼성" }, { "name": "LG" } — nothing else.
-    - If no specific options were mentioned, create a single chip for the category name with 'min' omitted (treat as TYPE 3).
-
-  TYPE 3 — PRESENCE (feature exists or not, yes/no) → OMIT 'min' entirely
-    - 터치스크린, 방수, Thunderbolt 포트, 지문인식 등
+Rules for KnowledgeMap:
+- Group ALL chips from this conversation into meaningful categories. Do NOT use turn numbers.
+- Category labels must be short, intuitive Korean nouns.
+- Only include chips DIRECTLY mentioned or discussed in [DATA CONTEXT]. Do NOT infer or add related topics not in the conversation.
+- Each chip = one item object.
+- LABEL REUSE RULE — CRITICAL: If [DATA CONTEXT] contains [EXISTING CATEGORIES: "X", "Y", ...], you MUST reuse those exact labels for any matching category.
+  - When new chips belong to an existing category, use its EXACT label character-for-character.
+  - WRONG: existing label is "안전 기능" → you create "안전" (different → creates duplicate category)
+  - CORRECT: existing label is "안전 기능" → you reuse "안전 기능" exactly → chips merge correctly
+  - Only create a NEW category label if the new chips genuinely don't fit any existing category.
+- ATOMICITY RULE — CRITICAL: Each chip must represent EXACTLY ONE criterion. NEVER combine multiple criteria into a single chip name.
+  - WRONG: "바퀴 종류 및 서스펜션", "디자인 및 소재", "무게 및 접이 방식"
+  - CORRECT: "바퀴 종류", "서스펜션", "디자인", "소재", "무게", "접이 방식"
+  - Split on conjunctions (및, 과/와, and) and slashes (/). If a name contains these, create a separate chip for each part.
 
 ### Category 2 — Table
 {
   "type": "Table",
   "props": {
     "columns": [
-      { "key": "product", "label": "<product name column label>" },
+      { "key": "product", "label": "<product name column label in Korean>" },
       {
         "key": "<spec_key>",
-        "label": "<spec column label>",
-        "relevance": "<high|medium|low>",
-        "relevanceNote": "<one short Korean phrase explaining why this matters or doesn't for this user>"
+        "label": "<spec column label in Korean>"
       }
     ],
     "data": [
@@ -98,37 +102,31 @@ Your sole task is to output a single valid JSON object that defines a UI compone
     }
   }
 }
-- Include one column per comparable spec in "columns". Only include specs that appear in the [DATA CONTEXT] for at least one product.
-- Include one row per product in "data". ALWAYS use values from [DATA CONTEXT] (Specs / Description fields) first.
-  - If a spec is missing from [DATA CONTEXT] for a product, use your training knowledge about that specific model to fill it in.
-  - NEVER put "-" or leave a field blank for well-known Korean laptop/electronics brands (Samsung, LG, Apple, Lenovo, Dell, HP, ASUS, etc.) — you know their specs.
-  - Only use "-" if the product is completely obscure and you have zero knowledge of its specs.
-  - Examples of specs you should know from training: 무게 (weight in kg), 디스플레이 (screen size/panel), 프로세서 (CPU model), RAM, 저장공간 (storage), 그래픽 카드 (GPU), 배터리 수명 (battery hours).
-- CRITICAL: ALWAYS include "_link" in EVERY data row. Copy the value EXACTLY from the "Link:" line of that product in [DATA CONTEXT]. Do NOT omit or leave it empty. This field is required for live spec fetching when users add new comparison columns.
-- IMPORTANT: If the conversation context contains [CRITERIA: ...] or [My items: ...], also include each criterion's value in every row using the criterion name exactly as the key. Do NOT add criteria to "columns".
-- "winners": ALWAYS include this field. However, determine winners based on the user's PURPOSE stated in [INTENT SUMMARY], NOT purely by objective spec values.
-  - First, identify which specs are MOST RELEVANT to the user's use case (e.g., gaming → GPU/CPU matter; budget → price matters; portability → weight/battery matters).
-  - Only mark a winner for specs that are directly relevant to the user's stated purpose.
-  - For specs where all values are equal, or where the spec is NOT relevant to the user's purpose, omit that key from "winners" entirely.
-  - Example: if user wants "게이밍 노트북", set winners only for GPU and CPU columns — NOT for price unless explicitly requested.
-  - Example: if user wants "가성비", set winners only for the price column.
-  - This makes the winner highlight meaningful for unfamiliar users who need to know which spec matters FOR THEIR GOAL.
+- Include one column per comparable spec. Only include specs in [DATA CONTEXT] for at least one product.
+- Include one row per product. Fill EVERY cell following this strict priority order:
 
-- "relevance" + "relevanceNote" on each column: classify every spec column (NOT the product name column) based on the user's use case from [INTENT SUMMARY].
-  - "high"   → This spec is a deciding factor for this user's specific purpose. The user should pay close attention.
-    Example notes: "영상 편집에 필수", "외출이 잦다면 핵심", "게이밍 성능의 핵심"
-  - "medium" → Relevant but unlikely to be the deciding factor between these options.
-    Example notes: "참고 가능", "보조적 기준"
-  - "low"    → For this user's use case, the difference in this spec is unlikely to matter.
-    Example notes: "이 용도엔 큰 차이 없음", "재택 사용엔 무관", "두 제품 모두 충분"
-  - IMPORTANT: Apply genuine context reasoning, NOT just spec size.
-    - If the user is a student doing document work, RAM 16GB vs 32GB → "low" (both sufficient)
-    - If the user is a gamer, GPU → "high"; battery → "low"
-    - If both products have similar values, lean toward "low"
-  - Always include relevanceNote in Korean (5-15 characters, concise phrase).
-  - For "low" relevance where both/all products are adequate, PREFER phrases like "두 제품 모두 충분", "세 제품 모두 충분" etc. (using the actual count at table generation time). The UI will automatically update the count when products are added later.
-  - Avoid vague phrases like "큰 차이 없음" when you can say "두 제품 모두 충분" instead.
+  **Cell value priority (apply in order, stop at first match):**
+  1. **DetailedSpecs** in [DATA CONTEXT] — scraped from Danawa detail page. Most accurate. Search using the Korean spec key name.
+  2. **RawSpecs** in [DATA CONTEXT] — full spec string from Danawa listing page.
+  3. **Specs** in [DATA CONTEXT] — summary spec list.
+  4. **LLM training knowledge** — if not found in any Danawa source above, fill using your own knowledge of this product model. Append **(추정)** to the value to indicate it is AI-estimated, not scraped. Example: "5.8kg (추정)"
+  5. **"-"** — use ONLY if you genuinely have zero knowledge of this spec for this product.
 
+  **Rules:**
+  - ALWAYS try Danawa sources first (1→2→3). Only use LLM knowledge (4) when all Danawa sources are exhausted.
+  - When using LLM knowledge, ALWAYS append (추정) — this is mandatory for research transparency.
+  - Do NOT invent implausible values. If uncertain between two values, use "-" instead.
+  - Keep values concise (e.g. "5.8kg", "가능", "없음", "4바퀴 독립 서스펜션").
+  - **NEVER** output "정보 없음", "알 수 없음", "—", "N/A", or any similar phrase. Use "-" as the only allowed empty marker.
+
+
+- CRITICAL: ALWAYS include "_link" in EVERY data row. Copy EXACTLY from [DATA CONTEXT]. Required for live spec fetching.
+- IMPORTANT: If context contains [DECISION CRITERIA: ...], include a value for each criterion in every data row (use the criterion name as the key). These are SUPPLEMENTAL — do NOT use them as the primary source for "columns". The "columns" array must come from Danawa scraped specs in [DATA CONTEXT].
+- "winners": ALWAYS include this field. ALWAYS set it to an empty object {}.
+  - Do NOT attempt to determine or infer winners. Winner determination is the sole responsibility
+    of the Comparison Agent (/api/evaluate-winners), which runs after the Table renders.
+  - Correct: "winners": {}
+  - Wrong:   "winners": {"weight": "제품 A"}  ← never do this
 
 ### Category 3 — ProductCardList
 {
@@ -142,79 +140,87 @@ Your sole task is to output a single valid JSON object that defines a UI compone
         "price": "<price>",
         "imageUrl": "<image URL from [DATA CONTEXT] — copy exactly as provided>",
         "link": "<product link URL from [DATA CONTEXT]>",
-        "specs": ["<contextualized spec 1>", "<contextualized spec 2>"]
+        "specs": ["<contextualized spec in Korean 1>", "<contextualized spec in Korean 2>"]
       }
     ]
   }
 }
 - Include ALL recommended products inside the 'cards' array.
-- ALWAYS copy imageUrl, link, and brand from the [DATA CONTEXT] if available. Do NOT generate or guess URLs.
-- specs: 2-3 items MAX. Do NOT copy raw technical values (e.g., "Intel i7-1360P", "16GB LPDDR5"). Instead, translate into short Korean phrases that reflect meaning for the user's context (e.g., "영상 편집 가능한 성능", "하루 종일 쓸 수 있는 배터리"). Raw numbers or model codes are NOT allowed in specs.
+- ALWAYS copy imageUrl and link from [DATA CONTEXT] exactly. Do NOT generate or guess URLs.
+- brand: Extract from [DATA CONTEXT] in this priority order:
+  1. Use the explicit brand/maker field if present.
+  2. Extract the FIRST meaningful word(s) from the product name that identifies the brand.
+  3. If completely unidentifiable, use the seller/store name.
+  4. NEVER leave brand as an empty string "". Always provide a value.
+- specs: 2-3 items MAX. Translate into short Korean phrases reflecting meaning for the user's context. Raw numbers or model codes are NOT allowed.
 - Do NOT include description or rating fields.
 
 ### Category 4 — SpecDiagnostic
 
 Think step by step before generating the JSON:
-1. Identify the spec being evaluated (e.g., 배터리, RAM, 저장공간).
-2. Choose inputType:
-   - "slider" → time-based consumption specs (battery: how many hours per task?)
-   - "chip"   → concurrent resource specs (RAM/CPU: which apps do you run together?)
-3. Fill in realistic items for the spec:
-   - slider: list 3-5 typical tasks the user would do, with their watt consumption
-   - chip: list 4-6 common apps relevant to the usage context, with their GB usage
-4. Set capacity/totalCapacity from the actual product spec value.
-5. Write a good verdict threshold and messages in Korean.
 
-// inputType: "slider" example — battery (배터리 75Wh)
+1. Identify the spec being evaluated, its numeric value, and its unit.
+
+2. Infer TWO threshold values that divide the spec into three meaningful zones:
+   - thresholdLow: the minimum spec value that is "just enough" for typical use. Below this = insufficient.
+   - thresholdHigh: the spec value at which "more won't help much" for typical use. Above this = excess.
+   Base thresholds on real-world domain knowledge, NOT on the product's own value.
+
+3. Determine which zone the product falls into:
+   - productValue < thresholdLow  → "부족해요" zone (red)
+   - thresholdLow ≤ productValue ≤ thresholdHigh → "충분해요" zone (green)
+   - productValue > thresholdHigh → "여유로워요" zone (blue)
+
+4. For EACH of the three zones, write a DETAILED Korean tooltip explaining:
+   - Write 3-5 sentences. Be thorough — not a one-liner.
+   - Start with what practically happens at that spec level, using the user's SPECIFIC context (pet breed, home size, use frequency, etc.).
+   - Give concrete real-world consequences: what can/cannot be cleaned, what breaks down, what trade-offs appear.
+   - Use **bold** (wrap key phrases in double asterisks like **이런 표현**) to highlight the most important conclusion or trade-off.
+   - Do NOT use generic phrases like "충분합니다" or "적합합니다" alone — explain WHY with specifics.
+   - Example quality (for 흡입력, user has 2 pets):
+     zoneLow tooltip: "일반 먼지나 머리카락은 흡입하지만, 카펫에 박힌 동물 털이나 바닥에 떨어진 무거운 사료 알갱이, 고양이 모래 등을 완벽히 빨아들이기엔 힘이 부족합니다. **2마리 이상의 털을 감당하기엔 손이 많이 갈 수 있습니다.**"
+     zoneMid tooltip: "바닥 먼지는 물론, 반려동물의 미세한 털과 사료 알갱이까지 시원하게 흡입할 수 있는 **가장 이상적인 구간**입니다. 마루바닥이나 매트 위에서도 충분한 성능을 발휘합니다."
+     zoneHigh tooltip: "최근 출시되는 플래그십 모델들은 10,000 Pa을 넘기도 합니다. 흡입력이 강할수록 좋긴 하지만, 그만큼 **소음이 매우 커지고 가격이 비싸집니다**. 청소기 소음에 예민한 반려동물이라면 스트레스를 받을 수 있어 무조건 높다고 좋은 것은 아닙니다."
+
+5. Write contextSummary: a SHORT Korean noun phrase (max 12 chars) summarizing the user's relevant purchase context from [USER CONTEXT].
+   - The component auto-selects 을/를 and 은/는 based on Korean phonology, so contextSummary and specUnit do NOT need to include the particle.
+   - The component will render: "{contextSummary}[을/를] 고려했을때 {specName} {value}{unit}[은/는] {zone}"
+   - Example outputs:
+     - "반려동물 있는 가정을 고려했을때 바퀴 크기 17cm는 충분해요"
+     - "공원 산책이 잦은 분을 고려했을때 흡입력 6,000Pa는 여유로워요"
+   - Examples of contextSummary values: "공원 산책이 잦은 분", "반려동물 있는 가정", "30평 아파트 거주자", "신생아 있는 가정"
+   - If no [USER CONTEXT] is available, set contextSummary to "".
+
+// EXAMPLE — SpecDiagnostic schema
 {
   "type": "SpecDiagnostic",
   "props": {
-    "inputType": "slider",
-    "title": "배터리 75Wh - 디자인 작업으로 하루 몇 시간 버틸 수 있을까?",
-    "question": "하루에 각 작업을 얼마나 해요?",
-    "items": [
-      { "name": "Figma/일러스트", "weight": 12 },
-      { "name": "Photoshop",     "weight": 18 },
-      { "name": "레퍼런스/유튜브", "weight": 7 },
-      { "name": "화상회의/Slack", "weight": 10 }
-    ],
-    "capacity": 75,
-    "totalCapacity": null,
-    "capacityUnit": null,
-    "sliderMax": 8,
-    "verdictGoodThreshold": 6,
-    "verdictGoodMessage": "충전 없이 충분히 사용 가능합니다.",
-    "verdictWarningMessage": "외출 시 충전기를 챙기세요."
+    "contextSummary": "<short Korean noun phrase from [USER CONTEXT], e.g. '공원 산책이 잦은 분'>",
+    "specName": "<spec name in Korean>",
+    "specUnit": "<unit string, e.g. Pa / mAh / L / kg / cm>",
+    "productValue": <numeric spec value>,
+    "productLabel": "검색한 수치",
+    "thresholdLow": <numeric: minimum acceptable value for typical use>,
+    "thresholdHigh": <numeric: value beyond which gains are marginal>,
+    "zoneLow": {
+      "label": "부족해요",
+      "tooltip": "<Korean: why this range is insufficient FOR THIS USER — mention their specific context from [USER CONTEXT]>"
+    },
+    "zoneMid": {
+      "label": "충분해요",
+      "tooltip": "<Korean: why this range is adequate FOR THIS USER — mention their specific context from [USER CONTEXT]>"
+    },
+    "zoneHigh": {
+      "label": "여유로워요",
+      "tooltip": "<Korean: why this is more than needed FOR THIS USER — mention trade-offs like cost/noise>"
+    }
   }
 }
-
-// inputType: "chip" example — RAM (32GB)
-{
-  "type": "SpecDiagnostic",
-  "props": {
-    "inputType": "chip",
-    "title": "RAM 32GB — 내 작업에 얼마나 남을까?",
-    "question": "평소에 같이 키우는 앱을 골라보세요",
-    "items": [
-      { "name": "크롬 (다수)", "weight": 4 },
-      { "name": "Figma",       "weight": 6 },
-      { "name": "Photoshop",   "weight": 8 },
-      { "name": "Premiere Pro","weight": 12 },
-      { "name": "Notion",      "weight": 2 }
-    ],
-    "capacity": null,
-    "totalCapacity": 32,
-    "capacityUnit": "GB",
-    "sliderMax": null,
-    "verdictGoodThreshold": 0.8,
-    "verdictGoodMessage": "작업 환경 쾌적",
-    "verdictWarningMessage": "메모리 부족 예상"
-  }
-}
-- For slider: verdictGoodThreshold = minimum acceptable expected hours.
-- For chip: verdictGoodThreshold = maximum acceptable RAM usage ratio (0~1).
-- title must include the spec value (e.g., "75Wh", "32GB").
-- ALL text must be in Korean.
+- contextSummary: extract from [USER CONTEXT]. If no context exists, use empty string "".
+- Do NOT include a "title" field — the component generates the title automatically from contextSummary + specName + productValue + zone.
+- ALL user-visible text (contextSummary, question, tooltips, labels) MUST be in Korean.
+- thresholdLow and thresholdHigh MUST be based on domain knowledge, NOT derived from productValue.
+- Tooltips must reference the user's specific situation from [USER CONTEXT] — not generic statements.
 
 ---
 
@@ -232,12 +238,24 @@ export async function generateUISpec(
   context: string,
   intentSummary: string = "",
   category: number | null = null,
-  turnNumber: number = 1
+  turnNumber: number = 1,
+  userContext: string = ""
 ): Promise<string> {
+  // Only inject user context for categories that benefit from personalization.
+  // Category 1 (KnowledgeMap) and 3 (ProductCardList) should respond based on
+  // general domain knowledge, not the user's onboarding context.
+  const contextRelevantCategories = [2, 4];
+  const shouldInjectUserContext = userContext && category !== null && contextRelevantCategories.includes(category);
+
+  const userContextSection = shouldInjectUserContext
+    ? `\n[USER CONTEXT — Onboarding purchase intent & situation]\n${userContext}\nThis is the user's actual purchase context from onboarding. For Category 2: use this as the PRIMARY basis for selecting relevant columns and assigning winners. For Category 4: read this carefully to pre-select chip items that match the user's actual situation, or pre-fill slider starting values.\n`
+    : "";
+
+
   const prompt = `
 [INTENT SUMMARY]
 ${intentSummary} (Category: ${category})
-
+${userContextSection}
 [TURN NUMBER]
 ${turnNumber}
 

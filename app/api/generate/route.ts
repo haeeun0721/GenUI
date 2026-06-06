@@ -8,7 +8,7 @@ import {
 } from "ai";
 import { SPEC_DATA_PART_TYPE } from "@json-render/core";
 import { headers } from "next/headers";
-import { initSidePanelStore, popSidePanelResults, setCurrentRequestId, initChatUIStore, popChatUIResults } from "@/lib/tools/sidebar-store";
+import { initSidePanelStore, popSidePanelResults, setCurrentRequestId, initChatUIStore, popChatUIResults, setCurrentUserContext } from "@/lib/tools/sidebar-store";
 
 export const maxDuration = 60;
 
@@ -56,7 +56,31 @@ export async function POST(req: Request) {
   initSidePanelStore(requestId);
   initChatUIStore(requestId);
 
-  const modelMessages = await convertToModelMessages(uiMessages);
+  // Extract USER CONTEXT directly from the latest user message (bypasses LLM)
+  const latestUserMsg = [...uiMessages].reverse().find(m => m.role === "user");
+  const latestText = latestUserMsg?.parts
+    ?.filter((p: any) => p.type === "text")
+    .map((p: any) => p.text)
+    .join("") ?? "";
+  const userContextMatch = latestText.match(/\[USER CONTEXT:\s*([^\]]+)\]/);
+  setCurrentUserContext(userContextMatch ? userContextMatch[1].trim() : "");
+
+  // Strip [USER CONTEXT: ...] from all user messages before passing to the agent.
+  // The agent should NOT see it — only the tools (via currentUserContext store) use it.
+  // This prevents Category 1 responses from being personalized by onboarding data.
+  const USER_CONTEXT_PATTERN = /\n{0,2}\[USER CONTEXT:[^\]]+\]/g;
+  const sanitizedMessages: typeof uiMessages = uiMessages.map(msg => {
+    if (msg.role !== "user") return msg;
+    return {
+      ...msg,
+      parts: msg.parts.map((p: any) => {
+        if (p.type !== "text") return p;
+        return { ...p, text: p.text.replace(USER_CONTEXT_PATTERN, "") };
+      }),
+    };
+  });
+
+  const modelMessages = await convertToModelMessages(sanitizedMessages);
   console.log(`[Route] Turn ${uiMessages.length} | requestId: ${requestId.slice(0, 10)} | messages: ${uiMessages.length}`);
 
   const result = await agent.stream({ messages: modelMessages });

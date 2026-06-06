@@ -1,7 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { generateUISpec } from "../agents/ui_agent";
-import { currentRequestId, pushChatUIResult } from "./sidebar-store";
+import { currentRequestId, pushChatUIResult, currentUserContext } from "./sidebar-store";
 
 export const renderInChat = tool({
     description:
@@ -21,7 +21,7 @@ export const renderInChat = tool({
     execute: async ({ ui_context, intent_summary, ui_intent_category }) => {
         console.log(`[Tool: renderInChat] Requesting inline spec for category ${ui_intent_category}: ${intent_summary}`);
         try {
-            const uiSpecString = await generateUISpec(ui_context, intent_summary, ui_intent_category, 1);
+            const uiSpecString = await generateUISpec(ui_context, intent_summary, ui_intent_category, 1, currentUserContext);
             console.log("[Tool: renderInChat] Raw Spec String:", uiSpecString);
 
             if (uiSpecString && !uiSpecString.startsWith("ERROR:")) {

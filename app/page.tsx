@@ -24,6 +24,7 @@ import {
   Pencil,
   X,
   ChevronDown,
+  Heart,
 } from "lucide-react";
 import { Streamdown } from "streamdown";
 import { code } from "@streamdown/code";
@@ -188,20 +189,22 @@ const MessageBubble = memo(({
   isLast: boolean;
   isStreaming: boolean;
   bindings: {
-    onItemAdd?: (name: string, image?: string, price?: string, description?: string, specs?: string[]) => void;
+    onItemAdd?: (name: string, image?: string, price?: string, description?: string, specs?: string[], link?: string) => void;
     onCompareRequested?: (products: string[]) => void;
     savedItems?: any[];
     droppedCriteria?: any[];
     onRequestCriteriaData?: (criteriaName: string, products: string[]) => void;
     onAddMyItemsToTable?: (currentProducts: string[], newItems: string[]) => void;
     isLatestMessage?: boolean;
+    userContext?: string;
+    onItemRemove?: (name: string) => void;
   };
   highlightTerm?: string | null;
   highlightTurn?: number | null;
   isFollowUp?: boolean;
   turns?: number[];
 }) => {
-  const { onItemAdd, onCompareRequested, savedItems, droppedCriteria, onRequestCriteriaData, onAddMyItemsToTable } = bindings;
+  const { onItemAdd, onCompareRequested, savedItems, droppedCriteria, onRequestCriteriaData, onAddMyItemsToTable, userContext } = bindings;
   const isUser = message.role === "user";
   const bubbleRef = useRef<HTMLDivElement>(null);
 
@@ -221,8 +224,8 @@ const MessageBubble = memo(({
             if (parsedSpec.root && parsedSpec.elements && parsedSpec.elements[parsedSpec.root]) {
               effectiveSpec = parsedSpec.elements[parsedSpec.root];
             }
-            const isTimeline = effectiveSpec.type === "Timeline";
-            if (!isTimeline) {
+            const isKnowledgeMap = effectiveSpec.type === "KnowledgeMap" || effectiveSpec.type === "Timeline";
+            if (!isKnowledgeMap) {
               sidePanelSpecs.push(parsedSpec);
             }
           }
@@ -249,8 +252,8 @@ const MessageBubble = memo(({
         subSegments.forEach(seg => {
           if (seg.kind === 'spec') {
             const spec = seg.content;
-            const isTimeline = spec?.type === "Timeline" || (spec?.root && spec?.elements?.[spec.root]?.type === "Timeline");
-            if (!isTimeline) result.push({ kind: "spec", content: spec });
+            const isKnowledgeMap = spec?.type === "KnowledgeMap" || spec?.type === "Timeline" || (spec?.root && spec?.elements?.[spec.root]?.type === "KnowledgeMap") || (spec?.root && spec?.elements?.[spec.root]?.type === "Timeline");
+            if (!isKnowledgeMap) result.push({ kind: "spec", content: spec });
           } else {
             const last = result[result.length - 1];
             if (last?.kind === "text") last.content += seg.content;
@@ -366,7 +369,9 @@ const MessageBubble = memo(({
 
     const userText = rawText
       .split(/\n{1,2}\[CONTEXT:/)[0]
-      .replace(/\[CRITERIA:(.*?)\]/gs, (_, criteria) => `[Decision Criteria : ${criteria.trim()}] `)
+      .replace(/\n{1,2}\[DECISION CRITERIA:[\s\S]*?\]/g, "")
+      .replace(/\n{1,2}\[USER CONTEXT:.*?\]/gs, "")
+      .replace(/\n{1,2}\[ASSIGNED ITEM:.*?\]/gs, "")
       .trim();
 
     return (
@@ -416,7 +421,7 @@ const MessageBubble = memo(({
               <ExplorerRenderer
                 spec={seg.content}
                 loading={isLast && isStreaming}
-                bindings={{ onItemAdd, onCompareRequested, savedItems, isFollowUp, droppedCriteria, onRequestCriteriaData, onAddMyItemsToTable, isLatestMessage: isLast }}
+                bindings={{ onItemAdd, onCompareRequested, savedItems, isFollowUp, droppedCriteria, onRequestCriteriaData, onAddMyItemsToTable, isLatestMessage: isLast, userContext }}
               />
             </div>
           );
@@ -458,15 +463,18 @@ export default function ChatPage() {
   const [input, setInput] = useState("");
   const [hasStarted, setHasStarted] = useState(false);
   const [participantId, setParticipantId] = useState("");
+  const [userContext, setUserContext] = useState("");
+  const [assignedItem, setAssignedItem] = useState<"A" | "B" | "">("");
   const [droppedCriteria, setDroppedCriteria] = useState<{ name: string; min?: string; priority: string }[]>([]);
   const [searchCriteria, setSearchCriteria] = useState<{ name: string; min?: string; priority: string }[]>([]);
-  const [droppedItems, setDroppedItems] = useState<{ name: string; image?: string; price?: string; description?: string; specs?: string[] }[]>([]);
-  const [mentionChips, setMentionChips] = useState<{ name: string }[]>([]);
+  const [droppedItems, setDroppedItems] = useState<{ name: string; image?: string; price?: string; description?: string; specs?: string[]; link?: string }[]>([]);
+  const [mentionChips, setMentionChips] = useState<{ name: string; link?: string }[]>([]);
   const [editingCriteriaIdx, setEditingCriteriaIdx] = useState<number | null>(null);
   const [editingMinText, setEditingMinText] = useState("");
   const [openPriorityIdx, setOpenPriorityIdx] = useState<number | null>(null);
   const [highlightTerm, setHighlightTerm] = useState<string | null>(null);
   const [highlightTurn, setHighlightTurn] = useState<number | null>(null);
+  const [journeyTab, setJourneyTab] = useState<"criteria" | "information">("criteria");
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -477,6 +485,18 @@ export default function ChatPage() {
 
   const { messages, sendMessage, setMessages, status, error } =
     useChat<AppMessage>({ transport });
+
+  const resetSession = useCallback(() => {
+    setMessages([]);
+    setDroppedItems([]);
+    setDroppedCriteria([]);
+    setSearchCriteria([]);
+    setMentionChips([]);
+    setHighlightTerm(null);
+    setHighlightTurn(null);
+    setInput("");
+    setHasStarted(false);
+  }, [setMessages]);
 
   useEffect(() => {
     const latestMessage = messages[messages.length - 1];
@@ -567,7 +587,7 @@ export default function ChatPage() {
         : "";
 
       const mentionPrefix = mentionChips.length > 0
-        ? `[My items : ${mentionChips.map(c => c.name).join(", ")}] `
+        ? `[My items : ${mentionChips.map(c => c.link ? `${c.name}|${c.link}` : c.name).join(", ")}] `
         : "";
 
       const cartContext = droppedItems.length > 0
@@ -575,14 +595,22 @@ export default function ChatPage() {
         : "";
 
       const savedCriteriaContext = droppedCriteria.length > 0
-        ? `\n\n[CONTEXT: User has these Decision Criteria saved (when generating a Table, include values for each of these in every data row using the criterion name exactly as the key): ${droppedCriteria.map((c: any) => `${c.name}${c.min ? ` (${c.min})` : ''}`).join(', ')}]`
+        ? `\n\n[DECISION CRITERIA: The user has saved these as personal decision criteria: ${droppedCriteria.map((c: any) => `${c.name}${c.min ? ` (${c.min})` : ''}`).join(', ')}. When generating a Table, include a value for each of these criteria in every data row (use the criterion name as the key). Do NOT replace or skip the normal Danawa-based spec columns — these criteria are supplemental row data, not the primary column source.]`
         : '';
+
+      const userContextTag = userContext.trim()
+        ? `\n\n[USER CONTEXT: ${userContext.trim()}]`
+        : "";
+
+      const assignedItemTag = assignedItem
+        ? `\n\n[ASSIGNED ITEM: ${assignedItem}]`
+        : "";
 
       setSearchCriteria([]);
       setMentionChips([]);
-      await sendMessage({ text: visibleCriteria + mentionPrefix + message.trim() + criteriaContext + savedCriteriaContext + cartContext });
+      await sendMessage({ text: visibleCriteria + mentionPrefix + message.trim() + criteriaContext + savedCriteriaContext + cartContext + userContextTag + assignedItemTag });
     },
-    [input, isStreaming, sendMessage, droppedItems, droppedCriteria, searchCriteria, mentionChips],
+    [input, isStreaming, sendMessage, droppedItems, droppedCriteria, searchCriteria, mentionChips, userContext],
   );
 
   const handleKeyDown = useCallback(
@@ -595,16 +623,23 @@ export default function ChatPage() {
     [handleSubmit],
   );
 
-  const handleAddItem = useCallback((name: string, image?: string, price?: string, description?: string, specs?: string[]) => {
+  const handleAddItem = useCallback((name: string, image?: string, price?: string, description?: string, specs?: string[], link?: string) => {
     if (name && !droppedItems.some(item => item.name === name)) {
-      setDroppedItems((prev) => [...prev, { name, image, price, description, specs }]);
+      setDroppedItems((prev) => [...prev, { name, image, price, description, specs, link }]);
     }
   }, [droppedItems]);
 
-  const insertMention = useCallback((name: string) => {
-    setMentionChips(prev => prev.some(c => c.name === name) ? prev : [...prev, { name }]);
-    inputRef.current?.focus();
+  const handleRemoveItem = useCallback((name: string) => {
+    setDroppedItems((prev) => prev.filter(item => item.name !== name));
   }, []);
+
+  const insertMention = useCallback((name: string) => {
+    // Look up the link from droppedItems so the agent can scrape directly
+    const savedItem = droppedItems.find(item => item.name === name);
+    const link = savedItem?.link;
+    setMentionChips(prev => prev.some(c => c.name === name) ? prev : [...prev, { name, link }]);
+    inputRef.current?.focus();
+  }, [droppedItems]);
 
   const handleCompare = useCallback(
     (products: string[]) => {
@@ -706,10 +741,10 @@ export default function ChatPage() {
   }, [messages]);
 
   const sidebarSpec = useMemo(() => {
-    let combinedTurns: any[] = [];
-    let combinedItems: any[] = [];
-    let latestTimelineSpec: any = null;
+    let latestKnowledgeMapSpec: any = null;
     let latestOtherSpec: any = null;
+    const conceptCards: any[] = [];
+    const seenTerms = new Set<string>();
 
     allSpecs.forEach((raw) => {
       let spec = raw;
@@ -723,52 +758,77 @@ export default function ChatPage() {
         effectiveSpec = spec.elements[spec.root];
       }
 
-      if (effectiveSpec.type === "Timeline") {
+      if (effectiveSpec.type === "ConceptCard") {
+        const term = effectiveSpec.props?.term;
+        if (term && !seenTerms.has(term)) {
+          seenTerms.add(term);
+          conceptCards.push(effectiveSpec.props);
+        }
+      } else if (effectiveSpec.type === "KnowledgeMap" || effectiveSpec.type === "Timeline") {
         const props = effectiveSpec.props || effectiveSpec;
-        const turns = Array.isArray(props.turns) ? props.turns : [];
-        turns.forEach((turn: any) => {
-          if (!turn) return;
-          let turnNum = typeof turn.turn === "number" ? turn.turn : parseInt(String(turn.turn), 10);
-          if (isNaN(turnNum)) return;
-          // If this turn number already exists, assign the next available number
-          // (happens when ui_agent returns turn:1 on follow-up questions)
-          while (combinedTurns.findIndex((t) => t.turn === turnNum) > -1) {
-            turnNum++;
-          }
-          combinedTurns.push({ ...turn, turn: turnNum });
-        });
 
-        const items = Array.isArray(props.items) ? props.items : [];
-        items.forEach((item: any) => {
-          if (!item || !item.name) return;
-          const existingIdx = combinedItems.findIndex((i) => i.name === item.name);
-          if (existingIdx > -1) combinedItems[existingIdx] = { ...combinedItems[existingIdx], ...item };
-          else combinedItems.push(item);
-        });
+        // KnowledgeMap: merge categories by label
+        if (effectiveSpec.type === "KnowledgeMap") {
+          const newCategories: any[] = Array.isArray(props.categories) ? props.categories : [];
+          const merged: any[] = latestKnowledgeMapSpec?.props?.categories ?? [];
 
-        latestTimelineSpec = {
-          ...effectiveSpec,
-          type: "Timeline",
-          props: {
-            ...(effectiveSpec.props || effectiveSpec),
-            turns: combinedTurns.length > 0 ? [...combinedTurns].sort((a, b) => a.turn - b.turn) : undefined,
-            items: combinedItems.length > 0 ? [...combinedItems] : undefined
-          }
-        };
+          newCategories.forEach((cat: any) => {
+            const existingIdx = merged.findIndex((c: any) => c.label === cat.label);
+            if (existingIdx > -1) {
+              // Merge items by name
+              const existingItems: any[] = merged[existingIdx].items ?? [];
+              const newItems: any[] = cat.items ?? [];
+              newItems.forEach((item: any) => {
+                if (!existingItems.some((i: any) => i.name === item.name)) {
+                  existingItems.push(item);
+                } else {
+                  // Update existing item
+                  const idx = existingItems.findIndex((i: any) => i.name === item.name);
+                  existingItems[idx] = { ...existingItems[idx], ...item };
+                }
+              });
+              merged[existingIdx] = { ...merged[existingIdx], items: existingItems };
+            } else {
+              merged.push({ ...cat });
+            }
+          });
+
+          latestKnowledgeMapSpec = {
+            type: "KnowledgeMap",
+            props: { categories: merged }
+          };
+
+          // Legacy Timeline support: convert to KnowledgeMap format
+        } else if (effectiveSpec.type === "Timeline") {
+          const turns = Array.isArray(props.turns) ? props.turns : [];
+          const merged: any[] = latestKnowledgeMapSpec?.props?.categories ?? [];
+
+          turns.forEach((turn: any) => {
+            const label = turn.summary || `대화 ${turn.turn}`;
+            const items = Array.isArray(turn.items) ? turn.items : [];
+            const existingIdx = merged.findIndex((c: any) => c.label === label);
+            if (existingIdx > -1) {
+              items.forEach((item: any) => {
+                if (!merged[existingIdx].items.some((i: any) => i.name === item.name)) {
+                  merged[existingIdx].items.push(item);
+                }
+              });
+            } else {
+              merged.push({ label, items });
+            }
+          });
+
+          latestKnowledgeMapSpec = {
+            type: "KnowledgeMap",
+            props: { categories: merged }
+          };
+        }
       } else {
         latestOtherSpec = spec;
       }
     });
 
-    const lastRawSpec = allSpecs[allSpecs.length - 1];
-    let lastSpecType = "";
-    if (lastRawSpec) {
-      try {
-        const parsed = typeof lastRawSpec === "string" ? JSON.parse(lastRawSpec) : lastRawSpec;
-        lastSpecType = parsed?.type || "";
-      } catch { }
-    }
-    return latestTimelineSpec;
+    return { knowledgeMap: latestKnowledgeMapSpec, conceptCards };
   }, [allSpecs]);
 
   const scrollToTurn = useCallback((turnNumber: number, textToHighlight?: string) => {
@@ -856,16 +916,18 @@ export default function ChatPage() {
 
   const bubbleBindings = useMemo(() => ({
     onItemAdd: handleAddItem,
+    onItemRemove: handleRemoveItem,
     onCompareRequested: handleCompare,
     savedItems: droppedItems,
     droppedCriteria: droppedCriteria,
+    userContext,
     onRequestCriteriaData: (criteriaName: string, products: string[]) => {
-      handleSubmit(`?�에??비교??${products.join(', ')} ?�품?�의 "${criteriaName}" ??�� 값을 ?�함?�서 비교?��? ?�시 만들?�줘.`);
+      handleSubmit(`지금 비교 중인 ${products.join(', ')} 제품의 "${criteriaName}" 관련 값을 포함해서 비교표를 다시 만들어줘.`);
     },
     onAddMyItemsToTable: (currentProducts: string[], newItems: string[]) => {
-      handleSubmit(`${[...currentProducts, ...newItems].join(', ')} ?�품?�을 비교?�줘. ?�전 비교 ??��?�을 모두 ?��??�면?????�품???�함?�서 비교?��? 만들?�줘.`);
+      handleSubmit(`${[...currentProducts, ...newItems].join(', ')} 제품을 비교해줘. 이전 비교 기준을 모두 유지하면서 추가 제품을 포함해서 비교표를 만들어줘.`);
     },
-  }), [handleAddItem, handleCompare, droppedItems, droppedCriteria, handleSubmit]);
+  }), [handleAddItem, handleRemoveItem, handleCompare, droppedItems, droppedCriteria, userContext, handleSubmit]);
 
   if (!hasStarted) {
     return (
@@ -878,15 +940,54 @@ export default function ChatPage() {
 
           {/* Participant ID */}
           <div className="flex flex-col gap-3">
-            <label className="text-[13px] font-semibold text-slate-500 uppercase tracking-widest">참가자ID</label>
+            <label className="text-[13px] font-semibold text-slate-900 uppercase tracking-widest">참가자ID</label>
             <input
               type="text"
               value={participantId}
               onChange={(e) => setParticipantId(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter" && participantId.trim()) setHasStarted(true); }}
-              placeholder="P001"
-              className="w-full border border-slate-200 rounded-2xl px-5 py-4 text-[18px] font-medium text-slate-800 placeholder:text-slate-300 outline-none focus:border-slate-400 transition-colors bg-[#FAFAFA]"
+              placeholder="P1"
+              className="w-full border border-slate-200 rounded-[8px] px-5 py-4 text-[18px] font-medium text-slate-800 placeholder:text-slate-300 outline-none focus:border-slate-400 transition-colors bg-[#FAFAFA]"
               autoFocus
+            />
+          </div>
+
+          {/* Assigned item */}
+          <div className="flex flex-col gap-3">
+            <label className="text-[13px] font-semibold text-slate-900 uppercase tracking-widest">배정받은 아이템</label>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => setAssignedItem("A")}
+                className={`flex-1 py-4 rounded-[8px] text-[15px] font-semibold border transition-all duration-200 ${assignedItem === "A"
+                  ? "bg-slate-900 text-white border-slate-900"
+                  : "bg-[#FAFAFA] text-slate-400 border-slate-200 hover:border-slate-400 hover:text-slate-600"
+                  }`}
+              >
+                유모차
+              </button>
+              <button
+                type="button"
+                onClick={() => setAssignedItem("B")}
+                className={`flex-1 py-4 rounded-[8px] text-[15px] font-semibold border transition-all duration-200 ${assignedItem === "B"
+                  ? "bg-slate-900 text-white border-slate-900"
+                  : "bg-[#FAFAFA] text-slate-400 border-slate-200 hover:border-slate-400 hover:text-slate-600"
+                  }`}
+              >
+                로봇 청소기
+              </button>
+            </div>
+          </div>
+
+          {/* User context */}
+          <div className="flex flex-col gap-3">
+            <label className="text-[13px] font-semibold text-slate-900 uppercase tracking-widest">구매 목적 및 상황</label>
+            <textarea
+              value={userContext}
+              onChange={(e) => setUserContext(e.target.value)}
+              placeholder="예: 외출이 잦고 혼자 다녀요. 가볍고 휴대하기 편한 게 중요해요."
+              rows={3}
+              className="w-full border border-slate-200 rounded-[8px] px-5 py-4 text-[15px] font-medium text-slate-800 placeholder:text-slate-300 outline-none focus:border-slate-400 transition-colors bg-[#FAFAFA] resize-none leading-relaxed"
             />
           </div>
 
@@ -894,7 +995,7 @@ export default function ChatPage() {
           <button
             onClick={() => { if (participantId.trim()) setHasStarted(true); }}
             disabled={!participantId.trim()}
-            className="w-full py-4 rounded-2xl bg-slate-900 text-white text-[16px] font-semibold tracking-tight hover:bg-black active:scale-[0.98] transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+            className="w-full py-4 rounded-[8px] bg-slate-900 text-white text-[16px] font-semibold tracking-tight hover:bg-black active:scale-[0.98] transition-all disabled:opacity-30 disabled:cursor-not-allowed"
           >
             시작하기
           </button>
@@ -907,32 +1008,114 @@ export default function ChatPage() {
   return (
     <div className="h-screen flex flex-col w-full overflow-hidden bg-white">
       {/* Full-width white header */}
-      <div className="shrink-0 bg-white border-b border-[#E5DED7] px-8 py-4 flex items-center">
-        <h1 className="text-[22px] font-bold text-slate-900 tracking-tight leading-tight">GenSpace</h1>
+      <div className="shrink-0 bg-white border-b border-[#E5DED7] px-8 py-4 flex items-center justify-between">
+        <button
+          type="button"
+          onClick={() => resetSession()}
+          className="text-[22px] font-bold text-slate-900 tracking-tight leading-tight hover:text-slate-600 transition-colors cursor-pointer"
+        >
+          GenSpace
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            if (window.confirm("세션을 종료하고 처음 화면으로 돌아가시겠습니까?")) {
+              resetSession();
+            }
+          }}
+          className="px-4 py-2 rounded-[8px] text-[13px] font-semibold border border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300 transition-all duration-200"
+        >
+          끝내기
+        </button>
       </div>
 
       <div className="flex-1 flex justify-center w-full overflow-hidden bg-white">
         <div className="flex w-full max-w-[1800px] h-full overflow-hidden gap-16">
-          <aside className="w-[440px] h-full p-4 pt-6 pb-6 flex-shrink-0 bg-transparent z-10 flex flex-col">
-            <div className="flex-1 flex flex-col min-h-0 bg-white border border-[#E5E5E5] rounded-[8px] p-6">
-              <div className="flex flex-col gap-1 mb-2 flex-shrink-0">
-                <>
-                  <p className="text-[12px] font-black text-slate-600 tracking-widest uppercase"> 📚 Decision Journey </p>
-                </>
+          <aside className="w-[470px] self-start max-h-[calc(100vh-6rem)] p-4 pt-6 pb-6 flex-shrink-0 bg-transparent z-10 flex flex-col">
+            <div className="flex flex-col min-h-0 bg-white border border-[#E5E5E5] rounded-[8px] p-6">
+              {/* Panel header */}
+              <div className="flex items-center justify-between mb-4 flex-shrink-0 border-b border-slate-100 pb-3">
+                <p className="text-[11px] font-black text-slate-600 tracking-widest uppercase whitespace-nowrap">📚 Exploration Journey</p>
+
+                {/* Criteria / Information segment control */}
+                <div className="flex items-center bg-[#F0F0F0] rounded-[8px] p-[3px] gap-[2px]">
+                  <button
+                    type="button"
+                    onClick={() => setJourneyTab("criteria")}
+                    className={`px-3 py-1.5 rounded-[6px] text-[11px] font-semibold transition-all duration-200 ${journeyTab === "criteria"
+                      ? "bg-white text-slate-800 shadow-sm"
+                      : "text-slate-400 hover:text-slate-600"
+                      }`}
+                  >
+                    Criteria
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setJourneyTab("information")}
+                    className={`px-3 py-1.5 rounded-[6px] text-[11px] font-semibold transition-all duration-200 ${journeyTab === "information"
+                      ? "bg-white text-slate-800 shadow-sm"
+                      : "text-slate-400 hover:text-slate-600"
+                      }`}
+                  >
+                    Information
+                  </button>
+                </div>
               </div>
-              <div className="flex-1 overflow-y-auto styled-scrollbar mt-2 pr-1">
-                {sidebarSpec ? (
-                  <ExplorerRenderer
-                    spec={sidebarSpec}
-                    bindings={sidebarBindings}
-                  />
-                ) : (
-                  <div className="flex flex-col items-center justify-center h-full gap-2 py-12">
-                    <p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">
-                      대화를 시작하면<br />여기에 탐색 기록이 쌓여요
-                    </p>
-                  </div>
-                )}
+
+              <div className="flex-1 overflow-y-auto styled-scrollbar pr-1">
+                {/* Criteria tab — always mounted to preserve collapsed state */}
+                <div className={journeyTab === "criteria" ? "" : "hidden"}>
+                  {sidebarSpec.knowledgeMap ? (
+                    <ExplorerRenderer
+                      spec={sidebarSpec.knowledgeMap}
+                      bindings={sidebarBindings}
+                    />
+                  ) : (
+                    <div className="flex flex-col items-center justify-center h-full gap-2 py-12">
+                      <p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">
+                        대화를 시작하면<br />여기에 탐색 기록이 쌓여요
+                      </p>
+                    </div>
+                  )}
+                </div>
+                {/* Information tab — always mounted to preserve scroll */}
+                <div className={journeyTab === "information" ? "" : "hidden"}>
+                  {sidebarSpec.conceptCards.length > 0 ? (
+                    <div className="flex flex-col gap-3 py-1">
+                      {sidebarSpec.conceptCards.map((card: any, i: number) => (
+                        <div
+                          key={`${card.term}-${i}`}
+                          className="border border-slate-200 rounded-[8px] p-4 bg-white animate-chip-in"
+                          style={{ animationDelay: `${i * 0.08}s` }}
+                        >
+                          <div className="flex items-start justify-between gap-2 mb-2">
+                            <span className="text-[13px] font-bold text-slate-900">{card.term}</span>
+                          </div>
+                          <p className="text-[12px] text-slate-500 mb-3 leading-relaxed">{card.summary}</p>
+                          {Array.isArray(card.points) && card.points.length > 0 && (
+                            <ul className="flex flex-col gap-1.5">
+                              {card.points.map((pt: string, j: number) => (
+                                <li
+                                  key={j}
+                                  className="flex items-start gap-2 text-[12px] text-slate-700"
+                                >
+                                  <span className="mt-[5px] w-1 h-1 rounded-full bg-slate-400 flex-shrink-0" />
+                                  {pt}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center h-full gap-2 py-12">
+                      <p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">
+                        개념 질문을 하면<br />여기에 설명이 쌓여요
+                      </p>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </aside>
@@ -943,7 +1126,7 @@ export default function ChatPage() {
               ref={scrollContainerRef}
               className="flex-1 overflow-y-auto px-8 pb-6 no-scrollbar scroll-smooth"
             >
-              <div className="max-w-4xl mx-auto space-y-12 pb-32 pt-8">
+              <div className="max-w-6xl mx-auto space-y-12 pb-32 pt-8">
                 {messages.map((m, idx) => {
                   // Hide internal system prompt turns from the user
                   const isSystemPrompt = m.role === "user" && m.parts.some(p => p.type === "text" && p.text.includes("[SYSTEM: CUMULATIVE COMPARISON]"));
@@ -1118,7 +1301,7 @@ export default function ChatPage() {
                 <div className="flex items-center justify-between">
                   <p className="text-[12px] font-black text-slate-600 tracking-widest uppercase"> 🎯 DECISION CRITERIA</p>
                   {droppedCriteria.length > 0 && (
-                    <span className="text-[12px] font-normal text-slate-300">{droppedCriteria.length}개</span>
+                    <span className="text-[12px] font-normal text-slate-300">({droppedCriteria.length})</span>
                   )}
                 </div>
                 <div className="flex flex-col gap-3 flex-1">
@@ -1159,11 +1342,7 @@ export default function ChatPage() {
                               />
                             ) : (
                               <span
-                                className="text-[10px] text-slate-500 font-medium select-none truncate hover:text-slate-700 transition-colors"
-                                onClick={() => {
-                                  setEditingCriteriaIdx(i);
-                                  setEditingMinText(criterion.min || "");
-                                }}
+                                className="text-[10px] text-slate-500 font-medium select-none truncate"
                                 title={criterion.min || "입력"}
                               >
                                 {criterion.min || "입력"}
@@ -1206,7 +1385,7 @@ export default function ChatPage() {
                 <div className="flex items-center justify-between">
                   <p className="text-[12px] font-black text-slate-600 tracking-widest uppercase"> 📦 MY ITEMS</p>
                   {droppedItems.length > 0 && (
-                    <span className="text-[12px] font-normal text-slate-300">{droppedItems.length}개</span>
+                    <span className="text-[12px] font-normal text-slate-300">({droppedItems.length})</span>
                   )}
                 </div>
                 <div className="flex flex-col gap-2 flex-1">
@@ -1221,7 +1400,7 @@ export default function ChatPage() {
                         </button>
 
                         {/* Thumbnail */}
-                        <div className="w-12 h-12 rounded-xl bg-slate-50 border border-slate-100 flex items-center justify-center flex-shrink-0 overflow-hidden">
+                        <div className="w-12 h-12 rounded-[4px] bg-slate-50 border border-slate-100 flex items-center justify-center flex-shrink-0 overflow-hidden">
                           {item.image ? (
                             <img src={item.image} alt={item.name} className="w-full h-full object-cover" />
                           ) : (
@@ -1240,8 +1419,15 @@ export default function ChatPage() {
                     ))
                   ) : (
                     <div className="flex-1 flex items-center justify-center">
-                      <p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">
-                        관심 제품의 '+' 를 눌러<br />여기에 담아보세요
+                      <p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed flex flex-col items-center gap-1">
+                        <span className="flex items-center gap-1.5">
+                          관심 제품의
+                          <span className="inline-flex items-center justify-center w-[20px] h-[20px] rounded-full bg-slate-300/60">
+                            <Heart className="w-[10px] h-[10px] text-white" fill="white" strokeWidth={0} />
+                          </span>
+                          를 눌러
+                        </span>
+                        <span>여기에 담아보세요</span>
                       </p>
                     </div>
                   )}

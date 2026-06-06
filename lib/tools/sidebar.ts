@@ -5,7 +5,7 @@ import { currentRequestId, pushSidePanelResult } from "./sidebar-store";
 
 export const renderToSidebar = tool({
     description:
-        "Render a UI component (like a Timeline) to the persistent left sidebar. Use this for the 'Decision Journey' (Timeline) when identifying criteria, comparing products, or interpreting specs. \n\n## sidePanel Tool Arguments\n- intent_summary: Brief summary of the current user goal in English.\n- ui_intent_category: 1 (Exploration), 2 (Comparison), or 3 (Interpretation).\n- turn_number: The current turn number. Increment this by 1 for each NEW tool call you make in this conversation. Look at the history to determine the next number.\n- ui_context: Detailed summary of the criteria, products, or specs discussed.",
+        "Render a UI component to the persistent left sidebar. Use this for the 'Decision Journey' (KnowledgeMap) when identifying criteria, comparing products, or interpreting specs. \n\n## sidePanel Tool Arguments\n- intent_summary: Brief summary of the current user goal in English.\n- ui_intent_category: 1 (Exploration), 2 (Comparison), or 3 (Interpretation).\n- turn_number: The current turn number. Increment this by 1 for each NEW tool call you make in this conversation. Look at the history to determine the next number.\n- ui_context: Detailed summary of ALL criteria, products, or specs discussed so far (not just this turn).",
     inputSchema: z.object({
         ui_context: z.string().describe("Detailed summary of the data and context to be visualized."),
         intent_summary: z.string().describe("Brief description of the user's intent."),
@@ -51,24 +51,22 @@ export const renderToSidebar = tool({
             }
             
             return {
-                type: "Timeline",
+                type: "KnowledgeMap",
                 props: {
-                    turns: [{
-                        turn: 1,
-                        summary: uiSpecString.startsWith("ERROR:") ? uiSpecString : "의사결정 프로세스 시작",
-                        items: [{ name: "기본 사양", priority: "high" }]
+                    categories: [{
+                        label: "탐색 시작",
+                        items: [{ name: "기본 사항" }]
                     }]
                 }
             };
         } catch (err) {
             console.error("[Tool: sidePanel] Parsing Error:", err);
             return {
-                type: "Timeline",
+                type: "KnowledgeMap",
                 props: {
-                    turns: [{
-                        turn: 1,
-                        summary: `JSON 파싱 오류: ${err instanceof Error ? err.message : String(err)}`,
-                        items: [{ name: "데이터 형식 오류", priority: "low" }]
+                    categories: [{
+                        label: "오류",
+                        items: [{ name: `파싱 오류: ${err instanceof Error ? err.message : String(err)}` }]
                     }]
                 }
             };

@@ -48,3 +48,9 @@ export let currentRequestId = "";
 export function setCurrentRequestId(id: string) {
   currentRequestId = id;
 }
+
+/** The user context collected from onboarding – passed directly to UI Agent. */
+export let currentUserContext = "";
+export function setCurrentUserContext(ctx: string) {
+  currentUserContext = ctx;
+}
