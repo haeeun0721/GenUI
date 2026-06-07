@@ -98,8 +98,12 @@ Rules for KnowledgeMap:
       { "product": "<product name>", "_link": "<product link URL — copy the EXACT value from the 'Link:' field in [DATA CONTEXT]>", "<spec_key>": "<value>" }
     ],
     "winners": {
-      "<spec_key>": "<product name that wins this spec>"
-    }
+      "<spec_key>": "<winning product name — exact match from data rows>"
+    },
+    "rationale": {
+      "<spec_key>": "<one-sentence Korean explanation of why this product wins FOR THIS USER>"
+    },
+    "relevantColumns": ["<spec_key>", "..."]
   }
 }
 - Include one column per comparable spec. Only include specs in [DATA CONTEXT] for at least one product.
@@ -119,14 +123,41 @@ Rules for KnowledgeMap:
   - Keep values concise (e.g. "5.8kg", "가능", "없음", "4바퀴 독립 서스펜션").
   - **NEVER** output "정보 없음", "알 수 없음", "—", "N/A", or any similar phrase. Use "-" as the only allowed empty marker.
 
-
 - CRITICAL: ALWAYS include "_link" in EVERY data row. Copy EXACTLY from [DATA CONTEXT]. Required for live spec fetching.
-- IMPORTANT: If context contains [DECISION CRITERIA: ...], include a value for each criterion in every data row (use the criterion name as the key). These are SUPPLEMENTAL — do NOT use them as the primary source for "columns". The "columns" array must come from Danawa scraped specs in [DATA CONTEXT].
-- "winners": ALWAYS include this field. ALWAYS set it to an empty object {}.
-  - Do NOT attempt to determine or infer winners. Winner determination is the sole responsibility
-    of the Comparison Agent (/api/evaluate-winners), which runs after the Table renders.
-  - Correct: "winners": {}
-  - Wrong:   "winners": {"weight": "제품 A"}  ← never do this
+- IMPORTANT: If context contains [DECISION CRITERIA: ...], do NOT add these as table columns or data row keys. Base all columns exclusively on Danawa scraped specs from [DATA CONTEXT]. Use Decision Criteria ONLY as context when evaluating winners in the Three-Step Winner Evaluation above.
+
+- After filling all cells, apply the THREE-STEP WINNER EVALUATION for each spec column (all columns except the first "product" column):
+
+  Step 1 — User Relevance (VERY STRICT)
+  Ask TWO questions in order. BOTH must be YES to pass:
+
+  Q1. "Can I quote a specific word or phrase from [USER CONTEXT] that directly explains why this spec matters?"
+  - You must cite the exact phrase (e.g. "user said '신생아'" / "user said '혼자 다님'").
+  - If you cannot cite a specific phrase → FAIL immediately.
+
+  Q2. "Would this spec matter LESS to a random buyer who does NOT have this user's specific context?"
+  - If the answer is NO (it matters equally to anyone) → FAIL.
+  - Price, brand, weight, battery life etc. are almost always generic unless the user explicitly called them out.
+
+  HARD CAP: relevantColumns must contain AT MOST 2 entries total.
+  - If more than 2 columns pass Q1+Q2, keep only the 2 most directly tied to [USER CONTEXT].
+  - If [USER CONTEXT] is empty → relevantColumns: [], winners: {}.
+
+  Step 2 — Meaningful Difference
+  Ask: "Do the product values create a real, practical difference for this user?"
+  - If all values are identical, missing, or "-" → no winner for this column.
+  - Marginal numerical differences that don't affect real-world use → no winner.
+  - Only proceed if the difference is large enough to actually influence this user's decision.
+
+  Step 3 — Winner Selection (only if Steps 1 AND 2 both pass)
+  - Add the spec_key to "relevantColumns".
+  - Select the product that best serves this user's specific need on this spec.
+  - Add its exact product name to "winners" and a one-sentence Korean rationale to "rationale".
+  - Product name in "winners" MUST be copied character-for-character from the "product" field in "data".
+
+- "winners": include ONLY columns where all 3 steps passed. Use {} if none qualify.
+- "rationale": one key per winner, one sentence in Korean explaining WHY for this user.
+- "relevantColumns": list every spec_key that passed Step 1, even if no winner was assigned.
 
 ### Category 3 — ProductCardList
 {
@@ -248,7 +279,7 @@ export async function generateUISpec(
   const shouldInjectUserContext = userContext && category !== null && contextRelevantCategories.includes(category);
 
   const userContextSection = shouldInjectUserContext
-    ? `\n[USER CONTEXT — Onboarding purchase intent & situation]\n${userContext}\nThis is the user's actual purchase context from onboarding. For Category 2: use this as the PRIMARY basis for selecting relevant columns and assigning winners. For Category 4: read this carefully to pre-select chip items that match the user's actual situation, or pre-fill slider starting values.\n`
+    ? `\n[USER CONTEXT — Onboarding purchase intent & situation]\n${userContext}\nThis is the user's actual purchase context from onboarding. For Category 2: use this as the PRIMARY basis for selecting relevant columns, assigning winners, and writing rationale in the Three-Step Winner Evaluation. For Category 4: read this carefully to pre-select chip items that match the user's actual situation, or pre-fill slider starting values.\n`
     : "";
 
 

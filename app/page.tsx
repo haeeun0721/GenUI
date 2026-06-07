@@ -595,7 +595,7 @@ export default function ChatPage() {
         : "";
 
       const savedCriteriaContext = droppedCriteria.length > 0
-        ? `\n\n[DECISION CRITERIA: The user has saved these as personal decision criteria: ${droppedCriteria.map((c: any) => `${c.name}${c.min ? ` (${c.min})` : ''}`).join(', ')}. When generating a Table, include a value for each of these criteria in every data row (use the criterion name as the key). Do NOT replace or skip the normal Danawa-based spec columns — these criteria are supplemental row data, not the primary column source.]`
+        ? `\n\n[DECISION CRITERIA: The user has saved these as personal evaluation criteria: ${droppedCriteria.map((c: any) => `${c.name}${c.min ? ` (${c.min})` : ''}`).join(', ')}. Do NOT add these as table columns or data row keys — the user can add them via the Table's Column filter UI at any time. Use these criteria ONLY as context when evaluating winners in the Three-Step Winner Evaluation.]`
         : '';
 
       const userContextTag = userContext.trim()

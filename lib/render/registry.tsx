@@ -830,7 +830,7 @@ export const manualRegistry: Record<string, any> = {
     const rows: Record<string, any>[] = Array.isArray(p.data) ? p.data : [];
     const [winners, setWinners] = useState<Record<string, string>>(p.winners ?? {});
     const [rationale, setRationale] = useState<Record<string, string>>(p.rationale ?? {});
-    const [relevantColumns, setRelevantColumns] = useState<string[]>([]);
+    const [relevantColumns, setRelevantColumns] = useState<string[]>(Array.isArray(p.relevantColumns) ? p.relevantColumns : []);
 
     // Sync winners with prop — p.winners arrives after streaming completes
     useEffect(() => {
@@ -848,7 +848,9 @@ export const manualRegistry: Record<string, any> = {
     // invocation sees initialEvalFiredRef.current === true and skips evaluation.
     const initialEvalFiredRef = useRef(false);
     useEffect(() => {
-      if (rows.length > 0 && !initialEvalFiredRef.current) {
+      // Skip initial evaluation if UI Agent already provided winners
+      const hasUIAgentWinners = p.winners && Object.keys(p.winners).length > 0;
+      if (rows.length > 0 && !initialEvalFiredRef.current && !hasUIAgentWinners) {
         initialEvalFiredRef.current = true;
         reevaluateWinners({}, rows, { triggerType: 'initial' });
       }
@@ -1414,8 +1416,9 @@ export const manualRegistry: Record<string, any> = {
                     `${currentNum} 제품`
                   );
 
+                  const isRelevant = ci > 0 && relevantColumns.includes(col.key);
                   return (
-                    <th key={col.key} className="text-left text-[11px] font-semibold text-slate-400 tracking-wide uppercase px-3 py-2.5 whitespace-nowrap">
+                    <th key={col.key} className={`text-left text-[11px] font-semibold tracking-wide uppercase px-3 py-2.5 whitespace-nowrap ${isRelevant ? 'text-emerald-600 bg-emerald-50/60' : 'text-slate-400'}`}>
                       <span>{col.label}</span>
                     </th>
                   );
@@ -1425,11 +1428,14 @@ export const manualRegistry: Record<string, any> = {
             <tbody>
               {visibleRows.map((row, i) => (
                 <tr key={i} className="border-b border-slate-50 hover:bg-slate-50/50 transition-colors">
-                  {visibleColumns.map((col, ci) => (
-                    <td key={col.key} className={`px-3 py-2.5 text-slate-700 ${ci === 0 ? 'font-semibold text-slate-900' : 'font-normal'}`}>
-                      {renderCell(row, col, ci)}
-                    </td>
-                  ))}
+                  {visibleColumns.map((col, ci) => {
+                    const isCellRelevant = ci > 0 && relevantColumns.includes(col.key);
+                    return (
+                      <td key={col.key} className={`px-3 py-2.5 text-slate-700 ${ci === 0 ? 'font-semibold text-slate-900' : 'font-normal'} ${isCellRelevant ? 'bg-emerald-50/60' : ''}`}>
+                        {renderCell(row, col, ci)}
+                      </td>
+                    );
+                  })}
                 </tr>
               ))}
             </tbody>

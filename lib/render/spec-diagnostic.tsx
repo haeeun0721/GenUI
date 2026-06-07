@@ -171,7 +171,7 @@ export function SpecDiagnostic({ allProps }: { allProps: any }) {
                   style={{ left: `${arrowPct}%`, top: '-5px', zIndex: 1 }}
                 />
                 {/* Card — sits on top of arrow bottom half */}
-                <div className="relative bg-white rounded-2xl border border-slate-200 shadow-[0_8px_30px_rgba(0,0,0,0.1)] px-5 py-4" style={{ zIndex: 2 }}>
+                <div className="relative bg-white rounded-2xl border border-slate-200 shadow-[0_2px_8px_rgba(0,0,0,0.06)] px-5 py-4" style={{ zIndex: 2 }}>
                   <div className="flex items-center gap-2 mb-3">
                     <span className={`w-2 h-2 rounded-full shrink-0 ${tc.dot}`} />
                     <span className={`text-[13px] font-black tracking-tight ${tc.label}`}>{tooltipInfo.label}</span>
