@@ -26,6 +26,9 @@ import {
   X,
   ChevronDown,
   Heart,
+  GripVertical,
+  PanelRight,
+  PanelLeft,
 } from "lucide-react";
 import { Streamdown } from "streamdown";
 import { code } from "@streamdown/code";
@@ -510,10 +513,18 @@ const InformationCardItem = memo(({ card, index }: { card: any, index: number })
 export default function ChatPage() {
 
   const [input, setInput] = useState("");
-  const [hasStarted, setHasStarted] = useState(false);
-  const [participantId, setParticipantId] = useState("");
-  const [userContext, setUserContext] = useState("");
-  const [assignedItem, setAssignedItem] = useState<"A" | "B" | "">("");
+  const [hasStarted, setHasStarted] = useState(() =>
+    typeof window !== 'undefined' && localStorage.getItem('gs_hasStarted') === 'true'
+  );
+  const [participantId, setParticipantId] = useState(() =>
+    typeof window !== 'undefined' ? (localStorage.getItem('gs_participantId') ?? '') : ''
+  );
+  const [userContext, setUserContext] = useState(() =>
+    typeof window !== 'undefined' ? (localStorage.getItem('gs_userContext') ?? '') : ''
+  );
+  const [assignedItem, setAssignedItem] = useState<"A" | "B" | "">(() =>
+    typeof window !== 'undefined' ? ((localStorage.getItem('gs_assignedItem') as "A" | "B" | "") ?? '') : ''
+  );
   const [droppedCriteria, setDroppedCriteria] = useState<{ name: string; min?: string; priority: string; important?: boolean }[]>([]);
   const [searchCriteria, setSearchCriteria] = useState<{ name: string; min?: string; priority: string }[]>([]);
   const [droppedItems, setDroppedItems] = useState<{ name: string; image?: string; price?: string; description?: string; specs?: string[]; link?: string }[]>([]);
@@ -534,6 +545,63 @@ export default function ChatPage() {
   const [dismissedUncharted, setDismissedUncharted] = useState<Set<string>>(new Set());
   const prevTableTurnRef = useRef<number>(-1);
 
+  // Panel resize state
+  const [leftWidth, setLeftWidth] = useState(300);
+  const [rightWidth, setRightWidth] = useState(300);
+  const [rightTopHeight, setRightTopHeight] = useState(300);
+  const [farRightWidth, setFarRightWidth] = useState(280);
+  const [compTableWidth, setCompTableWidth] = useState(320);
+  const [compTableCollapsed, setCompTableCollapsed] = useState(false);
+  const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
+  const [productCardListSpec, setProductCardListSpec] = useState<any>(null);
+  const pointerDragRef = useRef<{ type: 'col-l' | 'col-r' | 'col-ct' | 'col-ol' | 'col-or' | 'col-fr' | 'row'; startX: number; startY: number; startVal: number; containerH: number } | null>(null);
+  const rightColumnRef = useRef<HTMLDivElement>(null);
+
+  // Panel slot state
+  type PanelId = 'exploration' | 'chat' | 'criteria' | 'options' | 'optionList' | 'compTable';
+  type SlotId = 'left' | 'center' | 'rightTop' | 'rightBottom' | 'farRight' | 'compTableSlot';
+  const [panelSlots, setPanelSlots] = useState<Record<SlotId, PanelId>>({
+    left: 'exploration', center: 'chat', rightTop: 'criteria', rightBottom: 'options', farRight: 'optionList', compTableSlot: 'compTable',
+  });
+  const [panelDragging, setPanelDragging] = useState<PanelId | null>(null);
+  const [panelDropTarget, setPanelDropTarget] = useState<SlotId | null>(null);
+
+  const getSlotOf = (panelId: PanelId): SlotId =>
+    (Object.entries(panelSlots).find(([, p]) => p === panelId)?.[0] as SlotId) ?? 'left';
+
+  const swapPanels = (draggedPanel: PanelId, targetSlot: SlotId) => {
+    setPanelSlots(prev => {
+      const fromSlot = (Object.entries(prev).find(([, p]) => p === draggedPanel)?.[0] as SlotId);
+      const displaced = prev[targetSlot];
+      return { ...prev, [fromSlot]: displaced, [targetSlot]: draggedPanel };
+    });
+  };
+
+  const gripHandle = (panelId: PanelId) => (
+    <div
+      draggable
+      onDragStart={(e) => { e.stopPropagation(); setPanelDragging(panelId); e.dataTransfer.setData('application/x-panel', panelId); e.dataTransfer.effectAllowed = 'move'; }}
+      onDragEnd={() => { setPanelDragging(null); setPanelDropTarget(null); }}
+      className="cursor-grab active:cursor-grabbing p-1 rounded hover:bg-slate-100 transition-colors flex-shrink-0"
+      title="드래그하여 패널 이동"
+    >
+      <GripVertical className="w-3.5 h-3.5 text-slate-300 hover:text-slate-500" />
+    </div>
+  );
+
+  const slotDropProps = (slotId: SlotId) => ({
+    onDragOver: (e: React.DragEvent) => {
+      if (!e.dataTransfer.types.includes('application/x-panel')) return;
+      e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setPanelDropTarget(slotId);
+    },
+    onDragLeave: (e: React.DragEvent) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setPanelDropTarget(null); },
+    onDrop: (e: React.DragEvent) => {
+      const pid = e.dataTransfer.getData('application/x-panel') as PanelId;
+      if (pid && pid !== panelSlots[slotId]) { e.preventDefault(); e.stopPropagation(); swapPanels(pid, slotId); }
+      setPanelDragging(null); setPanelDropTarget(null);
+    },
+  });
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
@@ -545,6 +613,10 @@ export default function ChatPage() {
     useChat<AppMessage>({ transport });
 
   const resetSession = useCallback(() => {
+    localStorage.removeItem('gs_hasStarted');
+    localStorage.removeItem('gs_participantId');
+    localStorage.removeItem('gs_userContext');
+    localStorage.removeItem('gs_assignedItem');
     setMessages([]);
     setDroppedItems([]);
     setDroppedCriteria([]);
@@ -555,6 +627,16 @@ export default function ChatPage() {
     setInput("");
     setHasStarted(false);
   }, [setMessages]);
+
+  // 세션 상태 localStorage 자동 저장
+  useEffect(() => {
+    localStorage.setItem('gs_hasStarted', String(hasStarted));
+    if (hasStarted) {
+      localStorage.setItem('gs_participantId', participantId);
+      localStorage.setItem('gs_userContext', userContext);
+      localStorage.setItem('gs_assignedItem', assignedItem);
+    }
+  }, [hasStarted, participantId, userContext, assignedItem]);
 
   useEffect(() => {
     const latestMessage = messages[messages.length - 1];
@@ -620,6 +702,7 @@ export default function ChatPage() {
     }
   }, [input]);
 
+
   const scrollToBottom = useCallback(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
@@ -657,10 +740,10 @@ export default function ChatPage() {
 
       const savedCriteriaContext = droppedCriteria.length > 0
         ? `\n\n[DECISION CRITERIA: ${droppedCriteria.map((c: any) => {
-            const levelMap: Record<string, string> = { high: "중요", medium: "보통", low: "낮음" };
-            const priorityLabel = levelMap[c.importanceLevel] || "보통";
-            return `${c.name}${c.min ? ` (입력: ${c.min})` : ''} [${priorityLabel}]`;
-          }).join(', ')}]`
+          const levelMap: Record<string, string> = { high: "중요", medium: "보통", low: "낮음" };
+          const priorityLabel = levelMap[c.importanceLevel] || "보통";
+          return `${c.name}${c.min ? ` (입력: ${c.min})` : ''} [${priorityLabel}]`;
+        }).join(', ')}]`
         : '';
 
       const userContextTag = userContext.trim()
@@ -924,12 +1007,12 @@ export default function ChatPage() {
   const hasComparison = useMemo(() => messages.some(m => {
     // 1. Check raw text JSON blocks
     if (m.parts?.some(p => p.type === "text" && /"type"\s*:\s*"(Table|ComparisonSelector)"/i.test(p.text))) return true;
-    
+
     // 2. Check injected UI specs (data-chat-ui-spec)
     if (m.parts?.some((p: any) => p.type === "data-chat-ui-spec" && (p.data?.type === "Table" || p.data?.type === "ComparisonSelector"))) return true;
-    
+
     // 3. Check tool invocations directly
-    if ((m as any).toolInvocations?.some((ti: any) => 
+    if ((m as any).toolInvocations?.some((ti: any) =>
       ti.toolName === "renderInChat" && ti.args?.ui_intent_category === "2"
     )) return true;
 
@@ -955,19 +1038,19 @@ export default function ChatPage() {
       try {
         const productCategory = assignedItem === "A" ? "유모차" : assignedItem === "B" ? "로봇 청소기" : "소비재";
         const criteriaNames = droppedCriteria.map(c => c.name);
-        
+
         const res = await fetch("/api/unexplored-areas", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ 
-            existingCategories: existingLabels, 
-            productCategory, 
-            droppedCriteria: criteriaNames 
+          body: JSON.stringify({
+            existingCategories: existingLabels,
+            productCategory,
+            droppedCriteria: criteriaNames
           }),
         });
-        
+
         if (!isMounted) return;
-        
+
         if (res.ok) {
           const data = await res.json();
           if (data.labels && data.labels.length > 0) {
@@ -1139,6 +1222,20 @@ export default function ChatPage() {
     },
   }), [handleAddItem, handleRemoveItem, handleCompare, droppedItems, droppedCriteria, userContext, handleSubmit]);
 
+  // Option List 패널: data-option-list-spec 스트림 파트에서 최신 spec 추출
+  useEffect(() => {
+    let latestSpec: any = null;
+    for (const msg of messages) {
+      if (msg.role !== 'assistant') continue;
+      for (const part of (msg.parts ?? []) as any[]) {
+        if ((part as any).type === 'data-option-list-spec' && (part as any).data) {
+          latestSpec = (part as any).data;
+        }
+      }
+    }
+    setProductCardListSpec(latestSpec);
+  }, [messages]);
+
   if (!hasStarted) {
     return (
       <div className="h-screen w-full flex items-center justify-center bg-[#FFFFFF]">
@@ -1215,10 +1312,168 @@ export default function ChatPage() {
   }
 
 
+  // ── Panel render functions ────────────────────────────────────────────
+  const renderExploration = () => (
+    <div className="flex flex-col h-full p-6 overflow-hidden">
+      <div className="flex items-center justify-between mb-4 flex-shrink-0 border-b border-slate-100 pb-3">
+        <div className="flex items-center gap-2">
+          {gripHandle('exploration')}
+          <p className="text-[12.5px] font-black text-slate-600 tracking-widest uppercase whitespace-nowrap">🧭 Exploration Journey</p>
+        </div>
+        <div className="flex items-center bg-[#F1F3F5] rounded-full p-[3px] border border-black/[0.02] shadow-inner shadow-slate-200/50">
+          <button type="button" onClick={() => setJourneyTab("criteria")} className={`px-4 py-1.5 rounded-full text-[12px] font-medium transition-all duration-200 ${journeyTab === "criteria" ? "bg-white text-slate-800 shadow-[0_1px_4px_rgba(0,0,0,0.08)] border border-black/[0.04]" : "text-slate-400 hover:text-slate-600"}`}>Criteria</button>
+          <button type="button" onClick={() => setJourneyTab("information")} className={`px-4 py-1.5 rounded-full text-[12px] font-medium transition-all duration-200 ${journeyTab === "information" ? "bg-white text-slate-800 shadow-[0_1px_4px_rgba(0,0,0,0.08)] border border-black/[0.04]" : "text-slate-400 hover:text-slate-600"}`}>Information</button>
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto styled-scrollbar pr-1">
+        <div className={journeyTab === "criteria" ? "" : "hidden"}>
+          {unchartedSpec && unchartedSpec.labels.length > 0 && (<div className="mb-3">{manualRegistry.UnchartedTerritoryChip({ props: { labels: unchartedSpec.labels, onExplore: (label: string) => { handleSubmit(`'${label}'을(를) 판단할 수 있는 세부 기준들을 알고 싶어`); setDismissedUncharted(prev => { const next = new Set(prev); next.add(label); return next; }); setUnchartedSpec(prev => prev ? { labels: prev.labels.filter(l => l !== label) } : null); } } })}</div>)}
+          {sidebarSpec.CriteriaMap ? (<ExplorerRenderer spec={sidebarSpec.CriteriaMap} bindings={sidebarBindings} />) : (<div className="flex flex-col items-center justify-center h-full gap-2 py-12"><p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">대화를 시작하면<br />여기에 탐색 기록이 쌓여요</p></div>)}
+        </div>
+        <div className={journeyTab === "information" ? "" : "hidden"}>
+          {sidebarSpec.conceptCards.length > 0 ? (<div className="flex flex-col gap-3 py-1">{sidebarSpec.conceptCards.map((card: any, i: number) => (<InformationCardItem key={`${card.term}-${i}`} card={card} index={i} />))}</div>) : (<div className="flex flex-col items-center justify-center h-full gap-2 py-12"><p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">개념 질문을 하면<br />여기에 설명이 쌓여요</p></div>)}
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderChat = () => (
+    <div className="flex flex-col flex-1 overflow-hidden relative">
+      <div className="flex-shrink-0 flex items-center px-3 py-1 border-b border-slate-50">{gripHandle('chat')}</div>
+      <main ref={scrollContainerRef} className="flex-1 overflow-y-auto px-8 pb-6 no-scrollbar scroll-smooth">
+        <div className="max-w-2xl mx-auto space-y-12 pb-8 pt-8">
+          {messages.map((m, idx) => {
+            const isSystemPrompt = m.role === "user" && m.parts.some(p => p.type === "text" && (p as any).text?.includes("[SYSTEM: CUMULATIVE COMPARISON]"));
+            if (isSystemPrompt) return null;
+            const hasPreviousComparison = messages.slice(0, idx).some(prev => prev.parts.some(p => p.type === "text" && /\"type\"\s*:\s*\"(Table|ComparisonSelector)\"/i.test((p as any).text ?? "")));
+            const msgTurns: number[] = [];
+            ((m as any).toolInvocations ?? []).forEach((ti: any) => { if (ti.toolName === "renderToSidebar" || ti.toolName === "sidePanel") { const spec = ti.result || ti.args?.spec; if (spec?.turns) spec.turns.forEach((t: any) => { if (t.turn) msgTurns.push(t.turn); }); } });
+            (m.parts ?? []).forEach((p: any) => { if (p.type === "text" && p.text) { const matches = p.text.match(/"turn":\s*(\d+)/g); if (matches) matches.forEach((match: string) => { const num = parseInt(match.split(":")[1].trim()); if (!isNaN(num) && !msgTurns.includes(num)) msgTurns.push(num); }); } });
+            return (<MessageBubble key={m.id} message={m} isLast={idx === messages.length - 1} isStreaming={isStreaming && idx === messages.length - 1} bindings={bubbleBindings} highlightTerm={highlightTerm} highlightTurn={highlightTurn} isFollowUp={hasPreviousComparison} turns={msgTurns} />);
+          })}
+          {error && (<div className="p-4 rounded-2xl bg-red-50 border border-red-100 text-red-600 text-sm font-medium animate-in slide-in-from-bottom-4">{error.message}</div>)}
+          <div ref={messagesEndRef} />
+        </div>
+      </main>
+    </div>
+  );
+
+
+  const renderCriteriaContent = () => {
+    const impStyles: Record<string, { label: string; bg: string; color: string }> = {
+      high: { label: "중요", bg: "#fff0f3", color: "#fb7185" },
+      medium: { label: "보통", bg: "#fffbeb", color: "#f59e0b" },
+      low: { label: "낮음", bg: "#f8fafc", color: "#94a3b8" },
+    };
+    return (
+      <div
+        onDragOver={(e) => { if (e.dataTransfer.types.includes('application/x-panel')) return; e.preventDefault(); e.currentTarget.classList.add("bg-primary/5", "border-primary/30"); }}
+        onDragLeave={(e) => { e.currentTarget.classList.remove("bg-primary/5", "border-primary/30"); }}
+        onDrop={(e: React.DragEvent<HTMLDivElement>) => {
+          if (e.dataTransfer.types.includes('application/x-panel')) return;
+          e.preventDefault(); e.currentTarget.classList.remove("bg-primary/5", "border-primary/30");
+          const jsonData = e.dataTransfer.getData("application/json");
+          const label = e.dataTransfer.getData("text/plain");
+          if (jsonData) { try { const item = JSON.parse(jsonData); if (item.name && !droppedCriteria.some(c => c.name === item.name)) { const existingCriteria = droppedCriteria.map(c => ({ name: c.name, important: !!c.important })); const importanceLevel = item.important ? "high" : "low"; setDroppedCriteria((prev) => [...prev, { name: item.name, min: item.min, priority: item.priority || "medium", important: !!item.important, importanceLevel } as any]); checkTradeoff({ name: item.name, important: !!item.important }, existingCriteria); } } catch { if (label && !droppedCriteria.some(c => c.name === label)) setDroppedCriteria((prev) => [...prev, { name: label, priority: "medium" }]); } } else if (label && !droppedCriteria.some(c => c.name === label)) { setDroppedCriteria((prev) => [...prev, { name: label, priority: "medium" }]); }
+        }}
+        className="flex flex-col gap-4 p-6 flex-1 overflow-auto no-scrollbar"
+      >
+        <div className="flex items-center">
+          <div className="flex items-center gap-2"><p className="text-[12.5px] font-black text-slate-600 tracking-widest uppercase">🎯 DECISION CRITERIA</p>{droppedCriteria.length > 0 && <span className="text-[12px] font-normal text-slate-300">({droppedCriteria.length})</span>}</div>
+        </div>
+        <div className="flex flex-col gap-3 flex-1">
+          {droppedCriteria.length > 0 ? (
+            <div className="flex flex-wrap gap-2.5 w-full content-start">
+              {droppedCriteria.map((criterion, i) => {
+                const level = (criterion as any).importanceLevel as "high" | "medium" | "low" | undefined;
+                const s = level ? impStyles[level] : null;
+                return (
+                  <div key={i} onClick={() => { setOpenImportanceIdx(null); if (!searchCriteria.some(c => c.name === criterion.name)) setSearchCriteria(prev => [...prev, { name: criterion.name, min: criterion.min, priority: criterion.priority }]); inputRef.current?.focus(); }} className="flex items-center gap-2 bg-white border border-slate-200 rounded-2xl px-2.5 h-[32px] w-fit max-w-full group animate-in zoom-in-95 duration-200 cursor-pointer hover:bg-slate-50 hover:border-slate-300 transition-colors">
+                    <div className="relative shrink-0 flex items-center">
+                      <button onClick={(e) => { e.stopPropagation(); setOpenImportanceIdx(openImportanceIdx === i ? null : i); }} className="flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[9.5px] font-bold transition-all duration-150 leading-none" style={s ? { background: s.bg, color: s.color } : { background: "transparent", color: "#cbd5e1" }}>{s ? s.label : "·"}<ChevronDown className="w-2 h-2 opacity-60" /></button>
+                      {openImportanceIdx === i && (<div className="absolute top-full left-0 mt-1 z-50 bg-white border border-slate-200 rounded-[8px] shadow-lg py-1 min-w-[64px]" onClick={(e) => e.stopPropagation()}>{(["high", "medium", "low"] as const).map(opt => { const os = impStyles[opt]; return (<button key={opt} onClick={(e) => { e.stopPropagation(); setDroppedCriteria(prev => { const next = [...prev]; next[i] = { ...next[i], importanceLevel: opt, important: opt === "high" } as any; return next; }); setOpenImportanceIdx(null); }} className="w-full text-left px-3 py-1 text-[10.5px] font-medium hover:bg-slate-50 transition-colors" style={{ color: os.color }}>{os.label}</button>); })}</div>)}
+                    </div>
+                    <div className="flex items-center gap-1.5 overflow-hidden min-w-0">
+                      <span className="text-[12.5px] font-bold text-slate-800 select-none whitespace-nowrap shrink-0">{criterion.name}</span>
+                      {editingCriteriaIdx === i ? (<input autoFocus className="text-[10.5px] text-slate-500 border-b border-slate-300 outline-none w-[60px] bg-transparent py-0 shrink-0" value={editingMinText} onChange={(e) => setEditingMinText(e.target.value)} onBlur={() => { setDroppedCriteria(prev => { const next = [...prev]; next[i] = { ...next[i], min: editingMinText }; return next; }); setEditingCriteriaIdx(null); }} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />) : (<span className="text-[10.5px] text-slate-500 font-medium select-none truncate" title={criterion.min || "입력"}>{criterion.min || "입력"}</span>)}
+                    </div>
+                    <div className="flex items-center gap-0.5 ml-1 pl-1 border-l border-slate-100">
+                      <button onClick={(e) => { e.stopPropagation(); setEditingCriteriaIdx(i); setEditingMinText(criterion.min || ""); }} className="p-0.5 text-slate-300 hover:text-slate-600 transition-colors"><Pencil className="w-2.5 h-2.5" /></button>
+                      <button onClick={(e) => { e.stopPropagation(); setDroppedCriteria(prev => prev.filter((_, idx) => idx !== i)); setTradeoffSpecs(prev => { const next = { ...prev }; delete next[criterion.name]; return next; }); }} className="p-0.5 text-slate-300 hover:text-slate-900 transition-colors"><X className="w-3 h-3" /></button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (<div className="flex-1 flex items-center justify-center"><p className="text-[12.5px] text-slate-300 font-medium text-center leading-relaxed">기준 칩을 클릭해<br />여기에 고정해두세요</p></div>)}
+        </div>
+        {(() => { const activeHints = droppedCriteria.filter(c => { const spec = tradeoffSpecs[c.name]; return spec?.type === "TradeoffHint" && !dismissedTradeoffs.has(c.name) && !tradeoffLoading.has(c.name); }); if (activeHints.length === 0) return null; const TradeoffHintComp = manualRegistry.TradeoffHint; return (<div className="flex flex-col gap-2 pt-3 border-t border-slate-100 w-full">{activeHints.map(criterion => (<TradeoffHintComp key={criterion.name} props={{ ...tradeoffSpecs[criterion.name].props, onDismiss: () => setDismissedTradeoffs(prev => new Set([...prev, criterion.name])), onResolve: () => { setDismissedTradeoffs(prev => new Set([...prev, criterion.name])); const spec = tradeoffSpecs[criterion.name].props; handleResolveTradeoff(spec.newCriterion, spec.conflictsWith); } }} />))}</div>); })()}
+      </div>
+    );
+  };
+
+  const renderOptionsContent = () => (
+    <div className="flex flex-col gap-4 p-6 flex-1 overflow-auto no-scrollbar">
+      <div className="flex items-center">
+        <div className="flex items-center gap-2"><p className="text-[12.5px] font-black text-slate-600 tracking-widest uppercase">🛒 MY OPTIONS</p>{droppedItems.length > 0 && <span className="text-[12px] font-normal text-slate-300">({droppedItems.length})</span>}</div>
+      </div>
+      <div className="flex flex-col gap-2 flex-1">
+        {droppedItems.length > 0 ? droppedItems.map((item, i) => (
+          <div key={i} onClick={() => insertMention(item.name)} className="group relative rounded-[8px] bg-white border border-slate-200 p-3 flex items-center gap-3 animate-in zoom-in-95 duration-200 hover:border-slate-300 transition-all cursor-pointer">
+            <button onClick={(e) => { e.stopPropagation(); setDroppedItems((prev) => prev.filter((c) => c.name !== item.name)); }} className="absolute top-2 right-2 text-slate-300 hover:text-slate-700 transition-colors z-10"><X className="w-3 h-3" /></button>
+            <div className="w-12 h-12 rounded-[4px] bg-slate-50 border border-slate-100 flex items-center justify-center flex-shrink-0 overflow-hidden">{item.image ? (<img src={item.image} alt={item.name} className="w-full h-full object-cover" />) : (<span className="text-[18px] font-black text-slate-300 uppercase">{item.name[0]}</span>)}</div>
+            <div className="flex flex-col min-w-0 flex-1 pr-4 gap-1"><p className="text-[12px] font-semibold text-slate-900 leading-tight break-keep">{item.name}</p>{item.price && <span className="text-[11.5px] font-medium text-slate-500">{item.price}</span>}</div>
+          </div>
+        )) : (<div className="flex-1 flex items-center justify-center"><p className="text-[12.5px] text-slate-300 font-medium text-center leading-relaxed flex flex-col items-center gap-1"><span className="flex items-center gap-1.5">관심 제품의<span className="inline-flex items-center justify-center w-[20px] h-[20px] rounded-full bg-slate-300/60"><Heart className="w-[10px] h-[10px] text-white" fill="white" strokeWidth={0} /></span>를 눌러</span><span>여기에 담아보세요</span></p></div>)}
+      </div>
+    </div>
+  );
+
+  const renderOptionList = () => (
+    <div className="flex flex-col h-full overflow-hidden">
+      <div className="flex-shrink-0 flex items-center gap-2 px-6 pt-5 pb-3 border-b border-slate-50">
+        {gripHandle('optionList')}
+        <p className="text-[12.5px] font-black text-slate-600 tracking-widest uppercase">📝 OPTION LIST</p>
+      </div>
+      <div className="flex-1 overflow-y-auto no-scrollbar p-4">
+        {productCardListSpec ? (
+          <ExplorerRenderer
+            spec={productCardListSpec}
+            bindings={bubbleBindings}
+          />
+        ) : (
+          <div className="flex flex-col items-center justify-center h-full gap-2">
+            <p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">
+              제품 추천을 받으면<br />여기에 옵션이 표시됩니다
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  const renderCompTable = () => (
+    <div className="flex flex-col gap-4 p-6 flex-1 overflow-auto no-scrollbar">
+      <div className="flex items-center gap-2">
+        {gripHandle('compTable')}
+        <p className="text-[12.5px] font-black text-slate-600 tracking-widest uppercase">📊 Comparison Table</p>
+      </div>
+    </div>
+  );
+
+  const renderPanel = (pid: PanelId): React.ReactNode => {
+    if (pid === 'exploration') return renderExploration();
+    if (pid === 'chat') return renderChat();
+    if (pid === 'criteria') return renderCriteriaContent();
+    if (pid === 'optionList') return renderOptionList();
+    if (pid === 'compTable') return renderCompTable();
+    return renderOptionsContent();
+  };
+
   return (
-    <div className="h-screen flex flex-col w-full overflow-hidden bg-[#FFFFFF]">
+    <div className="h-screen flex flex-col w-full overflow-hidden bg-[#EDEFF2]">
       {/* Full-width white header */}
-      <div className="shrink-0 bg-[#FFFFFF] border-b border-[#DDE0E5] px-8 py-4 flex items-center justify-between">
+      <div className="shrink-0 bg-[#EDEFF2] px-8 py-4 flex items-center justify-between">
         <button
           type="button"
           onClick={() => resetSession()}
@@ -1239,516 +1494,163 @@ export default function ChatPage() {
         </button>
       </div>
 
-      <div className="flex-1 flex justify-center w-full overflow-hidden">
-        <div className="flex w-full h-full overflow-hidden">
+      <div className="flex-1 min-h-0 flex justify-center w-full overflow-hidden">
+        <div className="flex w-full h-full p-3">
 
-          {/* LEFT: Exploration Journey */}
-          <aside className="w-[540px] flex-shrink-0 bg-white z-10 flex flex-col overflow-hidden border-r border-[#E5E5E5] shadow-[4px_0_24px_rgba(0,0,0,0.04)]">
-            <div className="flex flex-col h-full p-6 overflow-hidden">
-              {/* Panel header */}
-              <div className="flex items-center justify-between mb-4 flex-shrink-0 border-b border-slate-100 pb-3">
-                <p className="text-[12.5px] font-black text-slate-600 tracking-widest uppercase whitespace-nowrap"> 🧭 Exploration Journey</p>
+          {/* OUTER-LEFT: Exploration 왼쪽 핸들 */}
+          <div
+            className="w-3 flex-shrink-0 flex items-center justify-center cursor-col-resize group"
+            onPointerDown={(e) => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); pointerDragRef.current = { type: 'col-ol', startX: e.clientX, startY: e.clientY, startVal: leftWidth, containerH: 0 }; }}
+            onPointerMove={(e) => { const d = pointerDragRef.current; if (!d || d.type !== 'col-ol') return; setLeftWidth(Math.max(160, Math.min(540, d.startVal - (e.clientX - d.startX)))); }}
+            onPointerUp={() => { pointerDragRef.current = null; }}
+          >
+            <div className="w-[2px] h-8 rounded-full bg-slate-400/0 group-hover:bg-slate-400/60 transition-colors" />
+          </div>
 
-                {/* Criteria / Information segment control */}
-                <div className="flex items-center bg-[#F1F3F5] rounded-full p-[3px] border border-black/[0.02] shadow-inner shadow-slate-200/50">
-                  <button
-                    type="button"
-                    onClick={() => setJourneyTab("criteria")}
-                    className={`px-4 py-1.5 rounded-full text-[12px] font-medium transition-all duration-200 ${journeyTab === "criteria"
-                      ? "bg-white text-slate-800 shadow-[0_1px_4px_rgba(0,0,0,0.08)] border border-black/[0.04]"
-                      : "text-slate-400 hover:text-slate-600"
-                      }`}
-                  >
-                    Criteria
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setJourneyTab("information")}
-                    className={`px-4 py-1.5 rounded-full text-[12px] font-medium transition-all duration-200 ${journeyTab === "information"
-                      ? "bg-white text-slate-800 shadow-[0_1px_4px_rgba(0,0,0,0.08)] border border-black/[0.04]"
-                      : "text-slate-400 hover:text-slate-600"
-                      }`}
-                  >
-                    Information
-                  </button>
-                </div>
-              </div>
-
-              <div className="flex-1 overflow-y-auto styled-scrollbar pr-1">
-                {/* Criteria tab — always mounted to preserve collapsed state */}
-                <div className={journeyTab === "criteria" ? "" : "hidden"}>
-                  {/* UnchartedTerritoryChip — shown at top when Cat 2 triggered with unexplored areas */}
-                  {unchartedSpec && unchartedSpec.labels.length > 0 && (
-                    <div className="mb-3">
-                      {manualRegistry.UnchartedTerritoryChip({
-                        props: {
-                          labels: unchartedSpec.labels,
-                          onExplore: (label: string) => {
-                            handleSubmit(`'${label}'을(를) 판단할 수 있는 세부 기준들을 알고 싶어`);
-                            setDismissedUncharted(prev => { const next = new Set(prev); next.add(label); return next; });
-                            setUnchartedSpec(prev => prev ? { labels: prev.labels.filter(l => l !== label) } : null);
-                          },
-                        },
-                      })}
-                    </div>
-                  )}
-                  {sidebarSpec.CriteriaMap ? (
-                    <ExplorerRenderer
-                      spec={sidebarSpec.CriteriaMap}
-                      bindings={sidebarBindings}
-                    />
-                  ) : (
-                    <div className="flex flex-col items-center justify-center h-full gap-2 py-12">
-                      <p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">
-                        대화를 시작하면<br />여기에 탐색 기록이 쌓여요
-                      </p>
-                    </div>
-                  )}
-                </div>
-                {/* Information tab — always mounted to preserve scroll */}
-                <div className={journeyTab === "information" ? "" : "hidden"}>
-                  {sidebarSpec.conceptCards.length > 0 ? (
-                    <div className="flex flex-col gap-3 py-1">
-                      {sidebarSpec.conceptCards.map((card: any, i: number) => (
-                        <InformationCardItem
-                          key={`${card.term}-${i}`}
-                          card={card}
-                          index={i}
-                        />
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="flex flex-col items-center justify-center h-full gap-2 py-12">
-                      <p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">
-                        개념 질문을 하면<br />여기에 설명이 쌓여요
-                      </p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
+          {/* LEFT SLOT */}
+          <aside {...slotDropProps('left')} className={`bg-white z-10 flex flex-col overflow-hidden rounded-2xl shadow-[0_2px_16px_rgba(0,0,0,0.07)] transition-all ${panelDropTarget === 'left' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`} style={{ width: leftWidth, flexShrink: 0 }}>
+            {renderPanel(panelSlots.left)}
           </aside>
 
-          {/* CENTER: Chat */}
-          <div className="flex-1 min-w-0 overflow-hidden bg-white">
-            <div className="flex flex-col h-full overflow-hidden relative">
+          {/* COL RESIZE: Left <-> Center */}
+          <div
+            className="w-3 flex-shrink-0 flex items-center justify-center cursor-col-resize group"
+            onPointerDown={(e) => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); pointerDragRef.current = { type: 'col-l', startX: e.clientX, startY: e.clientY, startVal: leftWidth, containerH: 0 }; }}
+            onPointerMove={(e) => { const d = pointerDragRef.current; if (!d || d.type !== 'col-l') return; setLeftWidth(Math.max(160, Math.min(540, d.startVal + (e.clientX - d.startX)))); }}
+            onPointerUp={() => { pointerDragRef.current = null; }}
+          >
+            <div className="w-[2px] h-8 rounded-full bg-slate-400/0 group-hover:bg-slate-400/60 transition-colors" />
+          </div>
 
-            <main
-              ref={scrollContainerRef}
-              className="flex-1 overflow-y-auto px-8 pb-6 no-scrollbar scroll-smooth"
-            >
-              <div className="max-w-5xl mx-auto space-y-12 pb-32 pt-8">
-                {messages.map((m, idx) => {
-                  // Hide internal system prompt turns from the user
-                  const isSystemPrompt = m.role === "user" && m.parts.some(p => p.type === "text" && p.text.includes("[SYSTEM: CUMULATIVE COMPARISON]"));
-                  if (isSystemPrompt) return null;
+          {/* CENTER COLUMN WRAPPER — Chat 패널 + 입력창 묶음 */}
+          <div className="flex-1 min-w-0 flex flex-col gap-3 min-h-0">
 
-                  const hasPreviousComparison = messages.slice(0, idx).some(prev =>
-                    prev.parts.some(p => p.type === "text" && /"type"\s*:\s*"(Table|ComparisonSelector)"/i.test(p.text))
-                  );
-                  const msgTurns: number[] = [];
-                  ((m as any).toolInvocations ?? []).forEach((ti: any) => {
-                    if (ti.toolName === "renderToSidebar" || ti.toolName === "sidePanel") {
-                      const spec = ti.result || (ti as any).args?.spec;
-                      if (spec?.turns) spec.turns.forEach((t: any) => { if (t.turn) msgTurns.push(t.turn); });
-                    }
-                  });
-                  (m.parts ?? []).forEach((p: any) => {
-                    if (p.type === "text" && p.text) {
-                      const matches = p.text.match(/"turn":\s*(\d+)/g);
-                      if (matches) matches.forEach((match: string) => {
-                        const num = parseInt(match.split(":")[1].trim());
-                        if (!isNaN(num) && !msgTurns.includes(num)) msgTurns.push(num);
-                      });
-                    }
-                  });
+            {/* CENTER SLOT */}
+            <div {...slotDropProps('center')} className={`flex-1 min-h-0 overflow-hidden flex flex-col bg-white rounded-2xl shadow-[0_2px_16px_rgba(0,0,0,0.07)] transition-all ${panelDropTarget === 'center' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`}>
+              {renderPanel(panelSlots.center)}
+            </div>
 
-                  return (
-                    <MessageBubble
-                      key={m.id}
-                      message={m}
-                      isLast={idx === messages.length - 1}
-                      isStreaming={isStreaming && idx === messages.length - 1}
-                      bindings={bubbleBindings}
-                      highlightTerm={highlightTerm}
-                      highlightTurn={highlightTurn}
-                      isFollowUp={hasPreviousComparison}
-                      turns={msgTurns}
-                    />
-                  );
-                })}
-                {error && (
-                  <div className="p-4 rounded-2xl bg-red-50 border border-red-100 text-red-600 text-sm font-medium animate-in slide-in-from-bottom-4">
-                    {error.message}
-                  </div>
-                )}
-                <div ref={messagesEndRef} />
-              </div>
-            </main>
-
-            <div className="px-6 pb-6 flex-shrink-0 bg-white/80 backdrop-blur-md border-t border-slate-50 relative">
+            {/* INPUT BAR — Chat 패널 너비에 정렬 */}
+            <div className="flex-shrink-0 relative">
               {showScrollButton && (
                 <button
                   onClick={scrollToBottom}
-                  className="absolute left-1/2 -translate-x-1/2 -top-12 z-10 h-10 w-10 rounded-full border border-slate-200 bg-white text-slate-400 shadow-xl flex items-center justify-center hover:text-slate-900 hover:border-slate-900 transition-all"
+                  className="absolute left-1/2 -translate-x-1/2 -top-8 z-10 h-8 w-8 rounded-full border border-slate-200 bg-white text-slate-400 shadow-xl flex items-center justify-center hover:text-slate-900 hover:border-slate-900 transition-all"
                 >
-                  <ArrowDown className="h-4 w-4" />
+                  <ArrowDown className="h-3.5 w-3.5" />
                 </button>
               )}
-              <div className="max-w-2xl mx-auto relative pt-2">
-                <div
-                  onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add("bg-slate-50", "border-slate-300"); }}
-                  onDragLeave={(e) => { e.currentTarget.classList.remove("bg-slate-50", "border-slate-300"); }}
-                  onDrop={(e: React.DragEvent<HTMLDivElement>) => {
-                    e.preventDefault();
-                    e.currentTarget.classList.remove("bg-slate-50", "border-slate-300");
-                    const jsonData = e.dataTransfer.getData("application/json");
-                    const label = e.dataTransfer.getData("text/plain");
-
-                    if (jsonData) {
-                      try {
-                        const item = JSON.parse(jsonData);
-                        if (item.name && !searchCriteria.some(c => c.name === item.name)) {
-                          setSearchCriteria((prev) => [...prev, {
-                            name: item.name,
-                            min: item.min,
-                            priority: item.priority || "medium"
-                          }]);
-                        }
-                      } catch (e) {
-                        if (label && !searchCriteria.some(c => c.name === label)) {
-                          setSearchCriteria((prev) => [...prev, { name: label, priority: "medium" }]);
-                        }
-                      }
-                    } else if (label && !searchCriteria.some(c => c.name === label)) {
-                      setSearchCriteria((prev) => [...prev, { name: label, priority: "medium" }]);
-                    }
-                  }}
-                  className="flex items-end gap-2 bg-white border border-slate-200 rounded-[24px] p-2 pl-4 pr-2 shadow-lg shadow-slate-200/50 hover:shadow-xl hover:border-slate-300 transition-all focus-within:border-slate-400 focus-within:ring-4 focus-within:ring-slate-100 min-h-[48px]"
-                >
-                  {/* Left content area: Chips inline with Textarea */}
-                  <div className="flex-1 flex flex-wrap items-center gap-1.5 min-w-0 max-h-[120px] overflow-y-auto py-1">
-                    {/* Mention chips */}
-                    {mentionChips.map((chip, i) => (
-                      <div key={`mention-${i}`} className="flex items-center gap-1.5 bg-slate-50 border border-slate-100 rounded-full px-2 py-0.5 h-[28px] shrink-0 animate-in zoom-in-95 duration-200">
-                        <span className="text-[12px] font-bold text-slate-800">{chip.name}</span>
-                        <button
-                          onClick={() => setMentionChips(prev => prev.filter((_, idx) => idx !== i))}
-                          className="ml-1 p-0.5 text-slate-300 hover:text-slate-900 transition-colors"
-                        >
-                          <X className="w-2.5 h-2.5" />
-                        </button>
-                      </div>
-                    ))}
-
-                    {/* Search criteria chips */}
-                    {searchCriteria.map((c, i) => (
-                      <div key={`criteria-${i}`} className="flex items-center gap-1.5 bg-slate-50 border border-slate-100 rounded-full px-2 py-0.5 h-[28px] shrink-0 animate-in zoom-in-95 duration-200">
-                        <span className="text-[12px] font-bold text-slate-800">{c.name}</span>
-                        {c.min && <span className="text-[10px] text-slate-500 font-medium">{c.min}</span>}
-                        <button
-                          onClick={() => setSearchCriteria(prev => prev.filter((_, idx) => idx !== i))}
-                          className="ml-1 p-0.5 text-slate-300 hover:text-slate-900 transition-colors"
-                        >
-                          <X className="w-2.5 h-2.5" />
-                        </button>
-                      </div>
-                    ))}
-
-                    {/* Text input area */}
-                    <textarea
-                      ref={inputRef}
-                      value={input}
-                      onChange={(e) => setInput(e.target.value)}
-                      onKeyDown={handleKeyDown}
-                      placeholder={(searchCriteria.length > 0 || mentionChips.length > 0) ? "" : "무엇이든 물어보세요"}
-                      rows={1}
-                      className="flex-1 min-w-[120px] bg-transparent border-none focus:ring-0 focus:outline-none focus-visible:ring-0 resize-none text-slate-800 placeholder:text-slate-400 py-1 text-[15px] font-medium"
-                    />
-                  </div>
-
-                  {/* Send button */}
-                  <button
-                    onClick={() => handleSubmit()}
-                    disabled={(!input.trim() && searchCriteria.length === 0 && mentionChips.length === 0) || isStreaming}
-                    className="w-9 h-9 rounded-full bg-slate-900 flex items-center justify-center text-white hover:bg-black active:scale-95 transition-all shadow-md shrink-0 self-end mb-0.5"
-                  >
-                    {isStreaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4 stroke-[2.5px]" />}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-          </div>
-          {/* RIGHT: Decision Criteria + My Items */}
-          <aside className="w-[540px] flex-shrink-0 bg-white overflow-hidden z-10 border-l border-[#E5E5E5] flex flex-col shadow-[-4px_0_24px_rgba(0,0,0,0.04)]">
-            <div className="flex flex-col h-full">
               <div
-                onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add("bg-primary/5", "border-primary/30"); }}
-                onDragLeave={(e) => { e.currentTarget.classList.remove("bg-primary/5", "border-primary/30"); }}
+                onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add("bg-slate-50", "border-slate-300"); }}
+                onDragLeave={(e) => { e.currentTarget.classList.remove("bg-slate-50", "border-slate-300"); }}
                 onDrop={(e: React.DragEvent<HTMLDivElement>) => {
                   e.preventDefault();
-                  e.currentTarget.classList.remove("bg-primary/5", "border-primary/30");
+                  e.currentTarget.classList.remove("bg-slate-50", "border-slate-300");
                   const jsonData = e.dataTransfer.getData("application/json");
                   const label = e.dataTransfer.getData("text/plain");
-
-                  if (jsonData) {
-                    try {
-                      const item = JSON.parse(jsonData);
-                      if (item.name && !droppedCriteria.some(c => c.name === item.name)) {
-                        const existingCriteria = droppedCriteria.map(c => ({ name: c.name, important: !!c.important }));
-                        const importanceLevel = item.important ? "high" : "low";
-                        setDroppedCriteria((prev) => [...prev, {
-                          name: item.name,
-                          min: item.min,
-                          priority: item.priority || "medium",
-                          important: !!item.important,
-                          importanceLevel,
-                        } as any]);
-                        checkTradeoff({ name: item.name, important: !!item.important }, existingCriteria);
-                      }
-                    } catch (e) {
-                      if (label && !droppedCriteria.some(c => c.name === label)) {
-                        setDroppedCriteria((prev) => [...prev, { name: label, priority: "medium" }]);
-                      }
-                    }
-                  } else if (label && !droppedCriteria.some(c => c.name === label)) {
-                    setDroppedCriteria((prev) => [...prev, { name: label, priority: "medium" }]);
-                  }
+                  if (jsonData) { try { const item = JSON.parse(jsonData); if (item.name && !searchCriteria.some(c => c.name === item.name)) setSearchCriteria(prev => [...prev, { name: item.name, min: item.min, priority: item.priority || "medium" }]); } catch { if (label && !searchCriteria.some(c => c.name === label)) setSearchCriteria(prev => [...prev, { name: label, priority: "medium" }]); } } else if (label && !searchCriteria.some(c => c.name === label)) setSearchCriteria(prev => [...prev, { name: label, priority: "medium" }]);
                 }}
-                className="flex flex-col gap-4 p-6 flex-1 overflow-auto no-scrollbar border-b border-[#E5E5E5]"
+                className="flex items-end gap-2 bg-white border border-slate-200 rounded-[24px] p-2 pl-4 pr-2 shadow-lg shadow-slate-200/50 hover:shadow-xl hover:border-slate-300 transition-all focus-within:border-slate-400 focus-within:ring-4 focus-within:ring-slate-100 min-h-[48px]"
               >
-                <div className="flex items-center justify-between">
-                  <p className="text-[12.5px] font-black text-slate-600 tracking-widest uppercase"> 🎯 DECISION CRITERIA</p>
-                  {droppedCriteria.length > 0 && (
-                    <span className="text-[12px] font-normal text-slate-300">({droppedCriteria.length})</span>
-                  )}
+                <div className="flex-1 flex flex-wrap items-center gap-1.5 min-w-0 max-h-[120px] overflow-y-auto py-1">
+                  {mentionChips.map((chip, i) => (<div key={`mention-${i}`} className="flex items-center gap-1.5 bg-slate-50 border border-slate-100 rounded-full px-2 py-0.5 h-[28px] shrink-0 animate-in zoom-in-95 duration-200"><span className="text-[12px] font-bold text-slate-800">{chip.name}</span><button onClick={() => setMentionChips(prev => prev.filter((_, idx) => idx !== i))} className="ml-1 p-0.5 text-slate-300 hover:text-slate-900 transition-colors"><X className="w-2.5 h-2.5" /></button></div>))}
+                  {searchCriteria.map((c, i) => (<div key={`criteria-${i}`} className="flex items-center gap-1.5 bg-slate-50 border border-slate-100 rounded-full px-2 py-0.5 h-[28px] shrink-0 animate-in zoom-in-95 duration-200"><span className="text-[12px] font-bold text-slate-800">{c.name}</span>{c.min && <span className="text-[10px] text-slate-500 font-medium">{c.min}</span>}<button onClick={() => setSearchCriteria(prev => prev.filter((_, idx) => idx !== i))} className="ml-1 p-0.5 text-slate-300 hover:text-slate-900 transition-colors"><X className="w-2.5 h-2.5" /></button></div>))}
+                  <textarea ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown} placeholder={(searchCriteria.length > 0 || mentionChips.length > 0) ? "" : "무엇이든 물어보세요"} rows={1} className="flex-1 min-w-[120px] bg-transparent border-none focus:ring-0 focus:outline-none focus-visible:ring-0 resize-none text-slate-800 placeholder:text-slate-400 py-1 text-[15px] font-medium" />
                 </div>
-                <div className="flex flex-col gap-3 flex-1">
-                  {droppedCriteria.length > 0 ? (
-                    <div className="flex flex-wrap gap-2.5 w-full content-start">
-                      {droppedCriteria.map((criterion, i) => {
-                        const level = (criterion as any).importanceLevel as "high" | "medium" | "low" | undefined;
-                        const importanceStyles: Record<string, { label: string; bg: string; color: string }> = {
-                          high: { label: "중요", bg: "#fff0f3", color: "#fb7185" },
-                          medium: { label: "보통", bg: "#fffbeb", color: "#f59e0b" },
-                          low: { label: "낮음", bg: "#f8fafc", color: "#94a3b8" },
-                        };
-                        const s = level ? importanceStyles[level] : null;
-                        return (
-                          <div
-                            key={i}
-                            onClick={() => {
-                              setOpenImportanceIdx(null);
-                              if (!searchCriteria.some(c => c.name === criterion.name)) {
-                                setSearchCriteria(prev => [...prev, { name: criterion.name, min: criterion.min, priority: criterion.priority }]);
-                              }
-                              inputRef.current?.focus();
-                            }}
-                            className="flex items-center gap-2 bg-white border border-slate-200 rounded-2xl px-2.5 h-[32px] w-fit max-w-full group animate-in zoom-in-95 duration-200 cursor-pointer hover:bg-slate-50 hover:border-slate-300 transition-colors"
-                          >
-                            {/* 중요도 배지 드롭다운 — overflow-hidden 밖에 위치 */}
-                            <div className="relative shrink-0 flex items-center">
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setOpenImportanceIdx(openImportanceIdx === i ? null : i);
-                                }}
-                                className="flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[9.5px] font-bold transition-all duration-150 leading-none"
-                                style={s
-                                  ? { background: s.bg, color: s.color }
-                                  : { background: "transparent", color: "#cbd5e1" }
-                                }
-                              >
-                                {s ? s.label : "·"}
-                                <ChevronDown className="w-2 h-2 opacity-60" />
-                              </button>
-                              {openImportanceIdx === i && (
-                                <div
-                                  className="absolute top-full left-0 mt-1 z-50 bg-white border border-slate-200 rounded-[8px] shadow-lg py-1 min-w-[64px]"
-                                  onClick={(e) => e.stopPropagation()}
-                                >
-                                  {(["high", "medium", "low"] as const).map((opt) => {
-                                    const os = opt ? importanceStyles[opt] : null;
-                                    return (
-                                      <button
-                                        key={opt ?? "none"}
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setDroppedCriteria(prev => {
-                                            const next = [...prev];
-                                            next[i] = { ...next[i], importanceLevel: opt, important: opt === "high" } as any;
-                                            return next;
-                                          });
-                                          setOpenImportanceIdx(null);
-                                        }}
-                                        className="w-full text-left px-3 py-1 text-[10.5px] font-medium hover:bg-slate-50 transition-colors"
-                                        style={{ color: os ? os.color : "#94a3b8" }}
-                                      >
-                                        {os ? os.label : "해제"}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-1.5 overflow-hidden min-w-0">
-                              <span className="text-[12.5px] font-bold text-slate-800 select-none whitespace-nowrap shrink-0">
-                                {criterion.name}
-                              </span>
-                              {editingCriteriaIdx === i ? (
-                                <input
-                                  autoFocus
-                                  className="text-[10.5px] text-slate-500 border-b border-slate-300 outline-none w-[60px] bg-transparent py-0 shrink-0"
-                                  value={editingMinText}
-                                  onChange={(e) => setEditingMinText(e.target.value)}
-                                  onBlur={() => {
-                                    setDroppedCriteria(prev => {
-                                      const next = [...prev];
-                                      next[i] = { ...next[i], min: editingMinText };
-                                      return next;
-                                    });
-                                    setEditingCriteriaIdx(null);
-                                  }}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Enter") e.currentTarget.blur();
-                                  }}
-                                />
-                              ) : (
-                                <span
-                                  className="text-[10.5px] text-slate-500 font-medium select-none truncate"
-                                  title={criterion.min || "입력"}
-                                >
-                                  {criterion.min || "입력"}
-                                </span>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-0.5 ml-1 pl-1 border-l border-slate-100">
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setEditingCriteriaIdx(i);
-                                  setEditingMinText(criterion.min || "");
-                                }}
-                                className="p-0.5 text-slate-300 hover:text-slate-600 transition-colors"
-                              >
-                                <Pencil className="w-2.5 h-2.5" />
-                              </button>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setDroppedCriteria(prev => prev.filter((_, idx) => idx !== i));
-                                  setTradeoffSpecs(prev => { const next = { ...prev }; delete next[criterion.name]; return next; });
-                                }}
-                                className="p-0.5 text-slate-300 hover:text-slate-900 transition-colors"
-                              >
-                                <X className="w-3 h-3" />
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
-
-                    </div>
-                  ) : (
-                    <div className="flex-1 flex items-center justify-center">
-                      <p className="text-[12.5px] text-slate-300 font-medium text-center leading-relaxed">
-                        기준 칩을 클릭해<br />여기에 고정해두세요
-                      </p>
-                    </div>
-                  )}
-                </div>
-                {/* TradeoffHint 섹션 — 패널 하단 고정, GenUI Registry 렌더링 */}
-                {(() => {
-                  const activeHints = droppedCriteria.filter(c => {
-                    const spec = tradeoffSpecs[c.name];
-                    return spec?.type === "TradeoffHint" && !dismissedTradeoffs.has(c.name) && !tradeoffLoading.has(c.name);
-                  });
-                  if (activeHints.length === 0) return null;
-                  const TradeoffHintComp = manualRegistry.TradeoffHint;
-                  return (
-                    <div className="flex flex-col gap-2 pt-3 border-t border-slate-100 w-full">
-                      {activeHints.map(criterion => (
-                        <TradeoffHintComp
-                          key={criterion.name}
-                          props={{
-                            ...tradeoffSpecs[criterion.name].props,
-                            onDismiss: () => setDismissedTradeoffs(prev => new Set([...prev, criterion.name])),
-                            onResolve: () => {
-                              setDismissedTradeoffs(prev => new Set([...prev, criterion.name]));
-                              const spec = tradeoffSpecs[criterion.name].props;
-                              handleResolveTradeoff(spec.newCriterion, spec.conflictsWith);
-                            }
-                          }}
-                        />
-                      ))}
-                    </div>
-                  );
-                })()}
-              </div>
-
-
-              <div className="flex flex-col gap-4 p-6 flex-1 overflow-auto no-scrollbar">
-                <div className="flex items-center justify-between">
-                  <p className="text-[12.5px] font-black text-slate-600 tracking-widest uppercase"> 📦 MY ITEMS</p>
-                  {droppedItems.length > 0 && (
-                    <span className="text-[12px] font-normal text-slate-300">({droppedItems.length})</span>
-                  )}
-                </div>
-                <div className="flex flex-col gap-2 flex-1">
-                  {droppedItems.length > 0 ? (
-                    droppedItems.map((item, i) => (
-                      <div key={i} onClick={() => insertMention(item.name)} className="group relative rounded-[8px] bg-white border border-slate-200 p-3 flex items-center gap-3 animate-in zoom-in-95 duration-200 hover:border-slate-300 transition-all cursor-pointer">
-                        <button
-                          onClick={(e) => { e.stopPropagation(); setDroppedItems((prev) => prev.filter((c) => c.name !== item.name)); }}
-                          className="absolute top-2 right-2 text-slate-300 hover:text-slate-700 transition-colors z-10"
-                        >
-                          <X className="w-3 h-3" />
-                        </button>
-
-                        {/* Thumbnail */}
-                        <div className="w-12 h-12 rounded-[4px] bg-slate-50 border border-slate-100 flex items-center justify-center flex-shrink-0 overflow-hidden">
-                          {item.image ? (
-                            <img src={item.image} alt={item.name} className="w-full h-full object-cover" />
-                          ) : (
-                            <span className="text-[18px] font-black text-slate-300 uppercase">{item.name[0]}</span>
-                          )}
-                        </div>
-
-                        {/* Info */}
-                        <div className="flex flex-col min-w-0 flex-1 pr-4 gap-1">
-                          <p className="text-[12px] font-semibold text-slate-900 leading-tight break-keep">{item.name}</p>
-                          {item.price && (
-                            <span className="text-[11.5px] font-medium text-slate-500">{item.price}</span>
-                          )}
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="flex-1 flex items-center justify-center">
-                      <p className="text-[12.5px] text-slate-300 font-medium text-center leading-relaxed flex flex-col items-center gap-1">
-                        <span className="flex items-center gap-1.5">
-                          관심 제품의
-                          <span className="inline-flex items-center justify-center w-[20px] h-[20px] rounded-full bg-slate-300/60">
-                            <Heart className="w-[10px] h-[10px] text-white" fill="white" strokeWidth={0} />
-                          </span>
-                          를 눌러
-                        </span>
-                        <span>여기에 담아보세요</span>
-                      </p>
-                    </div>
-                  )}
-                </div>
+                <button onClick={() => handleSubmit()} disabled={(!input.trim() && searchCriteria.length === 0 && mentionChips.length === 0) || isStreaming} className="w-9 h-9 rounded-full bg-slate-900 flex items-center justify-center text-white hover:bg-black active:scale-95 transition-all shadow-md shrink-0 self-end mb-0.5">{isStreaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4 stroke-[2.5px]" />}</button>
               </div>
             </div>
+
+          </div>
+
+
+          {/* COL RESIZE: Center <-> Comparison Table */}
+          <div
+            className="w-3 flex-shrink-0 flex items-center justify-center cursor-col-resize group"
+            onPointerDown={(e) => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); pointerDragRef.current = { type: 'col-r', startX: e.clientX, startY: e.clientY, startVal: compTableWidth, containerH: 0 }; }}
+            onPointerMove={(e) => { const d = pointerDragRef.current; if (!d || d.type !== 'col-r') return; setCompTableWidth(Math.max(160, Math.min(600, d.startVal - (e.clientX - d.startX)))); }}
+            onPointerUp={() => { pointerDragRef.current = null; }}
+          >
+            <div className="w-[2px] h-8 rounded-full bg-slate-400/0 group-hover:bg-slate-400/60 transition-colors" />
+          </div>
+
+          {/* COMPARISON TABLE COLUMN */}
+          <aside
+            {...slotDropProps('compTableSlot')}
+            className={`bg-white overflow-hidden flex flex-col rounded-2xl shadow-[0_2px_16px_rgba(0,0,0,0.07)] h-full transition-all ${panelDropTarget === 'compTableSlot' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`}
+            style={{ width: compTableWidth, flexShrink: 0 }}
+          >
+            {renderPanel(panelSlots.compTableSlot)}
+          </aside>
+
+          {/* COL RESIZE: Comparison Table <-> Option List */}
+          <div
+            className="w-3 flex-shrink-0 flex items-center justify-center cursor-col-resize group"
+            onPointerDown={(e) => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); pointerDragRef.current = { type: 'col-ct', startX: e.clientX, startY: e.clientY, startVal: compTableWidth, containerH: 0 }; }}
+            onPointerMove={(e) => { const d = pointerDragRef.current; if (!d || d.type !== 'col-ct') return; setCompTableWidth(Math.max(160, Math.min(600, d.startVal + (e.clientX - d.startX)))); }}
+            onPointerUp={() => { pointerDragRef.current = null; }}
+          >
+            <div className="w-[2px] h-8 rounded-full bg-slate-400/0 group-hover:bg-slate-400/60 transition-colors" />
+          </div>
+
+          {/* OPTION LIST COLUMN — position 3 */}
+          <aside
+            {...slotDropProps('farRight')}
+            className={`bg-white overflow-hidden flex flex-col rounded-2xl shadow-[0_2px_16px_rgba(0,0,0,0.07)] transition-all h-full ${panelDropTarget === 'farRight' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`}
+            style={{ width: farRightWidth, flexShrink: 0 }}
+          >
+            {renderPanel(panelSlots.farRight)}
+          </aside>
+
+          {/* 핸들: Option List <-> DC+My Options */}
+          <div
+            className="w-3 flex-shrink-0 flex items-center justify-center cursor-col-resize group"
+            onPointerDown={(e) => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); pointerDragRef.current = { type: 'col-or', startX: e.clientX, startY: e.clientY, startVal: rightWidth, containerH: 0 }; }}
+            onPointerMove={(e) => { const d = pointerDragRef.current; if (!d || d.type !== 'col-or') return; setRightWidth(Math.max(160, Math.min(540, d.startVal - (e.clientX - d.startX)))); }}
+            onPointerUp={() => { pointerDragRef.current = null; }}
+          >
+            <div className="w-[2px] h-8 rounded-full bg-slate-400/0 group-hover:bg-slate-400/60 transition-colors" />
+          </div>
+
+          {/* RIGHT COLUMN — DC+My Options (항상 맨 우측 고정) */}
+          <aside
+            className="relative bg-white overflow-hidden flex flex-col rounded-2xl shadow-[0_2px_16px_rgba(0,0,0,0.07)] h-full transition-all duration-300"
+            style={{ width: rightPanelCollapsed ? 36 : rightWidth, flexShrink: 0 }}
+          >
+            {rightPanelCollapsed ? (
+              /* 접힌 상태: 36px 스트립 상단 중앙 */
+              <button
+                onClick={() => setRightPanelCollapsed(false)}
+                className="absolute top-3 left-1/2 -translate-x-1/2 p-1.5 rounded-md text-slate-600 hover:bg-slate-100 transition-colors"
+                title="패널 펼치기"
+              >
+                <PanelLeft className="w-4 h-4" />
+              </button>
+            ) : (
+              <>
+                {/* 접기 버튼 */}
+                <div className="absolute top-3 right-3 z-10">
+                  <button
+                    onClick={() => setRightPanelCollapsed(true)}
+                    className="p-1.5 rounded-md text-slate-600 hover:bg-slate-100 transition-colors"
+                    title="패널 접기"
+                  >
+                    <PanelRight className="w-4 h-4" />
+                  </button>
+                </div>
+                <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+                  {renderPanel(panelSlots.rightTop)}
+                </div>
+                <div className="h-px bg-slate-100 flex-shrink-0 mx-4" />
+                <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+                  {renderPanel(panelSlots.rightBottom)}
+                </div>
+              </>
+            )}
           </aside>
         </div>
-      </div >
-    </div >
+      </div>
+    </div>
   );
 }
-
-
-
-
 

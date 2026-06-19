@@ -3,6 +3,7 @@ import { anthropic } from "@ai-sdk/anthropic";
 import { imageSearch } from "../tools/image-search";
 import { renderToSidebar } from "../tools/sidebar";
 import { renderInChat } from "../tools/render-in-chat";
+import { renderToOptionList } from "../tools/render-to-option-list";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -38,7 +39,7 @@ Classify <UserMessage> into one of the following five categories:
 - 1a → Write Korean reply (4-10 sentences) → sidePanel("1a", ui_context=<your reply>)
 - 1b → Write Korean reply (4-10 sentences) → sidePanel("1b", ui_context=<your reply>)
 - 2  → renderInChat("2", ui_context="[MY ITEMS REQUESTED]")
-- 3  → renderInChat("3", ui_context=<user's request in Korean>)
+- 3  → renderToOptionList("3", ui_context=<user's request in Korean>)
 - 4  → renderInChat("4", ui_context=<spec value + context>) → Write 1-2 sentence reply in Korean
 
 ## RULES
@@ -61,6 +62,7 @@ export function createAgent(productCategory: string = "") {
       imageSearch,
       sidePanel: renderToSidebar,
       renderInChat,
+      renderToOptionList,
     },
     stopWhen: stepCountIs(12),
     temperature: 0,

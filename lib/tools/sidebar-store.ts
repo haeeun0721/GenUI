@@ -43,6 +43,27 @@ export function pushChatUIResult(requestId: string, spec: any) {
   if (arr) arr.push(spec);
 }
 
+// ---------------------------------------------------------------------------
+// Option List store (for renderToOptionList tool — category 3)
+// ---------------------------------------------------------------------------
+
+export const optionListStore = new Map<string, any[]>();
+
+export function initOptionListStore(requestId: string) {
+  optionListStore.set(requestId, []);
+}
+
+export function popOptionListResults(requestId: string): any[] {
+  const results = optionListStore.get(requestId) ?? [];
+  optionListStore.delete(requestId);
+  return results;
+}
+
+export function pushOptionListResult(requestId: string, spec: any) {
+  const arr = optionListStore.get(requestId);
+  if (arr) arr.push(spec);
+}
+
 /** The active request ID – set on every incoming POST before agent runs. */
 export let currentRequestId = "";
 export function setCurrentRequestId(id: string) {

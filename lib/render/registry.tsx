@@ -1071,7 +1071,7 @@ export const manualRegistry: Record<string, any> = {
               className="flex items-center justify-between w-fit gap-4 text-xs font-semibold bg-white border border-slate-100 rounded-full py-2.5 px-5 shadow-[0_4px_20px_rgba(0,0,0,0.03)] hover:border-slate-300 hover:shadow-[0_8px_30px_rgba(0,0,0,0.06)] transition-all group"
             >
               <div className="flex items-center gap-1.5">
-                <span className="text-slate-400">🛒 MY ITEMS</span>
+                <span className="text-slate-400">🛒 MY OPTIONS</span>
                 <span className="text-slate-700 font-medium">과 함께 비교하기</span>
               </div>
               <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform text-slate-400" />
@@ -1081,7 +1081,7 @@ export const manualRegistry: Record<string, any> = {
           <div className="bg-white border border-slate-100 rounded-2xl p-6 flex flex-col gap-5 shadow-[0_8px_40px_rgba(0,0,0,0.04)] border-slate-100/50">
             <div className="flex flex-col gap-1">
               <div className="flex items-center gap-1.5 text-[14px] font-semibold">
-                <span className="text-slate-400">🛒 MY ITEMS</span>
+                <span className="text-slate-400">🛒 MY OPTIONS</span>
                 <span className="text-slate-800 font-medium">에 담아뒀던 다른 제품도 함께 비교하기</span>
               </div>
               <p className="text-[11px] text-slate-900 font-medium">비교에 추가할 제품을 선택해 주세요.</p>

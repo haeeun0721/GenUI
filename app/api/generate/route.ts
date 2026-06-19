@@ -8,7 +8,7 @@ import {
 } from "ai";
 import { SPEC_DATA_PART_TYPE } from "@json-render/core";
 import { headers } from "next/headers";
-import { initSidePanelStore, popSidePanelResults, setCurrentRequestId, initChatUIStore, popChatUIResults, setCurrentUserContext, setCurrentMessages, setCurrentSavedItems, setCurrentDecisionCriteria, setCurrentMyItemsContextSummary, setCurrentMyItemsRaw, setCurrentProductCategory } from "@/lib/tools/sidebar-store";
+import { initSidePanelStore, popSidePanelResults, setCurrentRequestId, initChatUIStore, popChatUIResults, initOptionListStore, popOptionListResults, setCurrentUserContext, setCurrentMessages, setCurrentSavedItems, setCurrentDecisionCriteria, setCurrentMyItemsContextSummary, setCurrentMyItemsRaw, setCurrentProductCategory } from "@/lib/tools/sidebar-store";
 import { searchProducts } from "@/lib/agents/data_agent";
 
 export const maxDuration = 60;
@@ -56,6 +56,7 @@ export async function POST(req: Request) {
   setCurrentRequestId(requestId);
   initSidePanelStore(requestId);
   initChatUIStore(requestId);
+  initOptionListStore(requestId);
   setCurrentMessages(uiMessages);
 
   // Extract USER CONTEXT directly from the latest user message (bypasses LLM)
@@ -168,6 +169,13 @@ export async function POST(req: Request) {
 
       for (const spec of chatUIResults) {
         writer.write({ type: "data-chat-ui-spec", data: spec } as any);
+      }
+
+      // Inject renderToOptionList results as data-option-list-spec chunks
+      const optionListResults = popOptionListResults(requestId);
+      console.log("[Route] Injecting", optionListResults.length, "renderToOptionList spec(s) as data-option-list-spec chunks");
+      for (const spec of optionListResults) {
+        writer.write({ type: "data-option-list-spec", data: spec } as any);
       }
     },
   });
