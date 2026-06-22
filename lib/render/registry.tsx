@@ -839,8 +839,8 @@ export const manualRegistry: Record<string, any> = {
           )}
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-[13px] border-collapse">
+        <div className="overflow-x-auto pb-4">
+          <table className="w-full min-w-[500px] text-[13px] border-collapse">
             <thead>
               <tr className="border-b border-slate-100">
                 {visibleColumns.map((col, ci) => {
@@ -1016,9 +1016,9 @@ export const manualRegistry: Record<string, any> = {
     const cards = Array.isArray(p.cards) ? p.cards : [];
 
     return (
-      <div className="grid grid-cols-2 gap-3 w-full">
+      <div className="grid grid-cols-1 gap-3 w-full min-w-0">
         {cards.map((card: any, idx: number) => (
-          <div key={card.id || idx}>
+          <div key={`${card.name || card.id || 'card'}-${idx}`}>
             {manualRegistry.ProductCard({ ...allProps, props: { ...card, _animationDelay: idx * 0.1 } })}
           </div>
         ))}

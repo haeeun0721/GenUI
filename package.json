@@ -4,7 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "predev": "command -v portless >/dev/null 2>&1 || (echo '\\nportless is required but not installed. Run: npm i -g portless\\nSee: https://github.com/vercel-labs/portless\\n' && exit 1)",
+    "predev": "where portless >nul 2>&1 || (echo portless is required but not installed. Run: npm i -g portless && exit 1)",
     "dev": "portless chat-demo.json-render next dev --turbopack",
     "build": "next build",
     "start": "next start",
@@ -26,6 +26,7 @@
     "@upstash/ratelimit": "^2.0.8",
     "@upstash/redis": "^1.37.0",
     "ai": "^6.0.33",
+    "cheerio": "^1.2.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "firecrawl": "^4.24.2",

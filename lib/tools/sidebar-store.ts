@@ -44,6 +44,27 @@ export function pushChatUIResult(requestId: string, spec: any) {
 }
 
 // ---------------------------------------------------------------------------
+// Comparison Table store (for renderInChat category 2 — shown in panel, not chat)
+// ---------------------------------------------------------------------------
+
+export const compTableStore = new Map<string, any[]>();
+
+export function initCompTableStore(requestId: string) {
+  compTableStore.set(requestId, []);
+}
+
+export function popCompTableResults(requestId: string): any[] {
+  const results = compTableStore.get(requestId) ?? [];
+  compTableStore.delete(requestId);
+  return results;
+}
+
+export function pushCompTableResult(requestId: string, spec: any) {
+  const arr = compTableStore.get(requestId);
+  if (arr) arr.push(spec);
+}
+
+// ---------------------------------------------------------------------------
 // Option List store (for renderToOptionList tool — category 3)
 // ---------------------------------------------------------------------------
 
@@ -61,27 +82,6 @@ export function popOptionListResults(requestId: string): any[] {
 
 export function pushOptionListResult(requestId: string, spec: any) {
   const arr = optionListStore.get(requestId);
-  if (arr) arr.push(spec);
-}
-
-// ---------------------------------------------------------------------------
-// Comparison Table store (for renderToComparisonTable tool — category 2)
-// ---------------------------------------------------------------------------
-
-export const comparisonTableStore = new Map<string, any[]>();
-
-export function initComparisonTableStore(requestId: string) {
-  comparisonTableStore.set(requestId, []);
-}
-
-export function popComparisonTableResults(requestId: string): any[] {
-  const results = comparisonTableStore.get(requestId) ?? [];
-  comparisonTableStore.delete(requestId);
-  return results;
-}
-
-export function pushComparisonTableResult(requestId: string, spec: any) {
-  const arr = comparisonTableStore.get(requestId);
   if (arr) arr.push(spec);
 }
 

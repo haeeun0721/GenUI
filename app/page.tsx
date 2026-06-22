@@ -29,6 +29,7 @@ import {
   GripVertical,
   PanelRight,
   PanelLeft,
+  User,
 } from "lucide-react";
 import { Streamdown } from "streamdown";
 import { code } from "@streamdown/code";
@@ -379,14 +380,27 @@ const MessageBubble = memo(({
       .map(p => (p as any).text)
       .join("");
 
-    const userText = rawText
-      .split(/\n{1,2}\[CONTEXT:/)[0]
-      // Strip only the |URL part from each My items entry, keep product names
-      .replace(/\|https?:\/\/[^\],]*/g, "")
-      .replace(/\n{1,2}\[DECISION CRITERIA:[^\n]*/gi, "")
-      .replace(/\n{1,2}\[USER CONTEXT:.*?\]/gs, "")
-      .replace(/\n{1,2}\[ASSIGNED ITEM:.*?\]/gs, "")
-      .trim();
+    let userText = rawText;
+    const cumulativeMatch = userText.match(/^\[SYSTEM: CUMULATIVE COMPARISON\] (.*?) 제품들을 Table/i);
+    
+    if (cumulativeMatch) {
+      userText = `"${cumulativeMatch[1].trim()}" 제품을 비교해줘.`;
+    } else {
+      const isPureCriteria = /^\[Decision Criteria\s*:[^\]]*\]\s*(?:\n|$|\[)/i.test(rawText);
+      const isPureMyItems = /^\[My items\s*:[^\]]*\]\s*(?:\n|$|\[)/i.test(rawText);
+
+      userText = userText.replace(/\|https?:\/\/[^\s,\]]+/g, "");
+      userText = userText.replace(/^\[Decision Criteria\s*:([^\]]*)\]\s*/i, '"$1" ');
+      userText = userText.replace(/^\[My items\s*:([^\]]*)\]\s*/i, '"$1" ');
+      userText = userText.split(/\n{1,2}\[CONTEXT:/i)[0];
+      userText = userText.split(/\n{1,2}\[DECISION CRITERIA:/i)[0];
+      userText = userText.split(/\n{1,2}\[USER CONTEXT:/i)[0];
+      userText = userText.split(/\n{1,2}\[ASSIGNED ITEM:/i)[0];
+      userText = userText.trim();
+
+      if (isPureCriteria && userText && !userText.includes("조건으로 추천해줘")) userText += " 조건으로 추천해줘.";
+      if (isPureMyItems && userText && !userText.includes("비교해줘")) userText += " 제품을 비교해줘.";
+    }
 
     return (
       <div className="flex justify-end w-full">
@@ -511,6 +525,11 @@ const InformationCardItem = memo(({ card, index }: { card: any, index: number })
 // =============================================================================
 
 export default function ChatPage() {
+  const [isMounted, setIsMounted] = useState(false);
+
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
 
   const [input, setInput] = useState("");
   const [hasStarted, setHasStarted] = useState(() =>
@@ -544,17 +563,29 @@ export default function ChatPage() {
   const [unchartedSpec, setUnchartedSpec] = useState<{ labels: string[] } | null>(null);
   const [dismissedUncharted, setDismissedUncharted] = useState<Set<string>>(new Set());
   const prevTableTurnRef = useRef<number>(-1);
-
+  // UnchartedTerritoryChip: 조건 전환(false→true) 감지용 refs
+  const prevConditionsRef = useRef<boolean>(false);   // 이전 allConditionsMet
+  const pendingFetchRef = useRef<boolean>(false);      // 스트리밍 해제 후 실행 대기 중 여부
   // Panel resize state
-  const [leftWidth, setLeftWidth] = useState(300);
-  const [rightWidth, setRightWidth] = useState(300);
+  const [isResizing, setIsResizing] = useState(false);
+  const [panelWidths, setPanelWidths] = useState<Record<string, number>>({
+    exploration: 600,
+    chat: 320,
+    compTable: 600,
+    optionList: 600,
+    criteria: 300,
+    options: 300,
+  });
+  const [rightWidth, setRightWidth] = useState(320);
   const [rightTopHeight, setRightTopHeight] = useState(300);
-  const [farRightWidth, setFarRightWidth] = useState(280);
-  const [compTableWidth, setCompTableWidth] = useState(320);
   const [compTableCollapsed, setCompTableCollapsed] = useState(false);
-  const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
+  const [rightPanelCollapsed, setRightPanelCollapsed] = useState(true);
   const [productCardListSpec, setProductCardListSpec] = useState<any>(null);
   const [compTableSpec, setCompTableSpec] = useState<any>(null);
+  // Panel visibility — hidden initially, slide in when AI produces relevant content
+  const [showExplorationPanel, setShowExplorationPanel] = useState(false);
+  const [showCompTablePanel, setShowCompTablePanel] = useState(false);
+  const [showOptionListPanel, setShowOptionListPanel] = useState(false);
   const pointerDragRef = useRef<{ type: 'col-l' | 'col-r' | 'col-ct' | 'col-ol' | 'col-or' | 'col-fr' | 'row'; startX: number; startY: number; startVal: number; containerH: number } | null>(null);
   const rightColumnRef = useRef<HTMLDivElement>(null);
 
@@ -576,6 +607,43 @@ export default function ChatPage() {
       const displaced = prev[targetSlot];
       return { ...prev, [fromSlot]: displaced, [targetSlot]: draggedPanel };
     });
+  };
+
+  const visibilityRef = useRef({ exploration: false, compTable: false, optionList: false });
+  visibilityRef.current = { exploration: showExplorationPanel, compTable: showCompTablePanel, optionList: showOptionListPanel };
+
+  const assignToNextSlot = (panelId: PanelId) => {
+    setPanelSlots(prev => {
+      const isVisible = (pid: PanelId) => {
+        if (pid === panelId) return true;
+        if (pid === 'exploration') return visibilityRef.current.exploration;
+        if (pid === 'compTable') return visibilityRef.current.compTable;
+        if (pid === 'optionList') return visibilityRef.current.optionList;
+        if (pid === 'chat') return false;
+        return true;
+      };
+
+      const dynamicSlots: SlotId[] = ['left', 'compTableSlot', 'farRight'];
+      for (const slot of dynamicSlots) {
+        if (!isVisible(prev[slot]) || prev[slot] === panelId) {
+          if (prev[slot] !== panelId) {
+             const oldPanel = prev[slot];
+             const currentSlot = (Object.entries(prev).find(([, p]) => p === panelId)?.[0] as SlotId) ?? 'left';
+             return { ...prev, [slot]: panelId, [currentSlot]: oldPanel };
+          }
+          return prev;
+        }
+      }
+      return prev;
+    });
+  };
+
+  const isPanelShown = (pid: PanelId) => {
+    if (pid === 'exploration') return showExplorationPanel;
+    if (pid === 'compTable') return showCompTablePanel;
+    if (pid === 'optionList') return showOptionListPanel;
+    if (pid === 'chat') return false; // chat is removed
+    return true; // criteria, options are always shown
   };
 
   const gripHandle = (panelId: PanelId) => (
@@ -627,6 +695,9 @@ export default function ChatPage() {
     setHighlightTurn(null);
     setInput("");
     setHasStarted(false);
+    setShowExplorationPanel(false);
+    setShowCompTablePanel(false);
+    setShowOptionListPanel(false);
   }, [setMessages]);
 
   // 세션 상태 localStorage 자동 저장
@@ -775,6 +846,7 @@ export default function ChatPage() {
   const handleAddItem = useCallback((name: string, image?: string, price?: string, description?: string, specs?: string[], link?: string) => {
     if (name && !droppedItems.some(item => item.name === name)) {
       setDroppedItems((prev) => [...prev, { name, image, price, description, specs, link }]);
+      setRightPanelCollapsed(false);
     }
   }, [droppedItems]);
 
@@ -1007,37 +1079,56 @@ export default function ChatPage() {
 
   const hasComparison = useMemo(() => messages.some(m => {
     // 1. Check raw text JSON blocks
-    if (m.parts?.some(p => p.type === "text" && /"type"\s*:\s*"(Table|ComparisonSelector)"/i.test(p.text))) return true;
+    if (m.parts?.some(p => p.type === "text" && /"type"\s*:\s*"(Table|ComparisonSelector)"/i.test((p as any).text))) return true;
 
-    // 2. Check injected UI specs (data-chat-ui-spec)
-    if (m.parts?.some((p: any) => p.type === "data-chat-ui-spec" && (p.data?.type === "Table" || p.data?.type === "ComparisonSelector"))) return true;
+    // 2. Check injected UI specs
+    if (m.parts?.some((p: any) => 
+      (p.type === "data-chat-ui-spec" && (p.data?.type === "Table" || p.data?.type === "ComparisonSelector")) ||
+      p.type === "data-comp-table-spec"
+    )) return true;
 
     // 3. Check tool invocations directly
     if ((m as any).toolInvocations?.some((ti: any) =>
-      ti.toolName === "renderInChat" && ti.args?.ui_intent_category === "2"
+      (ti.toolName === "renderInChat" || ti.toolName === "renderToCompTable") && ti.args?.ui_intent_category === "2"
     )) return true;
 
     return false;
   }), [messages]);
 
-  // Derive unexplored areas by calling the UI Agent (Category 6) via API
+  // UnchartedTerritoryChip: 세 조건이 false→true로 전환될 때만 API 호출
+  // 조건이 이미 모두 참인 상태에서의 변화(My Items 추가 등)는 무시
   useEffect(() => {
-    // TRIGGER CONDITION: My Items > 0 && Decision Criteria > 0 && Comparison Intent (Cat 2) detected
-    if (!hasComparison || droppedItems.length === 0 || droppedCriteria.length === 0) {
-      setUnchartedSpec(null);
+    const allConditionsMet =
+      hasComparison && droppedItems.length > 0 && droppedCriteria.length > 0;
+
+    const wasAllMet = prevConditionsRef.current;
+    prevConditionsRef.current = allConditionsMet;
+
+    // false → true 전환 시 fetch 대기 등록
+    if (allConditionsMet && !wasAllMet) {
+      pendingFetchRef.current = true;
+    }
+
+    // 조건 불충족 → pending 취소 (칩은 유지)
+    if (!allConditionsMet) {
+      pendingFetchRef.current = false;
       return;
     }
 
-    if (isStreaming) return; // Wait until the chat AI finishes generating the Table/CriteriaMap
+    // 스트리밍 중이면 대기 (pending은 유지)
+    if (isStreaming) return;
 
-    const categories: any[] = sidebarSpec.CriteriaMap?.props?.categories ?? [];
-    const existingLabels = categories.map((c: any) => c.label as string).filter(Boolean);
+    // pending이 없으면 실행 안 함
+    if (!pendingFetchRef.current) return;
+    pendingFetchRef.current = false;
 
     let isMounted = true;
 
     const fetchUncharted = async () => {
       try {
         const productCategory = assignedItem === "A" ? "유모차" : assignedItem === "B" ? "로봇 청소기" : "소비재";
+        const categories: any[] = sidebarSpec.CriteriaMap?.props?.categories ?? [];
+        const existingLabels = categories.map((c: any) => c.label as string).filter(Boolean);
         const criteriaNames = droppedCriteria.map(c => c.name);
 
         const res = await fetch("/api/unexplored-areas", {
@@ -1046,7 +1137,7 @@ export default function ChatPage() {
           body: JSON.stringify({
             existingCategories: existingLabels,
             productCategory,
-            droppedCriteria: criteriaNames
+            droppedCriteria: criteriaNames,
           }),
         });
 
@@ -1055,14 +1146,7 @@ export default function ChatPage() {
         if (res.ok) {
           const data = await res.json();
           if (data.labels && data.labels.length > 0) {
-            const filtered = data.labels.filter((l: string) => !dismissedUncharted.has(l));
-            if (filtered.length > 0) {
-              setUnchartedSpec({ labels: filtered });
-            } else {
-              setUnchartedSpec(null);
-            }
-          } else {
-            setUnchartedSpec(null);
+            setUnchartedSpec({ labels: data.labels });
           }
         }
       } catch (err) {
@@ -1071,9 +1155,9 @@ export default function ChatPage() {
     };
 
     fetchUncharted();
-
     return () => { isMounted = false; };
-  }, [sidebarSpec.CriteriaMap, droppedCriteria, droppedItems, assignedItem, hasComparison, isStreaming, dismissedUncharted]);
+  }, [hasComparison, droppedItems.length, droppedCriteria.length, isStreaming, assignedItem]);
+
 
   const scrollToTurn = useCallback((turnNumber: number, textToHighlight?: string) => {
     let targetElement: HTMLElement | null = null;
@@ -1177,6 +1261,9 @@ export default function ChatPage() {
       });
       const spec = await res.json();
       setTradeoffSpecs(prev => ({ ...prev, [newCriterion.name]: spec }));
+      if (spec?.type === "TradeoffHint") {
+        setRightPanelCollapsed(false);
+      }
     } catch (err) {
       console.error("[checkTradeoff] failed:", err);
     } finally {
@@ -1204,6 +1291,7 @@ export default function ChatPage() {
           importanceLevel,
         } as any]);
         checkTradeoff({ name: item.name, important: !!item.important }, existingCriteria);
+        setRightPanelCollapsed(false);
       }
     }
   }), [scrollToTurn, handleSubmit, droppedCriteria]);
@@ -1223,33 +1311,92 @@ export default function ChatPage() {
     },
   }), [handleAddItem, handleRemoveItem, handleCompare, droppedItems, droppedCriteria, userContext, handleSubmit]);
 
-  // Option List 패널: data-option-list-spec 스트림 파트에서 최신 spec 추출
+  // Comparison Table 패널: data-comp-table-spec 스트림 파트에서 최신 spec 추출
   useEffect(() => {
     let latestSpec: any = null;
     for (const msg of messages) {
       if (msg.role !== 'assistant') continue;
       for (const part of (msg.parts ?? []) as any[]) {
-        if ((part as any).type === 'data-option-list-spec' && (part as any).data) {
-          latestSpec = (part as any).data;
-        }
-      }
-    }
-    setProductCardListSpec(latestSpec);
-  }, [messages]);
-
-  // Comparison Table 패널: data-comparison-table-spec 스트림 파트에서 최신 spec 추출
-  useEffect(() => {
-    let latestSpec: any = null;
-    for (const msg of messages) {
-      if (msg.role !== 'assistant') continue;
-      for (const part of (msg.parts ?? []) as any[]) {
-        if ((part as any).type === 'data-comparison-table-spec' && (part as any).data) {
+        if ((part as any).type === 'data-comp-table-spec' && (part as any).data) {
           latestSpec = (part as any).data;
         }
       }
     }
     setCompTableSpec(latestSpec);
   }, [messages]);
+
+  // Option List 패널: 모든 data-option-list-spec 파트에서 카드들을 누적(Accumulate)
+  useEffect(() => {
+    let accumulatedCards: any[] = [];
+    let latestSpecBase: any = null;
+
+    for (const msg of messages) {
+      if (msg.role !== 'assistant') continue;
+      for (const part of (msg.parts ?? []) as any[]) {
+        if ((part as any).type === 'data-option-list-spec' && (part as any).data) {
+          const spec = (part as any).data;
+          latestSpecBase = spec; // 기본 구조 껍데기는 최신 것 유지
+          
+          if (spec?.props?.cards && Array.isArray(spec.props.cards)) {
+            for (const newCard of spec.props.cards) {
+              const existingIdx = accumulatedCards.findIndex(c => c.name === newCard.name);
+              if (existingIdx !== -1) {
+                accumulatedCards[existingIdx] = newCard; // 덮어쓰기 (업데이트)
+              } else {
+                accumulatedCards.unshift(newCard); // 새 카드를 배열 맨 앞에 추가
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (latestSpecBase) {
+      setProductCardListSpec({
+        ...latestSpecBase,
+        props: {
+          ...latestSpecBase.props,
+          cards: accumulatedCards
+        }
+      });
+    } else {
+      setProductCardListSpec(null);
+    }
+  }, [messages]);
+
+  // 패널 등장 트리거 — 콘텐츠가 생기면 해당 패널을 슬라이드인
+  useEffect(() => {
+    if ((sidebarSpec.CriteriaMap || sidebarSpec.conceptCards.length > 0) && !showExplorationPanel) {
+      assignToNextSlot('exploration');
+      setShowExplorationPanel(true);
+    }
+  }, [sidebarSpec, showExplorationPanel]);
+
+  const isCompTableActive = useMemo(() => messages.some(m =>
+    (m.parts || []).some((p: any) => p.type === 'data-comp-table-spec') ||
+    (m.toolInvocations || []).some((t: any) => t.toolName === 'renderToCompTable')
+  ), [messages]);
+
+  useEffect(() => {
+    if (isCompTableActive && !showCompTablePanel) {
+      assignToNextSlot('compTable');
+      setShowCompTablePanel(true);
+    }
+  }, [isCompTableActive, showCompTablePanel]);
+
+  const isOptionListActive = useMemo(() => messages.some(m =>
+    (m.parts || []).some((p: any) => p.type === 'data-option-list-spec') ||
+    (m.toolInvocations || []).some((t: any) => t.toolName === 'renderToOptionList')
+  ), [messages]);
+
+  useEffect(() => {
+    if (isOptionListActive && !showOptionListPanel) {
+      assignToNextSlot('optionList');
+      setShowOptionListPanel(true);
+    }
+  }, [isOptionListActive, showOptionListPanel]);
+
+  if (!isMounted) return null;
 
   if (!hasStarted) {
     return (
@@ -1329,13 +1476,13 @@ export default function ChatPage() {
 
   // ── Panel render functions ────────────────────────────────────────────
   const renderExploration = () => (
-    <div className="flex flex-col h-full p-6 overflow-hidden">
-      <div className="flex items-center justify-between mb-4 flex-shrink-0 border-b border-slate-100 pb-3">
+    <div className="flex flex-col h-full py-6 px-4 overflow-hidden">
+      <div className="flex flex-wrap items-center justify-between mb-4 flex-shrink-0 border-b border-slate-100 pb-3 gap-y-3 gap-x-2">
         <div className="flex items-center gap-2">
           {gripHandle('exploration')}
           <p className="text-[12.5px] font-black text-slate-600 tracking-widest uppercase whitespace-nowrap">🧭 Exploration Journey</p>
         </div>
-        <div className="flex items-center bg-[#F1F3F5] rounded-full p-[3px] border border-black/[0.02] shadow-inner shadow-slate-200/50">
+        <div className="flex items-center bg-[#F1F3F5] rounded-full p-[3px] border border-black/[0.02] shadow-inner shadow-slate-200/50 flex-shrink-0">
           <button type="button" onClick={() => setJourneyTab("criteria")} className={`px-4 py-1.5 rounded-full text-[12px] font-medium transition-all duration-200 ${journeyTab === "criteria" ? "bg-white text-slate-800 shadow-[0_1px_4px_rgba(0,0,0,0.08)] border border-black/[0.04]" : "text-slate-400 hover:text-slate-600"}`}>Criteria</button>
           <button type="button" onClick={() => setJourneyTab("information")} className={`px-4 py-1.5 rounded-full text-[12px] font-medium transition-all duration-200 ${journeyTab === "information" ? "bg-white text-slate-800 shadow-[0_1px_4px_rgba(0,0,0,0.08)] border border-black/[0.04]" : "text-slate-400 hover:text-slate-600"}`}>Information</button>
         </div>
@@ -1450,7 +1597,7 @@ export default function ChatPage() {
         {gripHandle('optionList')}
         <p className="text-[12.5px] font-black text-slate-600 tracking-widest uppercase">📝 OPTION LIST</p>
       </div>
-      <div className="flex-1 overflow-y-auto no-scrollbar p-4">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden no-scrollbar p-4">
         {productCardListSpec ? (
           <ExplorerRenderer
             spec={productCardListSpec}
@@ -1468,25 +1615,25 @@ export default function ChatPage() {
   );
 
   const renderCompTable = () => (
-    <div className="flex flex-col h-full overflow-hidden">
-      <div className="flex-shrink-0 flex items-center gap-2 px-6 pt-5 pb-3 border-b border-slate-50">
+    <div className="flex flex-col gap-4 p-6 flex-1 overflow-auto no-scrollbar">
+      <div className="flex items-center gap-2">
         {gripHandle('compTable')}
-        <p className="text-[12.5px] font-black text-slate-600 tracking-widest uppercase">📊 Comparison Table</p>
+        <p className="text-[12.5px] font-black text-slate-600 tracking-widest uppercase">⚖️ COMPARISON TABLE</p>
       </div>
-      <div className="flex-1 overflow-y-auto no-scrollbar p-4">
-        {compTableSpec ? (
+      {compTableSpec ? (
+        <div className="flex-1 overflow-auto no-scrollbar">
           <ExplorerRenderer
             spec={compTableSpec}
             bindings={bubbleBindings}
           />
-        ) : (
-          <div className="flex flex-col items-center justify-center h-full gap-2">
-            <p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">
-              제품 비교를 요청하면<br />여기에 표가 표시됩니다
-            </p>
-          </div>
-        )}
-      </div>
+        </div>
+      ) : (
+        <div className="flex-1 flex items-center justify-center">
+          <p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">
+            제품 비교를 요청하면<br />여기에 비교표가 표시됩니다
+          </p>
+        </div>
+      )}
     </div>
   );
 
@@ -1500,9 +1647,9 @@ export default function ChatPage() {
   };
 
   return (
-    <div className="h-screen flex flex-col w-full overflow-hidden bg-[#EDEFF2]">
+    <div className="h-screen flex flex-col w-full overflow-hidden bg-[#FAFAFA]">
       {/* Full-width white header */}
-      <div className="shrink-0 bg-[#EDEFF2] px-8 py-4 flex items-center justify-between">
+      <div className="shrink-0 bg-[#FAFAFA] px-8 py-4 flex items-center justify-between">
         <button
           type="button"
           onClick={() => resetSession()}
@@ -1510,174 +1657,237 @@ export default function ChatPage() {
         >
           GenSpace
         </button>
-        <button
-          type="button"
-          onClick={() => {
-            if (window.confirm("세션을 종료하고 처음 화면으로 돌아가시겠습니까?")) {
-              resetSession();
-            }
-          }}
-          className="px-4 py-2 rounded-[8px] text-[13px] font-semibold border border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300 transition-all duration-200"
-        >
-          종료하기
-        </button>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-1.5">
+            <User className="w-4 h-4 text-slate-500" strokeWidth={2.5} />
+            <span className="text-[14.5px] font-medium text-slate-600">
+              안녕하세요, <strong className="font-bold text-slate-900">{participantId}</strong>님
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              if (window.confirm("세션을 종료하고 처음 화면으로 돌아가시겠습니까?")) {
+                resetSession();
+              }
+            }}
+            className="px-4 py-2 rounded-[8px] text-[13px] font-semibold border border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300 transition-all duration-200"
+          >
+            종료하기
+          </button>
+        </div>
       </div>
 
-      <div className="flex-1 min-h-0 flex justify-center w-full overflow-hidden">
-        <div className="flex w-full h-full p-3">
+      <div className="flex-1 min-h-0 flex flex-col w-full overflow-hidden">
+        <div className="flex w-full flex-1 min-h-0 p-3 pb-0 relative">
 
-          {/* OUTER-LEFT: Exploration 왼쪽 핸들 */}
-          <div
-            className="w-3 flex-shrink-0 flex items-center justify-center cursor-col-resize group"
-            onPointerDown={(e) => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); pointerDragRef.current = { type: 'col-ol', startX: e.clientX, startY: e.clientY, startVal: leftWidth, containerH: 0 }; }}
-            onPointerMove={(e) => { const d = pointerDragRef.current; if (!d || d.type !== 'col-ol') return; setLeftWidth(Math.max(160, Math.min(540, d.startVal - (e.clientX - d.startX)))); }}
-            onPointerUp={() => { pointerDragRef.current = null; }}
-          >
-            <div className="w-[2px] h-8 rounded-full bg-slate-400/0 group-hover:bg-slate-400/60 transition-colors" />
-          </div>
+          {/* LEFT AREA FOR DYNAMIC PANELS */}
+          <div className="flex-1 flex min-w-0 h-full relative overflow-hidden pr-[48px]">
+            {/* SLOT 1 (LEFT) RESIZE HANDLE */}
+          {isPanelShown(panelSlots.left) && (
+            <div
+              className="w-3 flex-shrink-0 flex items-center justify-center cursor-col-resize group"
+              onPointerDown={(e) => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); pointerDragRef.current = { type: 'col-ol', startX: e.clientX, startY: e.clientY, startVal: panelWidths[panelSlots.left], containerH: 0 }; setIsResizing(true); }}
+              onPointerMove={(e) => { const d = pointerDragRef.current; if (!d || d.type !== 'col-ol') return; setPanelWidths(prev => ({ ...prev, [panelSlots.left]: Math.max(160, Math.min(800, d.startVal - (e.clientX - d.startX))) })); }}
+              onPointerUp={() => { pointerDragRef.current = null; setIsResizing(false); }}
+            >
+              <div className="w-[2px] h-8 rounded-full bg-slate-400/0 group-hover:bg-slate-400/60 transition-colors" />
+            </div>
+          )}
 
-          {/* LEFT SLOT */}
-          <aside {...slotDropProps('left')} className={`bg-white z-10 flex flex-col overflow-hidden rounded-2xl shadow-[0_2px_16px_rgba(0,0,0,0.07)] transition-all ${panelDropTarget === 'left' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`} style={{ width: leftWidth, flexShrink: 0 }}>
-            {renderPanel(panelSlots.left)}
+          {/* SLOT 1 (LEFT) */}
+          <aside {...slotDropProps('left')} className={`bg-white z-10 flex flex-col overflow-hidden rounded-2xl shadow-[0_2px_8px_rgba(0,0,0,0.04)] ${isPanelShown(panelSlots.left) ? 'border border-slate-200' : 'border-0'} ${panelDropTarget === 'left' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`} style={{ width: isPanelShown(panelSlots.left) ? panelWidths[panelSlots.left] : 0, flexShrink: 1, transition: isResizing ? 'none' : 'width 0.45s cubic-bezier(0.4,0,0.2,1)' }}>
+            {isPanelShown(panelSlots.left) && renderPanel(panelSlots.left)}
           </aside>
 
-          {/* COL RESIZE: Left <-> Center */}
-          <div
-            className="w-3 flex-shrink-0 flex items-center justify-center cursor-col-resize group"
-            onPointerDown={(e) => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); pointerDragRef.current = { type: 'col-l', startX: e.clientX, startY: e.clientY, startVal: leftWidth, containerH: 0 }; }}
-            onPointerMove={(e) => { const d = pointerDragRef.current; if (!d || d.type !== 'col-l') return; setLeftWidth(Math.max(160, Math.min(540, d.startVal + (e.clientX - d.startX)))); }}
-            onPointerUp={() => { pointerDragRef.current = null; }}
-          >
-            <div className="w-[2px] h-8 rounded-full bg-slate-400/0 group-hover:bg-slate-400/60 transition-colors" />
-          </div>
-
-          {/* CENTER COLUMN WRAPPER — Chat 패널 + 입력창 묶음 */}
-          <div className="flex-1 min-w-0 flex flex-col gap-3 min-h-0">
-
-            {/* CENTER SLOT */}
-            <div {...slotDropProps('center')} className={`flex-1 min-h-0 overflow-hidden flex flex-col bg-white rounded-2xl shadow-[0_2px_16px_rgba(0,0,0,0.07)] transition-all ${panelDropTarget === 'center' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`}>
-              {renderPanel(panelSlots.center)}
+          {/* SLOT 1 <-> SLOT 2 RESIZE HANDLE */}
+          {isPanelShown(panelSlots.left) && isPanelShown(panelSlots.compTableSlot) && (
+            <div
+              className="w-3 flex-shrink-0 flex items-center justify-center cursor-col-resize group"
+              onPointerDown={(e) => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); pointerDragRef.current = { type: 'col-l', startX: e.clientX, startY: e.clientY, startVal: panelWidths[panelSlots.left], containerH: 0 }; setIsResizing(true); }}
+              onPointerMove={(e) => { const d = pointerDragRef.current; if (!d || d.type !== 'col-l') return; setPanelWidths(prev => ({ ...prev, [panelSlots.left]: Math.max(160, Math.min(800, d.startVal + (e.clientX - d.startX))) })); }}
+              onPointerUp={() => { pointerDragRef.current = null; setIsResizing(false); }}
+            >
+              <div className="w-[2px] h-8 rounded-full bg-slate-400/0 group-hover:bg-slate-400/60 transition-colors" />
             </div>
-
-            {/* INPUT BAR — Chat 패널 너비에 정렬 */}
-            <div className="flex-shrink-0 relative">
-              {showScrollButton && (
-                <button
-                  onClick={scrollToBottom}
-                  className="absolute left-1/2 -translate-x-1/2 -top-8 z-10 h-8 w-8 rounded-full border border-slate-200 bg-white text-slate-400 shadow-xl flex items-center justify-center hover:text-slate-900 hover:border-slate-900 transition-all"
-                >
-                  <ArrowDown className="h-3.5 w-3.5" />
-                </button>
-              )}
-              <div
-                onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add("bg-slate-50", "border-slate-300"); }}
-                onDragLeave={(e) => { e.currentTarget.classList.remove("bg-slate-50", "border-slate-300"); }}
-                onDrop={(e: React.DragEvent<HTMLDivElement>) => {
-                  e.preventDefault();
-                  e.currentTarget.classList.remove("bg-slate-50", "border-slate-300");
-                  const jsonData = e.dataTransfer.getData("application/json");
-                  const label = e.dataTransfer.getData("text/plain");
-                  if (jsonData) { try { const item = JSON.parse(jsonData); if (item.name && !searchCriteria.some(c => c.name === item.name)) setSearchCriteria(prev => [...prev, { name: item.name, min: item.min, priority: item.priority || "medium" }]); } catch { if (label && !searchCriteria.some(c => c.name === label)) setSearchCriteria(prev => [...prev, { name: label, priority: "medium" }]); } } else if (label && !searchCriteria.some(c => c.name === label)) setSearchCriteria(prev => [...prev, { name: label, priority: "medium" }]);
-                }}
-                className="flex items-end gap-2 bg-white border border-slate-200 rounded-[24px] p-2 pl-4 pr-2 shadow-lg shadow-slate-200/50 hover:shadow-xl hover:border-slate-300 transition-all focus-within:border-slate-400 focus-within:ring-4 focus-within:ring-slate-100 min-h-[48px]"
-              >
-                <div className="flex-1 flex flex-wrap items-center gap-1.5 min-w-0 max-h-[120px] overflow-y-auto py-1">
-                  {mentionChips.map((chip, i) => (<div key={`mention-${i}`} className="flex items-center gap-1.5 bg-slate-50 border border-slate-100 rounded-full px-2 py-0.5 h-[28px] shrink-0 animate-in zoom-in-95 duration-200"><span className="text-[12px] font-bold text-slate-800">{chip.name}</span><button onClick={() => setMentionChips(prev => prev.filter((_, idx) => idx !== i))} className="ml-1 p-0.5 text-slate-300 hover:text-slate-900 transition-colors"><X className="w-2.5 h-2.5" /></button></div>))}
-                  {searchCriteria.map((c, i) => (<div key={`criteria-${i}`} className="flex items-center gap-1.5 bg-slate-50 border border-slate-100 rounded-full px-2 py-0.5 h-[28px] shrink-0 animate-in zoom-in-95 duration-200"><span className="text-[12px] font-bold text-slate-800">{c.name}</span>{c.min && <span className="text-[10px] text-slate-500 font-medium">{c.min}</span>}<button onClick={() => setSearchCriteria(prev => prev.filter((_, idx) => idx !== i))} className="ml-1 p-0.5 text-slate-300 hover:text-slate-900 transition-colors"><X className="w-2.5 h-2.5" /></button></div>))}
-                  <textarea ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown} placeholder={(searchCriteria.length > 0 || mentionChips.length > 0) ? "" : "무엇이든 물어보세요"} rows={1} className="flex-1 min-w-[120px] bg-transparent border-none focus:ring-0 focus:outline-none focus-visible:ring-0 resize-none text-slate-800 placeholder:text-slate-400 py-1 text-[15px] font-medium" />
-                </div>
-                <button onClick={() => handleSubmit()} disabled={(!input.trim() && searchCriteria.length === 0 && mentionChips.length === 0) || isStreaming} className="w-9 h-9 rounded-full bg-slate-900 flex items-center justify-center text-white hover:bg-black active:scale-95 transition-all shadow-md shrink-0 self-end mb-0.5">{isStreaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4 stroke-[2.5px]" />}</button>
-              </div>
-            </div>
-
-          </div>
+          )}
 
 
-          {/* COL RESIZE: Center <-> Comparison Table */}
-          <div
-            className="w-3 flex-shrink-0 flex items-center justify-center cursor-col-resize group"
-            onPointerDown={(e) => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); pointerDragRef.current = { type: 'col-r', startX: e.clientX, startY: e.clientY, startVal: compTableWidth, containerH: 0 }; }}
-            onPointerMove={(e) => { const d = pointerDragRef.current; if (!d || d.type !== 'col-r') return; setCompTableWidth(Math.max(160, Math.min(600, d.startVal - (e.clientX - d.startX)))); }}
-            onPointerUp={() => { pointerDragRef.current = null; }}
-          >
-            <div className="w-[2px] h-8 rounded-full bg-slate-400/0 group-hover:bg-slate-400/60 transition-colors" />
-          </div>
-
-          {/* COMPARISON TABLE COLUMN */}
+          {/* SLOT 2 (COMP TABLE SLOT) */}
           <aside
             {...slotDropProps('compTableSlot')}
-            className={`bg-white overflow-hidden flex flex-col rounded-2xl shadow-[0_2px_16px_rgba(0,0,0,0.07)] h-full transition-all ${panelDropTarget === 'compTableSlot' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`}
-            style={{ width: compTableWidth, flexShrink: 0 }}
+            className={`bg-white overflow-hidden flex flex-col rounded-2xl shadow-[0_2px_8px_rgba(0,0,0,0.04)] h-full ${isPanelShown(panelSlots.compTableSlot) ? 'border border-slate-200' : 'border-0'} ${panelDropTarget === 'compTableSlot' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`}
+            style={{ width: isPanelShown(panelSlots.compTableSlot) ? panelWidths[panelSlots.compTableSlot] : 0, flexShrink: 1, transition: isResizing ? 'none' : 'width 0.45s cubic-bezier(0.4,0,0.2,1)' }}
           >
-            {renderPanel(panelSlots.compTableSlot)}
+            {isPanelShown(panelSlots.compTableSlot) && renderPanel(panelSlots.compTableSlot)}
           </aside>
 
-          {/* COL RESIZE: Comparison Table <-> Option List */}
-          <div
-            className="w-3 flex-shrink-0 flex items-center justify-center cursor-col-resize group"
-            onPointerDown={(e) => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); pointerDragRef.current = { type: 'col-ct', startX: e.clientX, startY: e.clientY, startVal: compTableWidth, containerH: 0 }; }}
-            onPointerMove={(e) => { const d = pointerDragRef.current; if (!d || d.type !== 'col-ct') return; setCompTableWidth(Math.max(160, Math.min(600, d.startVal + (e.clientX - d.startX)))); }}
-            onPointerUp={() => { pointerDragRef.current = null; }}
-          >
-            <div className="w-[2px] h-8 rounded-full bg-slate-400/0 group-hover:bg-slate-400/60 transition-colors" />
-          </div>
+          {/* SLOT 2 <-> SLOT 3 RESIZE HANDLE */}
+          {isPanelShown(panelSlots.compTableSlot) && isPanelShown(panelSlots.farRight) && (
+            <div
+              className="w-3 flex-shrink-0 flex items-center justify-center cursor-col-resize group"
+              onPointerDown={(e) => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); pointerDragRef.current = { type: 'col-ct', startX: e.clientX, startY: e.clientY, startVal: panelWidths[panelSlots.compTableSlot], containerH: 0 }; setIsResizing(true); }}
+              onPointerMove={(e) => { const d = pointerDragRef.current; if (!d || d.type !== 'col-ct') return; setPanelWidths(prev => ({ ...prev, [panelSlots.compTableSlot]: Math.max(160, Math.min(800, d.startVal + (e.clientX - d.startX))) })); }}
+              onPointerUp={() => { pointerDragRef.current = null; setIsResizing(false); }}
+            >
+              <div className="w-[2px] h-8 rounded-full bg-slate-400/0 group-hover:bg-slate-400/60 transition-colors" />
+            </div>
+          )}
 
-          {/* OPTION LIST COLUMN — position 3 */}
+          {/* SLOT 3 (FAR RIGHT SLOT) */}
           <aside
             {...slotDropProps('farRight')}
-            className={`bg-white overflow-hidden flex flex-col rounded-2xl shadow-[0_2px_16px_rgba(0,0,0,0.07)] transition-all h-full ${panelDropTarget === 'farRight' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`}
-            style={{ width: farRightWidth, flexShrink: 0 }}
+            className={`bg-white overflow-hidden flex flex-col rounded-2xl shadow-[0_2px_8px_rgba(0,0,0,0.04)] h-full ${isPanelShown(panelSlots.farRight) ? 'border border-slate-200' : 'border-0'} ${panelDropTarget === 'farRight' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`}
+            style={{ width: isPanelShown(panelSlots.farRight) ? panelWidths[panelSlots.farRight] : 0, flexShrink: 1, transition: isResizing ? 'none' : 'width 0.45s cubic-bezier(0.4,0,0.2,1)' }}
           >
-            {renderPanel(panelSlots.farRight)}
+            {isPanelShown(panelSlots.farRight) && renderPanel(panelSlots.farRight)}
           </aside>
 
-          {/* 핸들: Option List <-> DC+My Options */}
-          <div
-            className="w-3 flex-shrink-0 flex items-center justify-center cursor-col-resize group"
-            onPointerDown={(e) => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); pointerDragRef.current = { type: 'col-or', startX: e.clientX, startY: e.clientY, startVal: rightWidth, containerH: 0 }; }}
-            onPointerMove={(e) => { const d = pointerDragRef.current; if (!d || d.type !== 'col-or') return; setRightWidth(Math.max(160, Math.min(540, d.startVal - (e.clientX - d.startX)))); }}
-            onPointerUp={() => { pointerDragRef.current = null; }}
-          >
-            <div className="w-[2px] h-8 rounded-full bg-slate-400/0 group-hover:bg-slate-400/60 transition-colors" />
+            {/* FLEX SPACER - Pushes dynamic slots to the left */}
+            <div className="flex-1" />
           </div>
 
-          {/* RIGHT COLUMN — DC+My Options (항상 맨 우측 고정) */}
-          <aside
-            className="relative bg-white overflow-hidden flex flex-col rounded-2xl shadow-[0_2px_16px_rgba(0,0,0,0.07)] h-full transition-all duration-300"
-            style={{ width: rightPanelCollapsed ? 36 : rightWidth, flexShrink: 0 }}
+          {/* RIGHT COLUMN OVERLAY — DC+My Options (항상 맨 우측 고정) */}
+          <div 
+            className="absolute top-3 bottom-0 right-3 flex z-40 transition-all duration-300"
+            style={{ pointerEvents: rightPanelCollapsed ? 'none' : 'auto', height: 'calc(100% - 12px)' }}
           >
-            {rightPanelCollapsed ? (
-              /* 접힌 상태: 36px 스트립 상단 중앙 */
-              <button
-                onClick={() => setRightPanelCollapsed(false)}
-                className="absolute top-3 left-1/2 -translate-x-1/2 p-1.5 rounded-md text-slate-600 hover:bg-slate-100 transition-colors"
-                title="패널 펼치기"
+            {/* 핸들: Option List <-> DC+My Options */}
+            {!rightPanelCollapsed && (
+              <div
+                className="w-3 flex-shrink-0 flex items-center justify-center cursor-col-resize group"
+                style={{ pointerEvents: 'auto' }}
+                onPointerDown={(e) => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); pointerDragRef.current = { type: 'col-or', startX: e.clientX, startY: e.clientY, startVal: rightWidth, containerH: 0 }; setIsResizing(true); }}
+                onPointerMove={(e) => { const d = pointerDragRef.current; if (!d || d.type !== 'col-or') return; setRightWidth(Math.max(160, Math.min(540, d.startVal - (e.clientX - d.startX)))); }}
+                onPointerUp={() => { pointerDragRef.current = null; setIsResizing(false); }}
               >
-                <PanelLeft className="w-4 h-4" />
-              </button>
-            ) : (
-              <>
-                {/* 접기 버튼 */}
-                <div className="absolute top-3 right-3 z-10">
-                  <button
-                    onClick={() => setRightPanelCollapsed(true)}
-                    className="p-1.5 rounded-md text-slate-600 hover:bg-slate-100 transition-colors"
-                    title="패널 접기"
-                  >
-                    <PanelRight className="w-4 h-4" />
-                  </button>
-                </div>
-                <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
-                  {renderPanel(panelSlots.rightTop)}
-                </div>
-                <div className="h-px bg-slate-100 flex-shrink-0 mx-4" />
-                <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
-                  {renderPanel(panelSlots.rightBottom)}
-                </div>
-              </>
+                <div className="w-[2px] h-8 rounded-full bg-slate-400/0 group-hover:bg-slate-400/60 transition-colors" />
+              </div>
             )}
-          </aside>
+
+            <aside
+              className={`relative overflow-hidden flex flex-col rounded-2xl h-full transition-all duration-300 ${rightPanelCollapsed ? 'bg-white border border-transparent shadow-[0_2px_8px_rgba(0,0,0,0.04)]' : 'bg-white/95 backdrop-blur-sm border border-slate-200 shadow-2xl'}`}
+              style={{ width: rightPanelCollapsed ? 36 : rightWidth, flexShrink: 0, transition: isResizing ? 'none' : 'width 0.3s cubic-bezier(0.4,0,0.2,1)', pointerEvents: 'auto' }}
+            >
+              {rightPanelCollapsed ? (
+                /* 접힌 상태: 36px 스트립 상단 중앙 */
+                <button
+                  onClick={() => setRightPanelCollapsed(false)}
+                  className="absolute top-3 left-1/2 -translate-x-1/2 p-1.5 rounded-md text-slate-600 hover:bg-slate-100 transition-colors"
+                  title="패널 펼치기"
+                >
+                  <PanelLeft className="w-4 h-4" />
+                </button>
+              ) : (
+                <>
+                  {/* 접기 버튼 */}
+                  <div className="absolute top-3 right-3 z-10">
+                    <button
+                      onClick={() => setRightPanelCollapsed(true)}
+                      className="p-1.5 rounded-md text-slate-600 hover:bg-slate-100 transition-colors"
+                      title="패널 접기"
+                    >
+                      <PanelRight className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+                    {renderPanel(panelSlots.rightTop)}
+                  </div>
+                  <div className="h-px bg-slate-100 flex-shrink-0 mx-4" />
+                  <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+                    {renderPanel(panelSlots.rightBottom)}
+                  </div>
+                </>
+              )}
+            </aside>
+          </div>
         </div>
+
+        {/* INPUT BAR — 패널 행 밖, 다른 패널에 영향받지 않는 독립 영역 */}
+        <div className="flex-shrink-0 px-3 pb-3 pt-3 relative">
+          {showScrollButton && (
+            <button
+              onClick={scrollToBottom}
+              className="absolute left-1/2 -translate-x-1/2 top-0 z-10 h-8 w-8 rounded-full border border-slate-200 bg-white text-slate-400 shadow-xl flex items-center justify-center hover:text-slate-900 hover:border-slate-900 transition-all"
+            >
+              <ArrowDown className="h-3.5 w-3.5" />
+            </button>
+          )}
+          <div className="max-w-2xl w-full mx-auto flex flex-col">
+            {/* 최근 질문 표시 */}
+            {(() => {
+              const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
+              if (!lastUserMsg) return null;
+              const rawText = (lastUserMsg as any).content || ((lastUserMsg as any).parts?.find((p: any) => p.type === 'text')?.text || "");
+              let displayMsg = rawText;
+              const cumulativeMatch = displayMsg.match(/^\[SYSTEM: CUMULATIVE COMPARISON\] (.*?) 제품들을 Table/i);
+              
+              if (cumulativeMatch) {
+                displayMsg = `"${cumulativeMatch[1].trim()}" 제품을 비교해줘.`;
+              } else {
+                const isPureCriteria = /^\[Decision Criteria\s*:[^\]]*\]\s*(?:\n|$|\[)/i.test(rawText);
+                const isPureMyItems = /^\[My items\s*:[^\]]*\]\s*(?:\n|$|\[)/i.test(rawText);
+
+                displayMsg = displayMsg.replace(/\|https?:\/\/[^\s,\]]+/g, "");
+                displayMsg = displayMsg.replace(/^\[Decision Criteria\s*:([^\]]*)\]\s*/i, '"$1" ');
+                displayMsg = displayMsg.replace(/^\[My items\s*:([^\]]*)\]\s*/i, '"$1" ');
+                displayMsg = displayMsg.split(/\n{1,2}\[CONTEXT:/i)[0];
+                displayMsg = displayMsg.split(/\n{1,2}\[DECISION CRITERIA:/i)[0];
+                displayMsg = displayMsg.split(/\n{1,2}\[USER CONTEXT:/i)[0];
+                displayMsg = displayMsg.split(/\n{1,2}\[ASSIGNED ITEM:/i)[0];
+                displayMsg = displayMsg.trim();
+
+                if (isPureCriteria && displayMsg && !displayMsg.includes("조건으로 추천해줘")) displayMsg += " 조건으로 추천해줘.";
+                if (isPureMyItems && displayMsg && !displayMsg.includes("비교해줘")) displayMsg += " 제품을 비교해줘.";
+              }
+              
+              if (displayMsg) {
+                return (
+                  <div className="flex animate-in fade-in slide-in-from-bottom-1 duration-300">
+                    <div className="px-4 py-1.5 ml-5 text-[13px] text-slate-500 font-medium flex items-center gap-2 bg-white border border-slate-200 border-b-0 rounded-t-[12px] relative z-10 translate-y-[1px]">
+                      <span className="shrink-0 flex items-center justify-center w-5 h-5 rounded-full bg-slate-100 text-slate-400 text-[11px] font-bold">Q</span>
+                      <span className="max-w-[600px] whitespace-normal break-keep leading-relaxed" title={displayMsg}>{displayMsg}</span>
+                    </div>
+                  </div>
+                );
+              }
+              return null;
+            })()}
+
+            <div
+              onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add("bg-slate-50", "border-slate-300"); }}
+              onDragLeave={(e) => { e.currentTarget.classList.remove("bg-slate-50", "border-slate-300"); }}
+              onDrop={(e: React.DragEvent<HTMLDivElement>) => {
+                e.preventDefault();
+                e.currentTarget.classList.remove("bg-slate-50", "border-slate-300");
+                const jsonData = e.dataTransfer.getData("application/json");
+                const label = e.dataTransfer.getData("text/plain");
+                if (jsonData) { try { const item = JSON.parse(jsonData); if (item.name && !searchCriteria.some(c => c.name === item.name)) setSearchCriteria(prev => [...prev, { name: item.name, min: item.min, priority: item.priority || "medium" }]); } catch { if (label && !searchCriteria.some(c => c.name === label)) setSearchCriteria(prev => [...prev, { name: label, priority: "medium" }]); } } else if (label && !searchCriteria.some(c => c.name === label)) setSearchCriteria(prev => [...prev, { name: label, priority: "medium" }]);
+              }}
+              className="relative z-0 flex items-end gap-2 bg-white border border-slate-200 rounded-[24px] p-2 pl-4 pr-2 shadow-lg shadow-slate-200/50 hover:shadow-xl hover:border-slate-300 transition-all focus-within:border-slate-400 focus-within:ring-4 focus-within:ring-slate-100 min-h-[48px]"
+            >
+              <div className="flex-1 flex flex-wrap items-center gap-1.5 min-w-0 max-h-[120px] overflow-y-auto py-1">
+                {mentionChips.map((chip, i) => (<div key={`mention-${i}`} className="flex items-center gap-1.5 bg-slate-50 border border-slate-100 rounded-full px-2 py-0.5 h-[28px] shrink-0 animate-in zoom-in-95 duration-200"><span className="text-[12px] font-bold text-slate-800">{chip.name}</span><button onClick={() => setMentionChips(prev => prev.filter((_, idx) => idx !== i))} className="ml-1 p-0.5 text-slate-300 hover:text-slate-900 transition-colors"><X className="w-2.5 h-2.5" /></button></div>))}
+                {searchCriteria.map((c, i) => (<div key={`criteria-${i}`} className="flex items-center gap-1.5 bg-slate-50 border border-slate-100 rounded-full px-2 py-0.5 h-[28px] shrink-0 animate-in zoom-in-95 duration-200"><span className="text-[12px] font-bold text-slate-800">{c.name}</span>{c.min && <span className="text-[10px] text-slate-500 font-medium">{c.min}</span>}<button onClick={() => setSearchCriteria(prev => prev.filter((_, idx) => idx !== i))} className="ml-1 p-0.5 text-slate-300 hover:text-slate-900 transition-colors"><X className="w-2.5 h-2.5" /></button></div>))}
+                <textarea ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown} placeholder={(searchCriteria.length > 0 || mentionChips.length > 0) ? "" : "무엇이든 물어보세요"} rows={1} className="flex-1 min-w-[120px] bg-transparent border-none focus:ring-0 focus:outline-none focus-visible:ring-0 resize-none text-slate-800 placeholder:text-slate-400 py-1 text-[15px] font-medium" />
+              </div>
+              {(() => {
+                const isInputEmpty = !input.trim() && searchCriteria.length === 0 && mentionChips.length === 0;
+                const isSubmitDisabled = isInputEmpty || isStreaming;
+                return (
+                  <button onClick={() => handleSubmit()} disabled={isSubmitDisabled} className="w-9 h-9 rounded-full flex items-center justify-center transition-all shadow-md shrink-0 self-end mb-0.5 bg-slate-900 text-white hover:bg-black active:scale-95 disabled:bg-slate-50 disabled:text-slate-300 disabled:hover:bg-slate-50 disabled:active:scale-100 disabled:shadow-none disabled:cursor-default border border-transparent disabled:border-slate-100">
+                    {isStreaming ? (
+                      <Loader2 className="h-4 w-4 animate-spin text-slate-400" />
+                    ) : (
+                      <ArrowUp className={`h-4 w-4 ${isSubmitDisabled ? "stroke-[1.5px]" : "stroke-[2.5px]"}`} />
+                    )}
+                  </button>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
+
       </div>
     </div>
   );

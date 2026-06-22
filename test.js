@@ -1,0 +1,11 @@
+let rawText = "[My items : 사이베엑스 발리오 S 프레임 유모차|https://example.com, 조이 엑스플로리 X 유모차|https://example.com] 을 비교해줘\n\n[CONTEXT: User has these items...]";
+let userText = rawText;
+userText = userText.replace(/\|https?:\/\/[^\s,\]]+/g, "");
+userText = userText.replace(/^\[Decision Criteria\s*:([^\]]*)\]\s*/i, '"$1" ');
+userText = userText.replace(/^\[My items\s*:([^\]]*)\]\s*/i, '"$1" ');
+userText = userText.split(/\n{1,2}\[CONTEXT:/i)[0];
+userText = userText.split(/\n{1,2}\[DECISION CRITERIA:/i)[0];
+userText = userText.split(/\n{1,2}\[USER CONTEXT:/i)[0];
+userText = userText.split(/\n{1,2}\[ASSIGNED ITEM:/i)[0];
+userText = userText.trim();
+console.log('OUTPUT:', userText);

@@ -8,7 +8,7 @@ import {
 } from "ai";
 import { SPEC_DATA_PART_TYPE } from "@json-render/core";
 import { headers } from "next/headers";
-import { initSidePanelStore, popSidePanelResults, setCurrentRequestId, initChatUIStore, popChatUIResults, initOptionListStore, popOptionListResults, initComparisonTableStore, popComparisonTableResults, setCurrentUserContext, setCurrentMessages, setCurrentSavedItems, setCurrentDecisionCriteria, setCurrentMyItemsContextSummary, setCurrentMyItemsRaw, setCurrentProductCategory } from "@/lib/tools/sidebar-store";
+import { initSidePanelStore, popSidePanelResults, setCurrentRequestId, initChatUIStore, popChatUIResults, initOptionListStore, popOptionListResults, initCompTableStore, popCompTableResults, setCurrentUserContext, setCurrentMessages, setCurrentSavedItems, setCurrentDecisionCriteria, setCurrentMyItemsContextSummary, setCurrentMyItemsRaw, setCurrentProductCategory } from "@/lib/tools/sidebar-store";
 import { searchProducts } from "@/lib/agents/data_agent";
 
 export const maxDuration = 60;
@@ -57,7 +57,7 @@ export async function POST(req: Request) {
   initSidePanelStore(requestId);
   initChatUIStore(requestId);
   initOptionListStore(requestId);
-  initComparisonTableStore(requestId);
+  initCompTableStore(requestId);
   setCurrentMessages(uiMessages);
 
   // Extract USER CONTEXT directly from the latest user message (bypasses LLM)
@@ -179,11 +179,11 @@ export async function POST(req: Request) {
         writer.write({ type: "data-option-list-spec", data: spec } as any);
       }
 
-      // Inject renderToComparisonTable results as data-comparison-table-spec chunks
-      const comparisonTableResults = popComparisonTableResults(requestId);
-      console.log("[Route] Injecting", comparisonTableResults.length, "renderToComparisonTable spec(s) as data-comparison-table-spec chunks");
-      for (const spec of comparisonTableResults) {
-        writer.write({ type: "data-comparison-table-spec", data: spec } as any);
+      // Inject renderInChat category 2 results as data-comp-table-spec chunks
+      const compTableResults = popCompTableResults(requestId);
+      console.log("[Route] Injecting", compTableResults.length, "compTable spec(s) as data-comp-table-spec chunks");
+      for (const spec of compTableResults) {
+        writer.write({ type: "data-comp-table-spec", data: spec } as any);
       }
     },
   });

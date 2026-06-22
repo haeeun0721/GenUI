@@ -1,6 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { generateUISpec } from "../agents/ui_agent";
+import { searchProducts } from "../agents/data_agent";
 import {
   currentRequestId,
   pushOptionListResult,
@@ -9,6 +10,46 @@ import {
   currentDecisionCriteria,
   currentMyItemsContextSummary,
 } from "./sidebar-store";
+
+// ---------------------------------------------------------------------------
+// Helper: parse + push UI spec JSON
+// ---------------------------------------------------------------------------
+
+function parseAndPush(uiSpecString: string): any {
+  // Robust parser: find the first '{' and its matching '}'
+  const firstBrace = uiSpecString.indexOf("{");
+  if (firstBrace !== -1) {
+    let lastBrace = -1;
+    let stack = 0;
+    for (let i = firstBrace; i < uiSpecString.length; i++) {
+      if (uiSpecString[i] === "{") stack++;
+      if (uiSpecString[i] === "}") stack--;
+      if (stack === 0) {
+        lastBrace = i;
+        break;
+      }
+    }
+    if (lastBrace !== -1) {
+      const jsonPart = uiSpecString.substring(firstBrace, lastBrace + 1);
+      const uiSpec = JSON.parse(jsonPart);
+      if (currentRequestId) pushOptionListResult(currentRequestId, uiSpec);
+      return uiSpec;
+    }
+  }
+
+  // Fallback: strip markdown fences
+  const cleanStr = uiSpecString
+    .replace(/^```(?:json)?\s*\n?/, "")
+    .replace(/\n?```\s*$/, "")
+    .trim();
+  const uiSpec = JSON.parse(cleanStr);
+  if (currentRequestId) pushOptionListResult(currentRequestId, uiSpec);
+  return uiSpec;
+}
+
+// ---------------------------------------------------------------------------
+// Tool
+// ---------------------------------------------------------------------------
 
 export const renderToOptionList = tool({
   description:
@@ -33,19 +74,44 @@ export const renderToOptionList = tool({
   execute: async ({ ui_context, intent_summary, ui_intent_category }) => {
     console.log(
       [
-        "[Tool: renderToOptionList] OUTPUT FORMAT",
+        "[Tool: renderToOptionList] CALLED",
         `  category     : ${ui_intent_category}`,
         `  intent       : ${intent_summary}`,
-        `  ui_context   : ${ui_context}`,
+        `  ui_context   : ${ui_context.slice(0, 100)}`,
       ].join("\n")
     );
 
-    const resolvedContext =
-      ui_context.trim() === "[MY ITEMS REQUESTED]"
-        ? currentMyItemsContextSummary
-        : ui_context;
-
     try {
+      let resolvedContext: string;
+
+      if (ui_context.trim() === "[MY ITEMS REQUESTED]") {
+        // --- My Items 요청: 사전 로드된 컨텍스트 사용 ---
+        resolvedContext = currentMyItemsContextSummary;
+        console.log("[renderToOptionList] Using pre-fetched My Items context.");
+      } else {
+        // --- 일반 추천 (Intent 3): 다나와 검색 → Claude fallback ---
+        console.log(`[renderToOptionList] Fetching Danawa products for: "${ui_context.slice(0, 80)}"`);
+        const alreadyShownNames = currentSavedItems.map((item) => {
+          const pipeIdx = item.indexOf("|");
+          return pipeIdx !== -1 ? item.slice(0, pipeIdx).trim() : item.trim();
+        });
+
+        const searchResult = await (searchProducts.execute as any)({
+          query: ui_context,
+          count: 4,
+          excludeNames: alreadyShownNames,
+        });
+
+        if (searchResult?.contextSummary) {
+          resolvedContext = searchResult.contextSummary;
+          console.log(`[renderToOptionList] Got ${searchResult.products?.length ?? 0} products from data agent.`);
+        } else {
+          // 완전 실패 시 원본 텍스트 그대로 넘김 (Claude 지식으로 처리)
+          resolvedContext = ui_context;
+          console.warn("[renderToOptionList] searchProducts returned no context. Using raw ui_context.");
+        }
+      }
+
       const uiSpecString = await generateUISpec(
         resolvedContext,
         intent_summary,
@@ -57,43 +123,14 @@ export const renderToOptionList = tool({
       );
 
       if (uiSpecString && !uiSpecString.startsWith("ERROR:")) {
-        // ROBUST PARSER: Find the first '{' and its matching '}'
-        const firstBrace = uiSpecString.indexOf("{");
-        if (firstBrace !== -1) {
-          let lastBrace = -1;
-          let stack = 0;
-          for (let i = firstBrace; i < uiSpecString.length; i++) {
-            if (uiSpecString[i] === "{") stack++;
-            if (uiSpecString[i] === "}") stack--;
-            if (stack === 0) {
-              lastBrace = i;
-              break;
-            }
-          }
-
-          if (lastBrace !== -1) {
-            const jsonPart = uiSpecString.substring(firstBrace, lastBrace + 1);
-            const uiSpec = JSON.parse(jsonPart);
-            if (currentRequestId) pushOptionListResult(currentRequestId, uiSpec);
-            return uiSpec;
-          }
-        }
-
-        // Fallback: strip markdown fences
-        const cleanStr = uiSpecString
-          .replace(/^```(?:json)?\s*\n?/, "")
-          .replace(/\n?```\s*$/, "")
-          .trim();
-        const uiSpec = JSON.parse(cleanStr);
-        if (currentRequestId) pushOptionListResult(currentRequestId, uiSpec);
-        return uiSpec;
+        return parseAndPush(uiSpecString);
       }
 
       return { error: uiSpecString };
     } catch (err) {
-      console.error("[Tool: renderToOptionList] Parsing Error:", err);
+      console.error("[Tool: renderToOptionList] Error:", err);
       return {
-        error: `JSON 파싱 오류: ${err instanceof Error ? err.message : String(err)}`,
+        error: `오류: ${err instanceof Error ? err.message : String(err)}`,
       };
     }
   },
