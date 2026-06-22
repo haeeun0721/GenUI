@@ -554,6 +554,7 @@ export default function ChatPage() {
   const [compTableCollapsed, setCompTableCollapsed] = useState(false);
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
   const [productCardListSpec, setProductCardListSpec] = useState<any>(null);
+  const [compTableSpec, setCompTableSpec] = useState<any>(null);
   const pointerDragRef = useRef<{ type: 'col-l' | 'col-r' | 'col-ct' | 'col-ol' | 'col-or' | 'col-fr' | 'row'; startX: number; startY: number; startVal: number; containerH: number } | null>(null);
   const rightColumnRef = useRef<HTMLDivElement>(null);
 
@@ -1236,6 +1237,20 @@ export default function ChatPage() {
     setProductCardListSpec(latestSpec);
   }, [messages]);
 
+  // Comparison Table 패널: data-comparison-table-spec 스트림 파트에서 최신 spec 추출
+  useEffect(() => {
+    let latestSpec: any = null;
+    for (const msg of messages) {
+      if (msg.role !== 'assistant') continue;
+      for (const part of (msg.parts ?? []) as any[]) {
+        if ((part as any).type === 'data-comparison-table-spec' && (part as any).data) {
+          latestSpec = (part as any).data;
+        }
+      }
+    }
+    setCompTableSpec(latestSpec);
+  }, [messages]);
+
   if (!hasStarted) {
     return (
       <div className="h-screen w-full flex items-center justify-center bg-[#FFFFFF]">
@@ -1453,10 +1468,24 @@ export default function ChatPage() {
   );
 
   const renderCompTable = () => (
-    <div className="flex flex-col gap-4 p-6 flex-1 overflow-auto no-scrollbar">
-      <div className="flex items-center gap-2">
+    <div className="flex flex-col h-full overflow-hidden">
+      <div className="flex-shrink-0 flex items-center gap-2 px-6 pt-5 pb-3 border-b border-slate-50">
         {gripHandle('compTable')}
         <p className="text-[12.5px] font-black text-slate-600 tracking-widest uppercase">📊 Comparison Table</p>
+      </div>
+      <div className="flex-1 overflow-y-auto no-scrollbar p-4">
+        {compTableSpec ? (
+          <ExplorerRenderer
+            spec={compTableSpec}
+            bindings={bubbleBindings}
+          />
+        ) : (
+          <div className="flex flex-col items-center justify-center h-full gap-2">
+            <p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">
+              제품 비교를 요청하면<br />여기에 표가 표시됩니다
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );

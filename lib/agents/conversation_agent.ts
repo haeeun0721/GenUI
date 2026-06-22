@@ -4,6 +4,7 @@ import { imageSearch } from "../tools/image-search";
 import { renderToSidebar } from "../tools/sidebar";
 import { renderInChat } from "../tools/render-in-chat";
 import { renderToOptionList } from "../tools/render-to-option-list";
+import { renderToComparisonTable } from "../tools/render-to-comparison-table";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -38,7 +39,7 @@ Classify <UserMessage> into one of the following five categories:
 ## ACTION (execute in order)
 - 1a → Write Korean reply (4-10 sentences) → sidePanel("1a", ui_context=<your reply>)
 - 1b → Write Korean reply (4-10 sentences) → sidePanel("1b", ui_context=<your reply>)
-- 2  → renderInChat("2", ui_context="[MY ITEMS REQUESTED]")
+- 2  → renderToComparisonTable("2", ui_context="[MY ITEMS REQUESTED]")
 - 3  → renderToOptionList("3", ui_context=<user's request in Korean>)
 - 4  → renderInChat("4", ui_context=<spec value + context>) → Write 1-2 sentence reply in Korean
 
@@ -63,6 +64,7 @@ export function createAgent(productCategory: string = "") {
       sidePanel: renderToSidebar,
       renderInChat,
       renderToOptionList,
+      renderToComparisonTable,
     },
     stopWhen: stepCountIs(12),
     temperature: 0,

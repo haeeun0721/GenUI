@@ -64,6 +64,27 @@ export function pushOptionListResult(requestId: string, spec: any) {
   if (arr) arr.push(spec);
 }
 
+// ---------------------------------------------------------------------------
+// Comparison Table store (for renderToComparisonTable tool — category 2)
+// ---------------------------------------------------------------------------
+
+export const comparisonTableStore = new Map<string, any[]>();
+
+export function initComparisonTableStore(requestId: string) {
+  comparisonTableStore.set(requestId, []);
+}
+
+export function popComparisonTableResults(requestId: string): any[] {
+  const results = comparisonTableStore.get(requestId) ?? [];
+  comparisonTableStore.delete(requestId);
+  return results;
+}
+
+export function pushComparisonTableResult(requestId: string, spec: any) {
+  const arr = comparisonTableStore.get(requestId);
+  if (arr) arr.push(spec);
+}
+
 /** The active request ID – set on every incoming POST before agent runs. */
 export let currentRequestId = "";
 export function setCurrentRequestId(id: string) {

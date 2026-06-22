@@ -8,7 +8,7 @@ import {
 } from "ai";
 import { SPEC_DATA_PART_TYPE } from "@json-render/core";
 import { headers } from "next/headers";
-import { initSidePanelStore, popSidePanelResults, setCurrentRequestId, initChatUIStore, popChatUIResults, initOptionListStore, popOptionListResults, setCurrentUserContext, setCurrentMessages, setCurrentSavedItems, setCurrentDecisionCriteria, setCurrentMyItemsContextSummary, setCurrentMyItemsRaw, setCurrentProductCategory } from "@/lib/tools/sidebar-store";
+import { initSidePanelStore, popSidePanelResults, setCurrentRequestId, initChatUIStore, popChatUIResults, initOptionListStore, popOptionListResults, initComparisonTableStore, popComparisonTableResults, setCurrentUserContext, setCurrentMessages, setCurrentSavedItems, setCurrentDecisionCriteria, setCurrentMyItemsContextSummary, setCurrentMyItemsRaw, setCurrentProductCategory } from "@/lib/tools/sidebar-store";
 import { searchProducts } from "@/lib/agents/data_agent";
 
 export const maxDuration = 60;
@@ -57,6 +57,7 @@ export async function POST(req: Request) {
   initSidePanelStore(requestId);
   initChatUIStore(requestId);
   initOptionListStore(requestId);
+  initComparisonTableStore(requestId);
   setCurrentMessages(uiMessages);
 
   // Extract USER CONTEXT directly from the latest user message (bypasses LLM)
@@ -176,6 +177,13 @@ export async function POST(req: Request) {
       console.log("[Route] Injecting", optionListResults.length, "renderToOptionList spec(s) as data-option-list-spec chunks");
       for (const spec of optionListResults) {
         writer.write({ type: "data-option-list-spec", data: spec } as any);
+      }
+
+      // Inject renderToComparisonTable results as data-comparison-table-spec chunks
+      const comparisonTableResults = popComparisonTableResults(requestId);
+      console.log("[Route] Injecting", comparisonTableResults.length, "renderToComparisonTable spec(s) as data-comparison-table-spec chunks");
+      for (const spec of comparisonTableResults) {
+        writer.write({ type: "data-comparison-table-spec", data: spec } as any);
       }
     },
   });
