@@ -52,3 +52,9 @@ scratch/
 examples/stripe-app/*/stripe-app.json
 examples/stripe-app/*/.build
 examples/stripe-app/*/yarn.lock
+
+# RAG 임베딩 파일 (용량 크므로 제외 - embed-products.mjs로 재생성 가능)
+data/embeddings-*.json
+
+# Windows 임시 파일
+nul

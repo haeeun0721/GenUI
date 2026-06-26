@@ -1,5 +1,5 @@
-import { createAgent } from "@/lib/agents/conversation_agent";
-import { minuteRateLimit, dailyRateLimit } from "@/lib/rate-limit";
+import { createAgent } from "@/lib/backend/agents/conversation_agent";
+import { minuteRateLimit, dailyRateLimit } from "@/lib/backend/rate-limit";
 import {
   convertToModelMessages,
   createUIMessageStream,
@@ -8,8 +8,8 @@ import {
 } from "ai";
 import { SPEC_DATA_PART_TYPE } from "@json-render/core";
 import { headers } from "next/headers";
-import { initSidePanelStore, popSidePanelResults, setCurrentRequestId, initChatUIStore, popChatUIResults, initOptionListStore, popOptionListResults, initCompTableStore, popCompTableResults, setCurrentUserContext, setCurrentMessages, setCurrentSavedItems, setCurrentDecisionCriteria, setCurrentMyItemsContextSummary, setCurrentMyItemsRaw, setCurrentProductCategory } from "@/lib/tools/sidebar-store";
-import { searchProducts } from "@/lib/agents/data_agent";
+import { initSidePanelStore, popSidePanelResults, setCurrentRequestId, initOptionListStore, popOptionListResults, initCompTableStore, popCompTableResults, setCurrentUserContext, setCurrentMessages, setCurrentSavedItems, setCurrentDecisionCriteria, setCurrentMyItemsContextSummary, setCurrentMyItemsRaw, setCurrentProductCategory, setCurrentLocale } from "@/lib/backend/tools/sidebar-store";
+import { searchProducts } from "@/lib/backend/agents/data_agent";
 
 export const maxDuration = 60;
 
@@ -55,10 +55,15 @@ export async function POST(req: Request) {
   const requestId = `${Date.now()}-${Math.random()}`;
   setCurrentRequestId(requestId);
   initSidePanelStore(requestId);
-  initChatUIStore(requestId);
   initOptionListStore(requestId);
   initCompTableStore(requestId);
   setCurrentMessages(uiMessages);
+
+  // Read locale from cookie (set by frontend toggle)
+  const cookieHeader = headersList.get("cookie") ?? "";
+  const localeCookie = cookieHeader.split(";").find(c => c.trim().startsWith("gs_locale="));
+  const locale = (localeCookie?.split("=")[1]?.trim() ?? "ko") as "ko" | "en";
+  setCurrentLocale(locale);
 
   // Extract USER CONTEXT directly from the latest user message (bypasses LLM)
   const latestUserMsg = [...uiMessages].reverse().find(m => m.role === "user");
@@ -124,6 +129,7 @@ export async function POST(req: Request) {
   const STRIP_PATTERNS = [
     /\n{0,2}\[USER CONTEXT:[^\]]+\]/g,
     /\n{0,2}\[My items\s*:[^\]]+\]/gi,
+    /\n{0,2}\[DECISION CRITERIA:[^\]]+\]/gi,
   ];
   const sanitizedMessages: typeof uiMessages = uiMessages.map(msg => {
     if (msg.role !== "user") return msg;
@@ -164,15 +170,7 @@ export async function POST(req: Request) {
         writer.write({ type: SPEC_DATA_PART_TYPE, data: spec } as any);
       }
 
-      // Inject renderInChat results as data-chat-ui-spec chunks
-      const chatUIResults = popChatUIResults(requestId);
-      console.log("[Route] Injecting", chatUIResults.length, "renderInChat spec(s) as data-chat-ui-spec chunks");
 
-      for (const spec of chatUIResults) {
-        writer.write({ type: "data-chat-ui-spec", data: spec } as any);
-      }
-
-      // Inject renderToOptionList results as data-option-list-spec chunks
       const optionListResults = popOptionListResults(requestId);
       console.log("[Route] Injecting", optionListResults.length, "renderToOptionList spec(s) as data-option-list-spec chunks");
       for (const spec of optionListResults) {

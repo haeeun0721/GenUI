@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useState, useCallback, useMemo, memo, useRef, useEffect } from "react";
 import { useChat } from "@ai-sdk/react";
@@ -9,8 +9,8 @@ import {
   type SpecDataPart,
 } from "@json-render/core";
 import { useJsonRenderMessage } from "@json-render/react";
-import { ExplorerRenderer } from "@/lib/render/renderer";
-import { manualRegistry } from "@/lib/render/registry";
+import { ExplorerRenderer } from "@/lib/frontend/render/renderer";
+import { manualRegistry } from "@/lib/frontend/render/registry";
 import { ThemeToggle } from "@/components/theme-toggle";
 import {
   ArrowDown,
@@ -116,6 +116,17 @@ function ToolCallDisplay({
 // Helper: Extract UI Specs from Text
 // =============================================================================
 
+// 한국어 조사 은/는 자동 계산 (마지막 글자 받침 유무 기준)
+function getEunNeun(word: string): string {
+  const lastChar = word[word.length - 1];
+  if (!lastChar) return "은";
+  const code = lastChar.charCodeAt(0);
+  if (code >= 0xAC00 && code <= 0xD7A3) {
+    return (code - 0xAC00) % 28 === 0 ? "는" : "은";
+  }
+  return "은";
+}
+
 function extractSpecsFromText(text: string): Array<{ kind: 'text' | 'spec', content: any }> {
   const result: Array<{ kind: 'text' | 'spec', content: any }> = [];
   let lastIdx = 0;
@@ -217,7 +228,7 @@ const MessageBubble = memo(({
     const toolInvocations = (message as any).toolInvocations ?? [];
     const sidePanelSpecs: any[] = [];
     toolInvocations.forEach((ti: any) => {
-      if ((ti.toolName === "renderToSidebar" || ti.toolName === "sidePanel") && ti.state === "result") {
+      if ((ti.toolName === "renderToSidebar" || ti.toolName === "sidePanel" || ti.toolName === "renderToExplorationJourney") && ti.state === "result") {
         const spec = ti.result;
         if (spec) {
           let parsedSpec = spec;
@@ -267,7 +278,7 @@ const MessageBubble = memo(({
         });
       } else if (part.type.startsWith("tool-")) {
         const toolName = (part as any).toolName || (part as any).toolInvocation?.toolName || (!["tool-call", "tool-result", "tool-invocation"].includes(part.type) ? part.type.replace(/^tool-/, "") : "");
-        if (toolName === "renderToSidebar" || toolName === "sidePanel" || toolName === "imageSearch" || toolName === "renderInChat" || toolName === "searchProducts") return;
+        if (toolName === "renderToSidebar" || toolName === "sidePanel" || toolName === "renderToExplorationJourney" || toolName === "imageSearch" || toolName === "searchProducts") return;
 
         const toolInfo = {
           toolCallId: (part as any).toolCallId || (part as any).toolInvocation?.toolCallId,
@@ -288,19 +299,6 @@ const MessageBubble = memo(({
       result.push({ kind: "spec", content: spec });
     });
 
-    // Collect chat-ui-spec data parts (renderInChat results)
-    message.parts.forEach((part: any) => {
-      if (part.type === "data-chat-ui-spec" && part.data) {
-        result.push({ kind: "spec", content: part.data });
-      }
-    });
-
-    // If this message produced a renderInChat UI, suppress all text segments
-    // so only the UI component is shown (no duplicate text summary).
-    const hasRenderInChatUI = message.parts.some((part: any) => part.type === "data-chat-ui-spec");
-    if (hasRenderInChatUI) {
-      return result.filter((seg: any) => seg.kind !== "text");
-    }
 
     return result;
 
@@ -406,7 +404,12 @@ const MessageBubble = memo(({
       <div className="flex justify-end w-full">
         <div className="max-w-[85%] flex flex-col items-end gap-2">
           {userText && (
-            <div className="rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap bg-slate-900 text-white rounded-tr-md shadow-sm">
+            <div
+              className="rounded-2xl px-4 py-2.5 leading-relaxed whitespace-pre-wrap bg-slate-900 text-white rounded-tr-md break-words"
+              style={{
+                fontSize: userText.length > 120 ? '11px' : userText.length > 60 ? '12px' : '14px',
+              }}
+            >
               {userText}
             </div>
           )}
@@ -538,6 +541,47 @@ export default function ChatPage() {
   const [participantId, setParticipantId] = useState(() =>
     typeof window !== 'undefined' ? (localStorage.getItem('gs_participantId') ?? '') : ''
   );
+  const [locale, setLocale] = useState<'ko' | 'en'>(() =>
+    typeof window !== 'undefined' ? ((localStorage.getItem('gs_locale') as 'ko' | 'en') ?? 'ko') : 'ko'
+  );
+
+  // ---------------------------------------------------------------------------
+  // Translation dictionary
+  // ---------------------------------------------------------------------------
+  const T = {
+    greeting:          locale === 'en' ? 'Hello, '                                          : '안녕하세요, ',
+    greetingSuffix:    locale === 'en' ? ''                                                 : '님',
+    proceedToPayment:  locale === 'en' ? 'Proceed to Payment'                              : '결제 진행하기',
+    askAnything:       locale === 'en' ? 'Ask me anything'                                 : '무엇이든 물어보세요',
+    participantId:     locale === 'en' ? 'PARTICIPANT ID'                                  : '참가자ID',
+    assignedItem:      locale === 'en' ? 'ASSIGNED ITEM'                                   : '배정받은 아이템',
+    purchaseContext:   locale === 'en' ? 'PURCHASE CONTEXT'                                : '구매 목적 및 상황',
+    contextPlaceholder: locale === 'en'
+      ? 'e.g. I go out often alone. Lightweight and portable is important.'
+      : '예: 외출이 잦고 혼자 다녀요. 가볍고 휴대하기 편한 게 중요해요.',
+    getStarted:        locale === 'en' ? 'Get Started'                                     : '시작하기',
+    criteriaEmpty:     locale === 'en' ? 'Click criteria chips\nto pin them here'          : '기준 칩을 클릭해\n여기에 고정해두세요',
+    optionsEmpty:      locale === 'en' ? 'Press ♥ on products\nto save them here'         : '관심 제품의 ♥를 눌러\n여기에 담아보세요',
+    optionListEmpty:   locale === 'en' ? 'Get product recommendations\nto see options here': '제품 추천을 받으면\n여기에 옵션이 표시됩니다',
+    impHigh:           locale === 'en' ? 'High'                                            : '중요',
+    impMedium:         locale === 'en' ? 'Med'                                             : '보통',
+    impLow:            locale === 'en' ? 'Low'                                             : '낮음',
+    stroller:          locale === 'en' ? 'Stroller'                                        : '유모차',
+    robotVacuum:       locale === 'en' ? 'Robot Vacuum'                                    : '로봇 청소기',
+    pinHint:           locale === 'en' ? 'Enter'                                           : '입력',
+    // Receipt modal
+    finalProduct:      locale === 'en' ? 'FINAL SELECTION'                                 : '최종 선택 제품',
+    price:             locale === 'en' ? 'PRICE'                                            : '가격',
+    decisionCriteria:  locale === 'en' ? 'DECISION CRITERIA'                               : '결정 기준',
+    importance:        locale === 'en' ? 'IMPORTANCE'                                       : '중요도',
+    noCriteria:        locale === 'en' ? 'No saved criteria'                                : '저장된 기준 없음',
+    totalCriteria:     locale === 'en' ? 'Total Criteria'                                   : '얘 결정 기준',
+    productsConsidered:locale === 'en' ? 'PRODUCTS CONSIDERED'                              : '{T.productsConsidered}',
+    exploredCategories:locale === 'en' ? 'EXPLORED CATEGORIES'                              : '{T.exploredCategories}',
+    impKey:            locale === 'en' ? 'Key'                                              : '핵심',
+    impRef:            locale === 'en' ? 'Ref'                                              : '참고',
+    countSuffix:       locale === 'en' ? ''                                                 : '개',
+  };
   const [userContext, setUserContext] = useState(() =>
     typeof window !== 'undefined' ? (localStorage.getItem('gs_userContext') ?? '') : ''
   );
@@ -566,6 +610,7 @@ export default function ChatPage() {
   // UnchartedTerritoryChip: 조건 전환(false→true) 감지용 refs
   const prevConditionsRef = useRef<boolean>(false);   // 이전 allConditionsMet
   const pendingFetchRef = useRef<boolean>(false);      // 스트리밍 해제 후 실행 대기 중 여부
+  const unchartedHasShownRef = useRef<boolean>(false); // 첫 표시 여부 (이후 애니메이션 스킵)
   // Panel resize state
   const [isResizing, setIsResizing] = useState(false);
   const [panelWidths, setPanelWidths] = useState<Record<string, number>>({
@@ -582,6 +627,7 @@ export default function ChatPage() {
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(true);
   const [productCardListSpec, setProductCardListSpec] = useState<any>(null);
   const [compTableSpec, setCompTableSpec] = useState<any>(null);
+  const [showSummaryModal, setShowSummaryModal] = useState(false);
   // Panel visibility — hidden initially, slide in when AI produces relevant content
   const [showExplorationPanel, setShowExplorationPanel] = useState(false);
   const [showCompTablePanel, setShowCompTablePanel] = useState(false);
@@ -698,7 +744,17 @@ export default function ChatPage() {
     setShowExplorationPanel(false);
     setShowCompTablePanel(false);
     setShowOptionListPanel(false);
+    setUnchartedSpec(null);
+    setDismissedUncharted(new Set());
+    prevConditionsRef.current = false;
+    pendingFetchRef.current = false;
   }, [setMessages]);
+
+  // locale 변경 → localStorage + 쿠키에 동기화 (API 요청 시 자동 전송됨)
+  useEffect(() => {
+    localStorage.setItem('gs_locale', locale);
+    document.cookie = `gs_locale=${locale};path=/;max-age=86400`;
+  }, [locale]);
 
   // 세션 상태 localStorage 자동 저장
   useEffect(() => {
@@ -909,7 +965,7 @@ export default function ChatPage() {
     messages.forEach((m) => {
       // Path 1a: toolInvocations — populated after stream completes
       ((m as any).toolInvocations ?? []).forEach((ti: any) => {
-        if (ti.toolName === "renderToSidebar" || ti.toolName === "sidePanel") {
+        if (ti.toolName === "renderToSidebar" || ti.toolName === "sidePanel" || ti.toolName === "renderToExplorationJourney") {
           const res = ti.result || (ti as any).args?.spec;
           if (res) specs.push(res);
         }
@@ -926,7 +982,7 @@ export default function ChatPage() {
             p.toolName ||
             p.toolInvocation?.toolName ||
             "";
-          if (toolName === "renderToSidebar" || toolName === "sidePanel") {
+          if (toolName === "renderToSidebar" || toolName === "sidePanel" || toolName === "renderToExplorationJourney") {
             const res = p.result ?? p.output ?? p.toolInvocation?.result;
             if (res) specs.push(typeof res === "string" ? (() => { try { return JSON.parse(res); } catch { return null; } })() : res);
           }
@@ -1293,6 +1349,9 @@ export default function ChatPage() {
         checkTradeoff({ name: item.name, important: !!item.important }, existingCriteria);
         setRightPanelCollapsed(false);
       }
+    },
+    onDragStartCriteria: () => {
+      setRightPanelCollapsed(false);
     }
   }), [scrollToTurn, handleSubmit, droppedCriteria]);
 
@@ -1325,25 +1384,43 @@ export default function ChatPage() {
     setCompTableSpec(latestSpec);
   }, [messages]);
 
-  // Option List 패널: 모든 data-option-list-spec 파트에서 카드들을 누적(Accumulate)
+  // Option List 패널: data-option-list-spec 파트 또는 tool invocation result에서 카드 누적
   useEffect(() => {
     let accumulatedCards: any[] = [];
     let latestSpecBase: any = null;
 
     for (const msg of messages) {
       if (msg.role !== 'assistant') continue;
+
+      // 1순위: data-option-list-spec 스트림 파트
       for (const part of (msg.parts ?? []) as any[]) {
         if ((part as any).type === 'data-option-list-spec' && (part as any).data) {
+          console.log('[OptionList] data-option-list-spec part found:', (part as any).data?.type);
           const spec = (part as any).data;
-          latestSpecBase = spec; // 기본 구조 껍데기는 최신 것 유지
-          
+          latestSpecBase = spec;
           if (spec?.props?.cards && Array.isArray(spec.props.cards)) {
             for (const newCard of spec.props.cards) {
-              const existingIdx = accumulatedCards.findIndex(c => c.name === newCard.name);
-              if (existingIdx !== -1) {
-                accumulatedCards[existingIdx] = newCard; // 덮어쓰기 (업데이트)
-              } else {
-                accumulatedCards.unshift(newCard); // 새 카드를 배열 맨 앞에 추가
+              const existingIdx = accumulatedCards.findIndex((c: any) => c.name === newCard.name);
+              if (existingIdx !== -1) accumulatedCards[existingIdx] = newCard;
+              else accumulatedCards.unshift(newCard);
+            }
+          }
+        }
+      }
+
+      // 2순위 fallback: tool invocation result에서 직접 추출
+      for (const ti of (msg as any).toolInvocations ?? []) {
+        if (ti.toolName === 'renderToOptionList') {
+          console.log('[OptionList] toolInvocation found — state:', ti.state, '| result type:', ti.result?.type, '| error:', ti.result?.error, '| cards:', ti.result?.props?.cards?.length);
+          if (ti.state === 'result' && ti.result) {
+            const raw = ti.result;
+            const spec = typeof raw === 'string' ? (() => { try { return JSON.parse(raw); } catch { return null; } })() : raw;
+            if (spec?.type === 'ProductCardList' && Array.isArray(spec?.props?.cards)) {
+              if (!latestSpecBase) latestSpecBase = spec;
+              for (const newCard of spec.props.cards) {
+                const existingIdx = accumulatedCards.findIndex((c: any) => c.name === newCard.name);
+                if (existingIdx !== -1) accumulatedCards[existingIdx] = newCard;
+                else accumulatedCards.unshift(newCard);
               }
             }
           }
@@ -1351,13 +1428,11 @@ export default function ChatPage() {
       }
     }
 
+    console.log('[OptionList] final — latestSpecBase:', !!latestSpecBase, '| cards count:', accumulatedCards.length);
     if (latestSpecBase) {
       setProductCardListSpec({
         ...latestSpecBase,
-        props: {
-          ...latestSpecBase.props,
-          cards: accumulatedCards
-        }
+        props: { ...latestSpecBase.props, cards: accumulatedCards }
       });
     } else {
       setProductCardListSpec(null);
@@ -1373,8 +1448,10 @@ export default function ChatPage() {
   }, [sidebarSpec, showExplorationPanel]);
 
   const isCompTableActive = useMemo(() => messages.some(m =>
-    (m.parts || []).some((p: any) => p.type === 'data-comp-table-spec') ||
-    (m.toolInvocations || []).some((t: any) => t.toolName === 'renderToCompTable')
+    (m.parts || []).some((p: any) =>
+      p.type === 'data-comp-table-spec' ||
+      (p.toolName === 'renderToCompTable')
+    )
   ), [messages]);
 
   useEffect(() => {
@@ -1385,8 +1462,10 @@ export default function ChatPage() {
   }, [isCompTableActive, showCompTablePanel]);
 
   const isOptionListActive = useMemo(() => messages.some(m =>
-    (m.parts || []).some((p: any) => p.type === 'data-option-list-spec') ||
-    (m.toolInvocations || []).some((t: any) => t.toolName === 'renderToOptionList')
+    (m.parts || []).some((p: any) =>
+      p.type === 'data-option-list-spec' ||
+      (p.toolName === 'renderToOptionList')
+    )
   ), [messages]);
 
   useEffect(() => {
@@ -1400,7 +1479,7 @@ export default function ChatPage() {
 
   if (!hasStarted) {
     return (
-      <div className="h-screen w-full flex items-center justify-center bg-[#FFFFFF]">
+      <div className="h-screen w-full flex items-center justify-center bg-[#FAFAFA]">
         <div className="w-full max-w-lg flex flex-col gap-10 px-8 animate-in fade-in zoom-in-95 duration-700">
           {/* Branding */}
           <div className="flex flex-col gap-1">
@@ -1409,7 +1488,7 @@ export default function ChatPage() {
 
           {/* Participant ID */}
           <div className="flex flex-col gap-3">
-            <label className="text-[13px] font-semibold text-slate-900 uppercase tracking-widest">참가자ID</label>
+            <label className="text-[13px] font-semibold text-slate-900 uppercase tracking-widest">{T.participantId}</label>
             <input
               type="text"
               value={participantId}
@@ -1423,7 +1502,7 @@ export default function ChatPage() {
 
           {/* Assigned item */}
           <div className="flex flex-col gap-3">
-            <label className="text-[13px] font-semibold text-slate-900 uppercase tracking-widest">배정받은 아이템</label>
+            <label className="text-[13px] font-semibold text-slate-900 uppercase tracking-widest">{T.assignedItem}</label>
             <div className="flex gap-3">
               <button
                 type="button"
@@ -1433,7 +1512,7 @@ export default function ChatPage() {
                   : "bg-[#FAFAFA] text-slate-400 border-slate-200 hover:border-slate-400 hover:text-slate-600"
                   }`}
               >
-                유모차
+                {T.stroller}
               </button>
               <button
                 type="button"
@@ -1443,18 +1522,18 @@ export default function ChatPage() {
                   : "bg-[#FAFAFA] text-slate-400 border-slate-200 hover:border-slate-400 hover:text-slate-600"
                   }`}
               >
-                로봇 청소기
+                {T.robotVacuum}
               </button>
             </div>
           </div>
 
           {/* User context */}
           <div className="flex flex-col gap-3">
-            <label className="text-[13px] font-semibold text-slate-900 uppercase tracking-widest">구매 목적 및 상황</label>
+            <label className="text-[13px] font-semibold text-slate-900 uppercase tracking-widest">{T.purchaseContext}</label>
             <textarea
               value={userContext}
               onChange={(e) => setUserContext(e.target.value)}
-              placeholder="예: 외출이 잦고 혼자 다녀요. 가볍고 휴대하기 편한 게 중요해요."
+              placeholder={T.contextPlaceholder}
               rows={3}
               className="w-full border border-slate-200 rounded-[8px] px-5 py-4 text-[15px] font-medium text-slate-800 placeholder:text-slate-300 outline-none focus:border-slate-400 transition-colors bg-[#FAFAFA] resize-none leading-relaxed"
             />
@@ -1466,7 +1545,7 @@ export default function ChatPage() {
             disabled={!participantId.trim() || !assignedItem || !userContext.trim()}
             className="w-full py-4 rounded-[8px] bg-slate-900 text-white text-[16px] font-semibold tracking-tight hover:bg-black active:scale-[0.98] transition-all disabled:opacity-30 disabled:cursor-not-allowed"
           >
-            시작하기
+            {T.getStarted}
           </button>
         </div>
       </div>
@@ -1489,11 +1568,11 @@ export default function ChatPage() {
       </div>
       <div className="flex-1 overflow-y-auto styled-scrollbar pr-1">
         <div className={journeyTab === "criteria" ? "" : "hidden"}>
-          {unchartedSpec && unchartedSpec.labels.length > 0 && (<div className="mb-3">{manualRegistry.UnchartedTerritoryChip({ props: { labels: unchartedSpec.labels, onExplore: (label: string) => { handleSubmit(`'${label}'을(를) 판단할 수 있는 세부 기준들을 알고 싶어`); setDismissedUncharted(prev => { const next = new Set(prev); next.add(label); return next; }); setUnchartedSpec(prev => prev ? { labels: prev.labels.filter(l => l !== label) } : null); } } })}</div>)}
-          {sidebarSpec.CriteriaMap ? (<ExplorerRenderer spec={sidebarSpec.CriteriaMap} bindings={sidebarBindings} />) : (<div className="flex flex-col items-center justify-center h-full gap-2 py-12"><p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">대화를 시작하면<br />여기에 탐색 기록이 쌓여요</p></div>)}
+          {unchartedSpec && unchartedSpec.labels.length > 0 && (<div className="mb-3">{manualRegistry.UnchartedTerritoryChip({ props: { labels: unchartedSpec.labels, skipAnimation: unchartedHasShownRef.current, onExplore: (label: string) => { unchartedHasShownRef.current = true; const cat = assignedItem === "A" ? "유모차" : assignedItem === "B" ? "로봇 청소기" : "제품"; handleSubmit(`${cat} ${label}${getEunNeun(label)} 어떻게 봐야 해?`); setDismissedUncharted(prev => { const next = new Set(prev); next.add(label); return next; }); setUnchartedSpec(prev => prev ? { labels: prev.labels.filter(l => l !== label) } : null); } } })}</div>)}
+          {sidebarSpec.CriteriaMap ? (<ExplorerRenderer spec={sidebarSpec.CriteriaMap} bindings={sidebarBindings} />) : (<div className="flex flex-col items-center justify-center h-full gap-2 py-12"><p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">{locale === 'en' ? 'Start a conversation' : '대화를 시작하면'}<br />{locale === 'en' ? 'to build your criteria map' : '여기에 탐색 기록이 쌓여요'}</p></div>)}
         </div>
         <div className={journeyTab === "information" ? "" : "hidden"}>
-          {sidebarSpec.conceptCards.length > 0 ? (<div className="flex flex-col gap-3 py-1">{sidebarSpec.conceptCards.map((card: any, i: number) => (<InformationCardItem key={`${card.term}-${i}`} card={card} index={i} />))}</div>) : (<div className="flex flex-col items-center justify-center h-full gap-2 py-12"><p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">개념 질문을 하면<br />여기에 설명이 쌓여요</p></div>)}
+          {sidebarSpec.conceptCards.length > 0 ? (<div className="flex flex-col gap-3 py-1">{sidebarSpec.conceptCards.map((card: any, i: number) => (<InformationCardItem key={`${card.term}-${i}`} card={card} index={i} />))}</div>) : (<div className="flex flex-col items-center justify-center h-full gap-2 py-12"><p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">{locale === 'en' ? 'Ask a concept question' : '개념 질문을 하면'}<br />{locale === 'en' ? 'to build your knowledge base' : '여기에 설명이 쌓여요'}</p></div>)}
         </div>
       </div>
     </div>
@@ -1509,7 +1588,7 @@ export default function ChatPage() {
             if (isSystemPrompt) return null;
             const hasPreviousComparison = messages.slice(0, idx).some(prev => prev.parts.some(p => p.type === "text" && /\"type\"\s*:\s*\"(Table|ComparisonSelector)\"/i.test((p as any).text ?? "")));
             const msgTurns: number[] = [];
-            ((m as any).toolInvocations ?? []).forEach((ti: any) => { if (ti.toolName === "renderToSidebar" || ti.toolName === "sidePanel") { const spec = ti.result || ti.args?.spec; if (spec?.turns) spec.turns.forEach((t: any) => { if (t.turn) msgTurns.push(t.turn); }); } });
+            ((m as any).toolInvocations ?? []).forEach((ti: any) => { if (ti.toolName === "renderToSidebar" || ti.toolName === "sidePanel" || ti.toolName === "renderToExplorationJourney") { const spec = ti.result || ti.args?.spec; if (spec?.turns) spec.turns.forEach((t: any) => { if (t.turn) msgTurns.push(t.turn); }); } });
             (m.parts ?? []).forEach((p: any) => { if (p.type === "text" && p.text) { const matches = p.text.match(/"turn":\s*(\d+)/g); if (matches) matches.forEach((match: string) => { const num = parseInt(match.split(":")[1].trim()); if (!isNaN(num) && !msgTurns.includes(num)) msgTurns.push(num); }); } });
             return (<MessageBubble key={m.id} message={m} isLast={idx === messages.length - 1} isStreaming={isStreaming && idx === messages.length - 1} bindings={bubbleBindings} highlightTerm={highlightTerm} highlightTurn={highlightTurn} isFollowUp={hasPreviousComparison} turns={msgTurns} />);
           })}
@@ -1523,9 +1602,9 @@ export default function ChatPage() {
 
   const renderCriteriaContent = () => {
     const impStyles: Record<string, { label: string; bg: string; color: string }> = {
-      high: { label: "중요", bg: "#fff0f3", color: "#fb7185" },
-      medium: { label: "보통", bg: "#fffbeb", color: "#f59e0b" },
-      low: { label: "낮음", bg: "#f8fafc", color: "#94a3b8" },
+      high:   { label: T.impHigh,   bg: "#fff0f3", color: "#fb7185" },
+      medium: { label: T.impMedium, bg: "#fffbeb", color: "#f59e0b" },
+      low:    { label: T.impLow,    bg: "#f8fafc", color: "#94a3b8" },
     };
     return (
       <div
@@ -1538,12 +1617,14 @@ export default function ChatPage() {
           const label = e.dataTransfer.getData("text/plain");
           if (jsonData) { try { const item = JSON.parse(jsonData); if (item.name && !droppedCriteria.some(c => c.name === item.name)) { const existingCriteria = droppedCriteria.map(c => ({ name: c.name, important: !!c.important })); const importanceLevel = item.important ? "high" : "low"; setDroppedCriteria((prev) => [...prev, { name: item.name, min: item.min, priority: item.priority || "medium", important: !!item.important, importanceLevel } as any]); checkTradeoff({ name: item.name, important: !!item.important }, existingCriteria); } } catch { if (label && !droppedCriteria.some(c => c.name === label)) setDroppedCriteria((prev) => [...prev, { name: label, priority: "medium" }]); } } else if (label && !droppedCriteria.some(c => c.name === label)) { setDroppedCriteria((prev) => [...prev, { name: label, priority: "medium" }]); }
         }}
-        className="flex flex-col gap-4 p-6 flex-1 overflow-auto no-scrollbar"
+        className="flex flex-col flex-1 overflow-hidden"
       >
-        <div className="flex items-center">
+        {/* 고정 헤더 */}
+        <div className="flex items-center shrink-0 px-6 pt-8 pb-4">
           <div className="flex items-center gap-2"><p className="text-[12.5px] font-black text-slate-600 tracking-widest uppercase">🎯 DECISION CRITERIA</p>{droppedCriteria.length > 0 && <span className="text-[12px] font-normal text-slate-300">({droppedCriteria.length})</span>}</div>
         </div>
-        <div className="flex flex-col gap-3 flex-1">
+        {/* 스크롤 콘텐츠 */}
+        <div className="flex flex-col gap-3 flex-1 overflow-y-auto px-6 pt-2 pb-6 no-scrollbar">
           {droppedCriteria.length > 0 ? (
             <div className="flex flex-wrap gap-2.5 w-full content-start">
               {droppedCriteria.map((criterion, i) => {
@@ -1557,7 +1638,7 @@ export default function ChatPage() {
                     </div>
                     <div className="flex items-center gap-1.5 overflow-hidden min-w-0">
                       <span className="text-[12.5px] font-bold text-slate-800 select-none whitespace-nowrap shrink-0">{criterion.name}</span>
-                      {editingCriteriaIdx === i ? (<input autoFocus className="text-[10.5px] text-slate-500 border-b border-slate-300 outline-none w-[60px] bg-transparent py-0 shrink-0" value={editingMinText} onChange={(e) => setEditingMinText(e.target.value)} onBlur={() => { setDroppedCriteria(prev => { const next = [...prev]; next[i] = { ...next[i], min: editingMinText }; return next; }); setEditingCriteriaIdx(null); }} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />) : (<span className="text-[10.5px] text-slate-500 font-medium select-none truncate" title={criterion.min || "입력"}>{criterion.min || "입력"}</span>)}
+                      {editingCriteriaIdx === i ? (<input autoFocus className="text-[10.5px] text-slate-500 border-b border-slate-300 outline-none w-[60px] bg-transparent py-0 shrink-0" value={editingMinText} onChange={(e) => setEditingMinText(e.target.value)} onBlur={() => { setDroppedCriteria(prev => { const next = [...prev]; next[i] = { ...next[i], min: editingMinText }; return next; }); setEditingCriteriaIdx(null); }} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />) : (<span className="text-[10.5px] text-slate-500 font-medium select-none truncate" title={criterion.min || T.pinHint}>{criterion.min || T.pinHint}</span>)}
                     </div>
                     <div className="flex items-center gap-0.5 ml-1 pl-1 border-l border-slate-100">
                       <button onClick={(e) => { e.stopPropagation(); setEditingCriteriaIdx(i); setEditingMinText(criterion.min || ""); }} className="p-0.5 text-slate-300 hover:text-slate-600 transition-colors"><Pencil className="w-2.5 h-2.5" /></button>
@@ -1567,26 +1648,29 @@ export default function ChatPage() {
                 );
               })}
             </div>
-          ) : (<div className="flex-1 flex items-center justify-center"><p className="text-[12.5px] text-slate-300 font-medium text-center leading-relaxed">기준 칩을 클릭해<br />여기에 고정해두세요</p></div>)}
+          ) : (<div className="flex-1 flex items-center justify-center"><p className="text-[12.5px] text-slate-300 font-medium text-center leading-relaxed">{T.criteriaEmpty.split('\n').map((line, i) => <span key={i}>{line}{i === 0 && <br />}</span>)}</p></div>)}
         </div>
-        {(() => { const activeHints = droppedCriteria.filter(c => { const spec = tradeoffSpecs[c.name]; return spec?.type === "TradeoffHint" && !dismissedTradeoffs.has(c.name) && !tradeoffLoading.has(c.name); }); if (activeHints.length === 0) return null; const TradeoffHintComp = manualRegistry.TradeoffHint; return (<div className="flex flex-col gap-2 pt-3 border-t border-slate-100 w-full">{activeHints.map(criterion => (<TradeoffHintComp key={criterion.name} props={{ ...tradeoffSpecs[criterion.name].props, onDismiss: () => setDismissedTradeoffs(prev => new Set([...prev, criterion.name])), onResolve: () => { setDismissedTradeoffs(prev => new Set([...prev, criterion.name])); const spec = tradeoffSpecs[criterion.name].props; handleResolveTradeoff(spec.newCriterion, spec.conflictsWith); } }} />))}</div>); })()}
+        {/* TradeoffHints — 스크롤 영역 밖 (하단 고정) */}
+        {(() => { const activeHints = droppedCriteria.filter(c => { const spec = tradeoffSpecs[c.name]; return spec?.type === "TradeoffHint" && !dismissedTradeoffs.has(c.name) && !tradeoffLoading.has(c.name); }); if (activeHints.length === 0) return null; const TradeoffHintComp = manualRegistry.TradeoffHint; return (<div className="flex flex-col gap-2 px-6 pb-4 pt-3 border-t border-slate-100 w-full shrink-0">{activeHints.map(criterion => (<TradeoffHintComp key={criterion.name} props={{ ...tradeoffSpecs[criterion.name].props, onDismiss: () => setDismissedTradeoffs(prev => new Set([...prev, criterion.name])), onResolve: () => { setDismissedTradeoffs(prev => new Set([...prev, criterion.name])); const spec = tradeoffSpecs[criterion.name].props; handleResolveTradeoff(spec.newCriterion, spec.conflictsWith); } }} />))}</div>); })()}
       </div>
     );
   };
 
   const renderOptionsContent = () => (
-    <div className="flex flex-col gap-4 p-6 flex-1 overflow-auto no-scrollbar">
-      <div className="flex items-center">
+    <div className="flex flex-col flex-1 overflow-hidden">
+      {/* 고정 헤더 */}
+      <div className="flex items-center shrink-0 px-6 pt-8 pb-4">
         <div className="flex items-center gap-2"><p className="text-[12.5px] font-black text-slate-600 tracking-widest uppercase">🛒 MY OPTIONS</p>{droppedItems.length > 0 && <span className="text-[12px] font-normal text-slate-300">({droppedItems.length})</span>}</div>
       </div>
-      <div className="flex flex-col gap-2 flex-1">
+      {/* 스크롤 콘텐츠 */}
+      <div className="flex flex-col gap-2 flex-1 overflow-y-auto px-6 pt-2 pb-6 no-scrollbar">
         {droppedItems.length > 0 ? droppedItems.map((item, i) => (
           <div key={i} onClick={() => insertMention(item.name)} className="group relative rounded-[8px] bg-white border border-slate-200 p-3 flex items-center gap-3 animate-in zoom-in-95 duration-200 hover:border-slate-300 transition-all cursor-pointer">
             <button onClick={(e) => { e.stopPropagation(); setDroppedItems((prev) => prev.filter((c) => c.name !== item.name)); }} className="absolute top-2 right-2 text-slate-300 hover:text-slate-700 transition-colors z-10"><X className="w-3 h-3" /></button>
             <div className="w-12 h-12 rounded-[4px] bg-slate-50 border border-slate-100 flex items-center justify-center flex-shrink-0 overflow-hidden">{item.image ? (<img src={item.image} alt={item.name} className="w-full h-full object-cover" />) : (<span className="text-[18px] font-black text-slate-300 uppercase">{item.name[0]}</span>)}</div>
             <div className="flex flex-col min-w-0 flex-1 pr-4 gap-1"><p className="text-[12px] font-semibold text-slate-900 leading-tight break-keep">{item.name}</p>{item.price && <span className="text-[11.5px] font-medium text-slate-500">{item.price}</span>}</div>
           </div>
-        )) : (<div className="flex-1 flex items-center justify-center"><p className="text-[12.5px] text-slate-300 font-medium text-center leading-relaxed flex flex-col items-center gap-1"><span className="flex items-center gap-1.5">관심 제품의<span className="inline-flex items-center justify-center w-[20px] h-[20px] rounded-full bg-slate-300/60"><Heart className="w-[10px] h-[10px] text-white" fill="white" strokeWidth={0} /></span>를 눌러</span><span>여기에 담아보세요</span></p></div>)}
+        )) : (<div className="flex-1 flex items-center justify-center"><p className="text-[12.5px] text-slate-300 font-medium text-center leading-relaxed flex flex-col items-center gap-1"><span className="flex items-center gap-1.5">{locale === 'en' ? 'Press' : '관심 제품의'}<span className="inline-flex items-center justify-center w-[20px] h-[20px] rounded-full bg-slate-300/60"><Heart className="w-[10px] h-[10px] text-white" fill="white" strokeWidth={0} /></span>{locale === 'en' ? 'on products' : '를 눌러'}</span><span>{locale === 'en' ? 'to save them here' : '여기에 담아보세요'}</span></p></div>)}
       </div>
     </div>
   );
@@ -1606,7 +1690,7 @@ export default function ChatPage() {
         ) : (
           <div className="flex flex-col items-center justify-center h-full gap-2">
             <p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">
-              제품 추천을 받으면<br />여기에 옵션이 표시됩니다
+              {T.optionListEmpty.split('\n').map((line, i) => <span key={i}>{line}{i === 0 && <br />}</span>)}
             </p>
           </div>
         )}
@@ -1646,10 +1730,158 @@ export default function ChatPage() {
     return renderOptionsContent();
   };
 
+  // 결정 요약 모달 데이터 계산
+  const summaryTopProduct = (() => {
+    // 1순위: compTable rank 1 제품
+    if (compTableSpec?.props?.rows?.length > 0) {
+      const rank1 = compTableSpec.props.rows.find((r: any) => String(r.rank) === "1");
+      if (rank1?.product) return { name: rank1.product, source: 'table' as const };
+    }
+    // 2순위: My Items 첫 번째
+    if (droppedItems.length > 0) return { name: droppedItems[0].name, price: droppedItems[0].price, image: droppedItems[0].image, source: 'items' as const };
+    return null;
+  })();
+
+  const summaryExploredCategories = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role !== 'assistant') continue;
+      for (const p of (m.parts ?? [])) {
+        const ti = p as any;
+        if ((ti.toolName === 'renderToSidebar' || ti.toolName === 'renderToExplorationJourney') && ti.state === 'result') {
+          const spec = typeof ti.result === 'string' ? (() => { try { return JSON.parse(ti.result); } catch { return null; } })() : ti.result;
+          if (spec?.type === 'CriteriaMap' && spec.props?.categories) return spec.props.categories as { label: string; items: { name: string }[] }[];
+        }
+      }
+    }
+    return [];
+  })();
+
   return (
     <div className="h-screen flex flex-col w-full overflow-hidden bg-[#FAFAFA]">
+
+      {/* ── 결정 요약 모달 ── */}
+      {showSummaryModal && (
+        <div
+          className="fixed inset-0 z-50 overflow-y-auto"
+          style={{ backgroundColor: '#FAFAFA' }}
+        >
+          <div style={{ display: 'grid', placeItems: 'center', minHeight: '100vh', padding: '40px' }}>
+
+            {/* ── 영수증 카드 ── */}
+            <div style={{
+              width: '100%',
+              maxWidth: '624px',
+              position: 'relative',
+              borderRadius: '20px',
+              boxShadow: '0 4px 24px rgba(0,0,0,0.08)'
+            }}>
+
+              {/* ── 위쪽 절반 (날짜 헤더 ~ 총계) ── */}
+              <div style={{ backgroundColor: 'white', border: '1px solid #e2e8f0', borderTopLeftRadius: '20px', borderTopRightRadius: '20px', borderBottom: 'none' }}>
+
+                {/* 헤더: 날짜(좌) + 시간(우) */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '29px 44px 24px' }}>
+                  <span style={{ fontSize: '13px', color: '#94a3b8' }}>
+                    {new Date().toLocaleDateString(locale === 'en' ? 'en-US' : 'ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit' })}
+                  </span>
+                  <span style={{ fontSize: '13px', color: '#94a3b8' }}>
+                    {new Date().toLocaleTimeString(locale === 'en' ? 'en-US' : 'ko-KR', { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </div>
+
+                {/* 최종 선택 제품 */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '0 44px 12px', borderBottom: '1px solid #f1f5f9' }}>
+                  <span style={{ fontSize: '11px', fontWeight: '600', color: '#94a3b8', letterSpacing: '0.08em', textTransform: 'uppercase' }}>{T.finalProduct}</span>
+                  {(summaryTopProduct as any)?.price && (
+                    <span style={{ fontSize: '11px', fontWeight: '600', color: '#94a3b8', letterSpacing: '0.08em', textTransform: 'uppercase' }}>{T.price}</span>
+                  )}
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', padding: '17px 44px 19px', borderBottom: '1px solid #f1f5f9' }}>
+                  <span style={{ fontSize: '15px', color: '#1e293b', flex: 1, lineHeight: 1.4, fontWeight: '500' }}>
+                    {summaryTopProduct ? summaryTopProduct.name : '—'}
+                  </span>
+                  {(summaryTopProduct as any)?.price && (
+                    <span style={{ fontSize: '15px', color: '#1e293b', marginLeft: '16px', whiteSpace: 'nowrap' }}>
+                      {(summaryTopProduct as any).price}
+                    </span>
+                  )}
+                </div>
+
+                {/* 결정 기준 */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '17px 44px 12px', borderBottom: '1px solid #f1f5f9' }}>
+                  <span style={{ fontSize: '11px', fontWeight: '600', color: '#94a3b8', letterSpacing: '0.08em', textTransform: 'uppercase' }}>{T.decisionCriteria}</span>
+                  <span style={{ fontSize: '11px', fontWeight: '600', color: '#94a3b8', letterSpacing: '0.08em', textTransform: 'uppercase' }}>{T.importance}</span>
+                </div>
+                <div style={{ padding: '5px 44px 0' }}>
+                  {droppedCriteria.length > 0 ? droppedCriteria.map((c, i) => (
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid #f8fafc' }}>
+                      <span style={{ fontSize: '14px', color: '#334155', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        {c.important && <span style={{ color: '#f59e0b', fontSize: '11px' }}>★</span>}
+                        {c.name}
+                      </span>
+                      <span style={{ fontSize: '13px', color: '#94a3b8' }}>{c.important ? T.impKey : T.impRef}</span>
+                    </div>
+                  )) : (
+                    <p style={{ fontSize: '14px', color: '#94a3b8', padding: '12px 0' }}>{T.noCriteria}</p>
+                  )}
+                </div>
+
+                {/* 총계 */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '19px 44px', borderTop: '1px solid #f1f5f9', marginTop: '4px' }}>
+                  <span style={{ fontSize: '14px', color: '#334155' }}>{T.totalCriteria}</span>
+                  <span style={{ fontSize: '14px', color: '#334155', fontWeight: '600' }}>{droppedCriteria.length}{T.countSuffix}</span>
+                </div>
+
+              </div>
+
+              {/* 구분선 */}
+              <div style={{ position: 'relative', height: '32px', display: 'flex', alignItems: 'center', backgroundColor: '#FAFAFA', zIndex: 3, borderLeft: '1px solid #e2e8f0', borderRight: '1px solid #e2e8f0' }}>
+                <div style={{ flex: 1, borderTop: '1px dashed #e2e8f0', margin: '0 24px', position: 'relative', zIndex: 1 }} />
+              </div>
+
+              {/* ── 아래쪽 절반 (탐색 현황 + 바코드) ── */}
+              <div style={{ backgroundColor: 'white', border: '1px solid #e2e8f0', borderBottomLeftRadius: '20px', borderBottomRightRadius: '20px', borderTop: 'none' }}>
+
+                {/* 탐색 현황 */}
+                <div style={{ padding: '19px 44px 24px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: '600' }}>{T.productsConsidered}</span>
+                    <span style={{ fontSize: '13px', color: '#475569', fontWeight: '600' }}>{droppedItems.length}{T.countSuffix}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                    <span style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: '600', flexShrink: 0 }}>{T.exploredCategories}</span>
+                    <span style={{ fontSize: '13px', color: '#475569', textAlign: 'right', maxWidth: '240px', lineHeight: 1.5, marginLeft: '16px' }}>
+                      {summaryExploredCategories.length > 0
+                        ? summaryExploredCategories.map((c: any) => c.label).join(', ')
+                        : '—'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* 바코드 */}
+                <div style={{ padding: '5px 44px 34px', textAlign: 'center' }}>
+                  <div style={{ display: 'flex', justifyContent: 'center', gap: '1.5px', alignItems: 'stretch', height: '60px', marginBottom: '0' }}>
+                    {[2,1,3,1,2,1,1,3,2,1,2,3,1,1,2,1,3,1,2,1,1,2,3,1,2,1,1,3,1,2,1,3,2,1,1,2,1,2,3,1,2,1,2,1,3,2,1,1,2,3,1,2,1,3,1,2,1,2,1,3].map((w, i) => (
+                      <div key={i} style={{ width: `${w * 2}px`, backgroundColor: i % 11 === 0 ? 'transparent' : '#1e293b' }} />
+                    ))}
+                  </div>
+                </div>
+
+              </div>
+
+
+            </div>
+          </div>
+        </div>
+      )}
+
+
+
+
       {/* Full-width white header */}
-      <div className="shrink-0 bg-[#FAFAFA] px-8 py-4 flex items-center justify-between">
+
+      <div className="shrink-0 bg-[#FAFAFA] px-8 py-4 flex items-center justify-between border-b border-slate-200">
         <button
           type="button"
           onClick={() => resetSession()}
@@ -1661,19 +1893,29 @@ export default function ChatPage() {
           <div className="flex items-center gap-1.5">
             <User className="w-4 h-4 text-slate-500" strokeWidth={2.5} />
             <span className="text-[14.5px] font-medium text-slate-600">
-              안녕하세요, <strong className="font-bold text-slate-900">{participantId}</strong>님
+              {T.greeting}<strong className="font-bold text-slate-900">{participantId}</strong>{T.greetingSuffix}
             </span>
+          </div>
+          {/* 언어 토글 */}
+          <div className="flex items-center gap-1 text-[15px] font-medium select-none">
+            <button
+              onClick={() => setLocale('en')}
+              className="transition-colors duration-150"
+              style={{ color: locale === 'en' ? '#0f172a' : '#94a3b8', fontWeight: locale === 'en' ? 700 : 400 }}
+            >EN</button>
+            <span className="text-slate-300">/</span>
+            <button
+              onClick={() => setLocale('ko')}
+              className="transition-colors duration-150"
+              style={{ color: locale === 'ko' ? '#0f172a' : '#94a3b8', fontWeight: locale === 'ko' ? 700 : 400 }}
+            >KO</button>
           </div>
           <button
             type="button"
-            onClick={() => {
-              if (window.confirm("세션을 종료하고 처음 화면으로 돌아가시겠습니까?")) {
-                resetSession();
-              }
-            }}
+            onClick={() => setShowSummaryModal(true)}
             className="px-4 py-2 rounded-[8px] text-[13px] font-semibold border border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300 transition-all duration-200"
           >
-            종료하기
+            {T.proceedToPayment}
           </button>
         </div>
       </div>
@@ -1843,10 +2085,17 @@ export default function ChatPage() {
               
               if (displayMsg) {
                 return (
-                  <div className="flex animate-in fade-in slide-in-from-bottom-1 duration-300">
-                    <div className="px-4 py-1.5 ml-5 text-[13px] text-slate-500 font-medium flex items-center gap-2 bg-white border border-slate-200 border-b-0 rounded-t-[12px] relative z-10 translate-y-[1px]">
+                  <div className="flex animate-in fade-in slide-in-from-bottom-1 duration-300 min-w-0">
+                    <div
+                      className="px-3 py-1.5 ml-5 flex items-center gap-2 bg-white border border-slate-200 border-b-0 rounded-t-[12px] relative z-10 translate-y-[1px] overflow-hidden"
+                      style={{ maxWidth: 'calc(100% - 60px)' }}
+                    >
                       <span className="shrink-0 flex items-center justify-center w-5 h-5 rounded-full bg-slate-100 text-slate-400 text-[11px] font-bold">Q</span>
-                      <span className="max-w-[600px] whitespace-normal break-keep leading-relaxed" title={displayMsg}>{displayMsg}</span>
+                      <span
+                        className="min-w-0 leading-relaxed font-medium text-slate-500 whitespace-normal break-words"
+                        title={displayMsg}
+                        style={{ fontSize: displayMsg.length > 120 ? '10px' : displayMsg.length > 80 ? '11px' : displayMsg.length > 40 ? '12px' : '13px' }}
+                      >{displayMsg}</span>
                     </div>
                   </div>
                 );
@@ -1869,7 +2118,7 @@ export default function ChatPage() {
               <div className="flex-1 flex flex-wrap items-center gap-1.5 min-w-0 max-h-[120px] overflow-y-auto py-1">
                 {mentionChips.map((chip, i) => (<div key={`mention-${i}`} className="flex items-center gap-1.5 bg-slate-50 border border-slate-100 rounded-full px-2 py-0.5 h-[28px] shrink-0 animate-in zoom-in-95 duration-200"><span className="text-[12px] font-bold text-slate-800">{chip.name}</span><button onClick={() => setMentionChips(prev => prev.filter((_, idx) => idx !== i))} className="ml-1 p-0.5 text-slate-300 hover:text-slate-900 transition-colors"><X className="w-2.5 h-2.5" /></button></div>))}
                 {searchCriteria.map((c, i) => (<div key={`criteria-${i}`} className="flex items-center gap-1.5 bg-slate-50 border border-slate-100 rounded-full px-2 py-0.5 h-[28px] shrink-0 animate-in zoom-in-95 duration-200"><span className="text-[12px] font-bold text-slate-800">{c.name}</span>{c.min && <span className="text-[10px] text-slate-500 font-medium">{c.min}</span>}<button onClick={() => setSearchCriteria(prev => prev.filter((_, idx) => idx !== i))} className="ml-1 p-0.5 text-slate-300 hover:text-slate-900 transition-colors"><X className="w-2.5 h-2.5" /></button></div>))}
-                <textarea ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown} placeholder={(searchCriteria.length > 0 || mentionChips.length > 0) ? "" : "무엇이든 물어보세요"} rows={1} className="flex-1 min-w-[120px] bg-transparent border-none focus:ring-0 focus:outline-none focus-visible:ring-0 resize-none text-slate-800 placeholder:text-slate-400 py-1 text-[15px] font-medium" />
+                <textarea ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown} placeholder={(searchCriteria.length > 0 || mentionChips.length > 0) ? "" : T.askAnything} rows={1} className="flex-1 min-w-[120px] bg-transparent border-none focus:ring-0 focus:outline-none focus-visible:ring-0 resize-none text-slate-800 placeholder:text-slate-400 py-1 text-[15px] font-medium" />
               </div>
               {(() => {
                 const isInputEmpty = !input.trim() && searchCriteria.length === 0 && mentionChips.length === 0;

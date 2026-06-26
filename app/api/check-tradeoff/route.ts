@@ -1,4 +1,4 @@
-import { generateUISpec } from "@/lib/agents/ui_agent";
+import { generateUISpec } from "@/lib/backend/agents/ui_agent";
 import { NextRequest } from "next/server";
 
 export async function POST(req: NextRequest) {

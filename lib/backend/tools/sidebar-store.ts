@@ -1,0 +1,120 @@
+/**
+ * Request-scoped side panel results store.
+ * Keyed by a per-request ID so concurrent requests don't interfere.
+ */
+export const sidePanelStore = new Map<string, any[]>();
+
+/** Call at the start of each request to initialize a slot. */
+export function initSidePanelStore(requestId: string) {
+  sidePanelStore.set(requestId, []);
+}
+
+/** Retrieve and clear the results for a request. */
+export function popSidePanelResults(requestId: string): any[] {
+  const results = sidePanelStore.get(requestId) ?? [];
+  sidePanelStore.delete(requestId);
+  return results;
+}
+
+/** Called from within the sidebar tool execute to register a result. */
+export function pushSidePanelResult(requestId: string, spec: any) {
+  const arr = sidePanelStore.get(requestId);
+  if (arr) arr.push(spec);
+}
+
+
+// ---------------------------------------------------------------------------
+// Comparison Table store (for renderInChat category 2 — shown in panel, not chat)
+// ---------------------------------------------------------------------------
+
+export const compTableStore = new Map<string, any[]>();
+
+export function initCompTableStore(requestId: string) {
+  compTableStore.set(requestId, []);
+}
+
+export function popCompTableResults(requestId: string): any[] {
+  const results = compTableStore.get(requestId) ?? [];
+  compTableStore.delete(requestId);
+  return results;
+}
+
+export function pushCompTableResult(requestId: string, spec: any) {
+  const arr = compTableStore.get(requestId);
+  if (arr) arr.push(spec);
+}
+
+// ---------------------------------------------------------------------------
+// Option List store (for renderToOptionList tool — category 3)
+// ---------------------------------------------------------------------------
+
+export const optionListStore = new Map<string, any[]>();
+
+export function initOptionListStore(requestId: string) {
+  optionListStore.set(requestId, []);
+}
+
+export function popOptionListResults(requestId: string): any[] {
+  const results = optionListStore.get(requestId) ?? [];
+  optionListStore.delete(requestId);
+  return results;
+}
+
+export function pushOptionListResult(requestId: string, spec: any) {
+  const arr = optionListStore.get(requestId);
+  if (arr) arr.push(spec);
+}
+
+/** The active request ID – set on every incoming POST before agent runs. */
+export let currentRequestId = "";
+export function setCurrentRequestId(id: string) {
+  currentRequestId = id;
+}
+
+/** The user context collected from onboarding – passed directly to UI Agent. */
+export let currentUserContext = "";
+export function setCurrentUserContext(ctx: string) {
+  currentUserContext = ctx;
+}
+
+/** The message history of the current request – accessible by tool execution. */
+export let currentMessages: any[] = [];
+export function setCurrentMessages(msgs: any[]) {
+  currentMessages = msgs;
+}
+
+/** My Items saved by the user – passed to Table generation. */
+export let currentSavedItems: string[] = [];
+export function setCurrentSavedItems(items: string[]) {
+  currentSavedItems = items;
+}
+
+/** Decision Criteria the user has saved – used as mandatory table columns in Category 2. */
+export let currentDecisionCriteria: string[] = [];
+export function setCurrentDecisionCriteria(criteria: string[]) {
+  currentDecisionCriteria = criteria;
+}
+
+/** Pre-fetched product contextSummary for My Items — populated by route.ts before agent runs. */
+export let currentMyItemsContextSummary: string = "";
+export function setCurrentMyItemsContextSummary(summary: string) {
+  currentMyItemsContextSummary = summary;
+}
+
+/** Raw My Items entries ("name|url") — populated by route.ts from the message tag. */
+export let currentMyItemsRaw: string[] = [];
+export function setCurrentMyItemsRaw(items: string[]) {
+  currentMyItemsRaw = items;
+}
+
+/** Product category from onboarding (e.g. "유모차", "로봇 청소기") — injected into UI Agent persona. */
+export let currentProductCategory: string = "";
+export function setCurrentProductCategory(category: string) {
+  currentProductCategory = category;
+}
+
+/** Response language locale — set from request cookie "gs_locale". Default: "ko". */
+export let currentLocale: "ko" | "en" = "ko";
+export function setCurrentLocale(locale: "ko" | "en") {
+  currentLocale = locale;
+}
