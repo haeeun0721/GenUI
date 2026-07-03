@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { ChevronDown, Heart, Check, AlertTriangle, Lightbulb, ArrowRight, Columns3, LayoutList, Sparkles } from "lucide-react";
+import { ChevronDown, Heart, Check, AlertTriangle, Lightbulb, ArrowRight, Columns3, LayoutList, Sparkles, X } from "lucide-react";
 
 
 // =============================================================================
@@ -67,6 +67,11 @@ export const manualRegistry: Record<string, any> = {
           <p className="text-[12px] font-semibold text-slate-700 truncate flex-1">
             {p.newCriterion} ↔ {p.conflictsWith}
           </p>
+          {p.onDismiss && (
+            <button onClick={p.onDismiss} className="text-slate-300 hover:text-slate-600 transition-colors shrink-0">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
         {/* 왜 충돌하나요 */}
         <div className="flex flex-col gap-0.5">
@@ -74,25 +79,7 @@ export const manualRegistry: Record<string, any> = {
           <p className="text-[11px] text-slate-600 leading-relaxed">{whyText}</p>
         </div>
 
-        {/* Action buttons */}
-        <div className="flex items-center gap-2 pt-1">
-          {p.onDismiss && (
-            <button
-              onClick={p.onDismiss}
-              className="text-[11px] font-medium text-slate-400 hover:text-slate-600 border border-slate-200 rounded-full px-3 py-1 transition-colors"
-            >
-              괜찮아요
-            </button>
-          )}
-          {p.onResolve && (
-            <button
-              onClick={p.onResolve}
-              className="text-[11px] font-medium text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-full px-3 py-1 transition-colors"
-            >
-              조율 도움받기 ↗
-            </button>
-          )}
-        </div>
+
       </div>
     );
   },
@@ -106,9 +93,8 @@ export const manualRegistry: Record<string, any> = {
     if (labels.length === 0) return null;
 
     return (
-      <div className={`flex flex-col gap-2 p-3 rounded-[10px] bg-white border border-black/[0.04]${skipAnimation ? '' : ' animate-in fade-in slide-in-from-top-2 duration-300'}`}>
+      <div className={`flex flex-col gap-2 p-3 rounded-[10px] bg-white${skipAnimation ? '' : ' animate-in fade-in slide-in-from-top-2 duration-300'}`}>
         <div className="flex items-center gap-1.5 mb-1">
-          <Lightbulb className="w-[14px] h-[14px] text-slate-800 shrink-0" />
           <span className="text-[13.5px] font-semibold text-slate-800">아직 탐색하지 않은 영역</span>
         </div>
         <div className="flex flex-wrap gap-1.5">
@@ -420,13 +406,88 @@ export const manualRegistry: Record<string, any> = {
   Table: (allProps: any) => {
     const p = allProps?.props || allProps || {};
     const rawColumns: { key: string; label: string }[] = Array.isArray(p.columns) ? p.columns : [];
-    // Always ensure rank is the first column — inject if AI omitted it
-    const hasRank = rawColumns.some(c => c.key === 'rank');
-    const initialColumns: { key: string; label: string }[] = hasRank
-      ? rawColumns
-      : [{ key: 'rank', label: 'Rank' }, ...rawColumns];
     const rows: Record<string, any>[] = Array.isArray(p.rows) ? p.rows : (Array.isArray(p.data) ? p.data : []);
 
+    // ── TRANSPOSED TABLE (criteria = rows, products = columns) ──────────────
+    const isTransposed = rawColumns[0]?.key === 'criterion';
+    if (isTransposed) {
+      const productCols = rawColumns.slice(1); // prod_0, prod_1, ...
+      const rankRow = rows.find(r => r.criterion === '순위' || r.criterion === 'Rank');
+      const dataRows = rows.filter(r => r.criterion !== '순위' && r.criterion !== 'Rank');
+      const rankReasoning: string = p._rankReasoning || '';
+
+      // rank 기준 오름차순 정렬 (1위 → 왼쪽)
+      const sortedProductCols = rankRow
+        ? [...productCols].sort((a, b) => {
+            const ra = parseInt(String(rankRow[a.key] ?? '99').replace(/[^0-9]/g, '')) || 99;
+            const rb = parseInt(String(rankRow[b.key] ?? '99').replace(/[^0-9]/g, '')) || 99;
+            return ra - rb;
+          })
+        : productCols;
+
+      return (
+        <div className="w-full animate-in fade-in zoom-in-98 duration-300">
+          <div className="overflow-x-auto pb-2">
+            <table className="w-full text-[13px] border-collapse">
+              <thead>
+                <tr>
+                  {/* 비교 항목 헤더 */}
+                  <th className="text-left px-3 py-2.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wide border-b border-slate-100 w-[120px]">
+                    {rawColumns[0]?.label ?? '비교 항목'}
+                  </th>
+                  {sortedProductCols.map((col, ci) => {
+                    const rank = rankRow ? String(rankRow[col.key] ?? '') : '';
+                    const isFirst = rank === '1위';
+                    return (
+                      <th key={col.key} className={`px-3 py-2.5 border-b border-slate-100 text-center ${isFirst ? 'bg-white' : ''}`}>
+                        {rank && <div className="text-[10px] text-slate-400 font-semibold mb-1">{rank}</div>}
+                        {col.imageUrl && (
+                          <div className="flex justify-center mb-3">
+                            <img
+                              src={col.imageUrl}
+                              alt={col.label}
+                              className="w-12 h-12 object-contain rounded-lg bg-white border border-slate-100"
+                              onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                            />
+                          </div>
+                        )}
+                        <div className="text-[12px] font-semibold text-slate-700 leading-tight">
+                          {col.label}
+                        </div>
+                      </th>
+                    );
+                  })}
+                </tr>
+              </thead>
+              <tbody>
+                {dataRows.map((row, ri) => (
+                  <tr key={ri} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/50 transition-colors">
+                    <td className="px-3 py-2.5 text-[12px] font-semibold text-slate-700">{row.criterion}</td>
+                    {sortedProductCols.map((col, ci) => {
+                      const val = String(row[col.key] ?? '-');
+                      const rankVal = rankRow ? String(rankRow[col.key] ?? '') : '';
+                      const isFirst = rankVal === '1위';
+                      return (
+                        <td key={col.key} className={`px-3 py-2.5 text-center text-[13px] font-medium text-slate-700 ${isFirst ? 'bg-slate-50/60' : ''}`}>
+                          {val === '-' ? <span className="text-[11px] text-slate-300 font-medium">미확인</span> : val}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {rankReasoning && (
+            <div className="mt-3 px-3 py-2.5 bg-white rounded-[8px] border border-slate-100">
+              <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1">이렇게 추천드린 이유예요</p>
+              <p className="text-[12.5px] text-slate-600 leading-relaxed">{rankReasoning}</p>
+            </div>
+          )}
+        </div>
+      );
+    }
+    // ── END TRANSPOSED ──────────────────────────────────────────────────────
 
 
     const cellBadges: { row: string; column: string; label: string; type: string }[] =
@@ -438,6 +499,10 @@ export const manualRegistry: Record<string, any> = {
       Array.isArray(allProps.bindings?.savedItems) ? allProps.bindings.savedItems : [];
 
     // allColumns: 한 번이라도 추가된 컬럼 전체 (데이터 보존)
+    const hasRank = rawColumns.some(c => c.key === 'rank');
+    const initialColumns: { key: string; label: string }[] = hasRank
+      ? rawColumns
+      : [{ key: 'rank', label: 'Rank' }, ...rawColumns];
     const [allColumns, setAllColumns] = useState<{ key: string; label: string }[]>(initialColumns);
     // hiddenColumnKeys: 현재 숨겨진 컬럼 key 집합
     const [hiddenColumnKeys, setHiddenColumnKeys] = useState<Set<string>>(new Set());
@@ -450,6 +515,10 @@ export const manualRegistry: Record<string, any> = {
     const [loadingCells, setLoadingCells] = useState<Set<string>>(new Set());
     const [showColumnsPanel, setShowColumnsPanel] = useState(false);
     const columnsPanelRef = useRef<HTMLDivElement>(null);
+
+    // Column resize state
+    const [colWidths, setColWidths] = useState<Record<string, number>>({});
+    const colDragRef = useRef<{ key: string; startX: number; startWidth: number } | null>(null);
 
     // 공백을 제거한 normalized 값으로도 비교 (예: "저장 공간" vs "저장공간")
     const normalize = (s: string) => s.toLowerCase().replace(/\s+/g, '');
@@ -705,145 +774,9 @@ export const manualRegistry: Record<string, any> = {
 
     return (
       <div className="w-full animate-in fade-in zoom-in-98 duration-300">
-        {/* Table header row: trophy legend + Columns button */}
+        {/* Table header row */}
         <div className="flex items-center justify-between mb-2">
           <div />
-
-          {/* Columns + Rows buttons — always visible */}
-          {(allManageableColumns.length > 0 || allRows.length > 0) && (
-            <div className="flex items-center gap-2">
-              {/* Rows button */}
-              {allRows.length > 0 && (
-                <div className="relative">
-                  <button
-                    onClick={() => { setShowRowsPanel(prev => !prev); setShowColumnsPanel(false); }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-[8px] border border-slate-200 bg-white text-[11px] font-semibold text-slate-600 hover:bg-slate-50 hover:border-slate-300 transition-all shadow-[0_1px_3px_rgba(0,0,0,0.04)]"
-                  >
-                    <LayoutList className="w-3 h-3 text-slate-400" />
-                    Rows
-                  </button>
-
-                  {showRowsPanel && (
-                    <>
-                      <div className="fixed inset-0 z-10" onClick={() => setShowRowsPanel(false)} />
-                      <div className="absolute right-0 top-[calc(100%+6px)] z-20 bg-white border border-slate-200 rounded-[10px] shadow-[0_8px_30px_rgba(0,0,0,0.1)] w-[220px] py-2 animate-in fade-in zoom-in-95 duration-150">
-                        {/* 현재 테이블 행들 */}
-                        {allRows.map(row => {
-                          const productName = String(row[firstColKey] ?? '');
-                          const isChecked = !hiddenRowKeys.has(productName);
-                          const isMyItem = savedItems.some(item => {
-                            const a = item.name.toLowerCase(); const b = productName.toLowerCase();
-                            return a === b || a.includes(b) || b.includes(a);
-                          });
-                          return (
-                            <button
-                              key={productName}
-                              onClick={() => setHiddenRowKeys(prev => {
-                                const s = new Set(prev);
-                                if (s.has(productName)) s.delete(productName); else s.add(productName);
-                                return s;
-                              })}
-                              className="w-full flex items-center gap-3 px-4 py-2 hover:bg-slate-50 transition-colors text-left"
-                            >
-                              <div className={`w-4 h-4 rounded-[4px] border flex items-center justify-center shrink-0 transition-all ${isChecked ? 'bg-slate-900 border-slate-900' : 'border-slate-300 bg-white'
-                                }`}>
-                                {isChecked && <Check className="w-2.5 h-2.5 text-white stroke-[3px]" />}
-                              </div>
-                              <span className="text-[12px] text-slate-700 font-medium flex-1 truncate">{productName}</span>
-                              {isMyItem && (
-                                <span className="text-[9px] font-semibold text-slate-600 bg-slate-100 border border-slate-200 rounded-full px-1.5 py-0.5 shrink-0 leading-none">내 항목</span>
-                              )}
-                            </button>
-                          );
-                        })}
-
-                        {/* 추가 가능한 My Items */}
-                        {addableItems.length > 0 && (
-                          <>
-                            <div className="border-t border-slate-100 my-1" />
-                            {addableItems.map(item => (
-                              <button
-                                key={item.name}
-                                onClick={() => { addItemAsRow(item); setShowRowsPanel(false); }}
-                                className="w-full flex items-center gap-3 px-4 py-2 hover:bg-slate-50 transition-colors text-left"
-                              >
-                                <div className="w-4 h-4 rounded-[4px] border border-slate-300 bg-white flex items-center justify-center shrink-0" />
-                                <span className="text-[12px] text-slate-500 font-medium flex-1 truncate">{item.name}</span>
-                                <span className="text-[9px] font-semibold text-slate-600 bg-slate-100 border border-slate-200 rounded-full px-1.5 py-0.5 shrink-0 leading-none">내 항목</span>
-                              </button>
-                            ))}
-                          </>
-                        )}
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
-
-              {/* Columns button */}
-              {allManageableColumns.length > 0 && (
-                <div className="relative" ref={columnsPanelRef}>
-                  <button
-                    onClick={() => setShowColumnsPanel(prev => !prev)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-[8px] border border-slate-200 bg-white text-[11px] font-semibold text-slate-600 hover:bg-slate-50 hover:border-slate-300 transition-all shadow-[0_1px_3px_rgba(0,0,0,0.04)]"
-                  >
-                    <Columns3 className="w-3 h-3 text-slate-400" />
-                    Columns
-                  </button>
-
-                  {showColumnsPanel && (
-                    <>
-                      {/* Backdrop */}
-                      <div
-                        className="fixed inset-0 z-10"
-                        onClick={() => setShowColumnsPanel(false)}
-                      />
-                      {/* Panel */}
-                      <div className="absolute right-0 top-[calc(100%+6px)] z-20 bg-white border border-slate-200 rounded-[10px] shadow-[0_8px_30px_rgba(0,0,0,0.1)] w-[200px] py-2 animate-in fade-in zoom-in-95 duration-150">
-                        {/* First column (product) — always on, grayed out */}
-                        <div className="flex items-center gap-3 px-4 py-2 opacity-40 cursor-not-allowed">
-                          <div className="w-4 h-4 rounded-[4px] bg-slate-900 flex items-center justify-center shrink-0">
-                            <Check className="w-2.5 h-2.5 text-white stroke-[3px]" />
-                          </div>
-                          <span className="text-[12px] text-slate-700 font-medium flex-1 truncate">{allColumns[0]?.label ?? '제품'}</span>
-                        </div>
-
-                        <div className="border-t border-slate-100 my-1" />
-
-                        {allManageableColumns.map(col => {
-                          const isChecked = allColumns.some(c => c.key === col.key) && !hiddenColumnKeys.has(col.key);
-                          const isLoading = loadingColumns.has(col.key);
-                          const isMyCriteria = criteriaFromBindings.some(c => {
-                            const a = normalize(c.name); const b = normalize(col.key);
-                            return a === b || a.includes(b) || b.includes(a);
-                          });
-                          return (
-                            <button
-                              key={col.key}
-                              onClick={() => toggleColumn(col)}
-                              className="w-full flex items-center gap-3 px-4 py-2 hover:bg-slate-50 transition-colors text-left"
-                            >
-                              <div className={`w-4 h-4 rounded-[4px] border flex items-center justify-center shrink-0 transition-all ${isChecked ? 'bg-slate-900 border-slate-900' : 'border-slate-300 bg-white'
-                                }`}>
-                                {isChecked && <Check className="w-2.5 h-2.5 text-white stroke-[3px]" />}
-                              </div>
-                              <span className="text-[12px] text-slate-700 font-medium flex-1 truncate">{col.label}</span>
-                              {isMyCriteria && (
-                                <span className="text-[9px] font-semibold text-slate-600 bg-slate-100 border border-slate-200 rounded-full px-1.5 py-0.5 shrink-0 leading-none">내 기준</span>
-                              )}
-                              {isLoading && (
-                                <span className="w-3 h-3 border-2 border-slate-200 border-t-slate-900 rounded-full animate-spin shrink-0" />
-                              )}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
         </div>
 
         <div className="overflow-x-auto pb-4">
@@ -861,8 +794,33 @@ export const manualRegistry: Record<string, any> = {
 
 
                   return (
-                    <th key={col.key} className="text-left text-[11px] font-semibold tracking-wide uppercase px-3 py-2.5 whitespace-nowrap text-slate-400">
+                    <th
+                      key={col.key}
+                      className="relative text-left text-[11px] font-semibold tracking-wide uppercase px-3 py-2.5 text-slate-400"
+                      style={colWidths[col.key] ? { width: colWidths[col.key], minWidth: colWidths[col.key] } : { whiteSpace: 'nowrap' }}
+                    >
                       <span>{col.label}</span>
+                      {/* Column resize handle */}
+                      <div
+                        className="absolute top-0 right-0 bottom-0 w-3 cursor-col-resize flex items-center justify-center group/cr select-none z-10"
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          const th = e.currentTarget.parentElement as HTMLTableCellElement;
+                          const startWidth = th.getBoundingClientRect().width;
+                          colDragRef.current = { key: col.key, startX: e.clientX, startWidth };
+                          e.currentTarget.setPointerCapture(e.pointerId);
+                        }}
+                        onPointerMove={(e) => {
+                          const d = colDragRef.current;
+                          if (!d || d.key !== col.key) return;
+                          const newWidth = Math.max(60, d.startWidth + (e.clientX - d.startX));
+                          setColWidths(prev => ({ ...prev, [col.key]: newWidth }));
+                        }}
+                        onPointerUp={() => { colDragRef.current = null; }}
+                      >
+                        <div className="w-[2px] h-4 rounded-full bg-slate-200/0 group-hover/cr:bg-slate-300 transition-colors" />
+                      </div>
                     </th>
                   );
                 })}
@@ -879,6 +837,7 @@ export const manualRegistry: Record<string, any> = {
                       <td
                         key={col.key}
                         className={`py-2.5 text-slate-700 ${isRankCol ? 'px-2 w-10 text-center' : 'px-3'} ${isProductCol ? 'font-semibold text-slate-900' : 'font-normal'}`}
+                        style={colWidths[col.key] ? { width: colWidths[col.key], minWidth: colWidths[col.key] } : undefined}
                       >
                         {isRankCol ? (
                           <span className="inline-flex items-center justify-center w-6 h-6 rounded-full text-[11px] font-bold bg-slate-100 text-slate-500">
@@ -890,6 +849,8 @@ export const manualRegistry: Record<string, any> = {
                       </td>
                     );
                   })}
+                  {/* Trailing empty td to match phantom resizer th */}
+                  <td className="w-3 min-w-[12px] p-0" />
                 </tr>
               ))}
             </tbody>
@@ -901,10 +862,10 @@ export const manualRegistry: Record<string, any> = {
         )}
 
         {p._rankReasoning && visibleRows.length > 0 && (
-          <div className="mt-4 p-4 rounded-[12px] bg-slate-50 border border-slate-100 animate-in fade-in slide-in-from-bottom-2">
+          <div className="mt-4 p-4 rounded-[12px] bg-white border border-slate-100 animate-in fade-in slide-in-from-bottom-2">
             <div className="flex items-center gap-1.5 mb-2">
-              <Sparkles className="w-[14px] h-[14px] text-blue-500 shrink-0" />
-              <span className="text-[12.5px] font-bold text-slate-800">순위 산정 기준 (AI 분석)</span>
+              <Sparkles className="w-[14px] h-[14px] text-slate-400 shrink-0" />
+              <span className="text-[12.5px] font-bold text-slate-800">이렇게 추천드린 이유예요</span>
             </div>
             <p className="text-[12px] text-slate-600 leading-relaxed font-medium">
               {p._rankReasoning}
@@ -925,18 +886,17 @@ export const manualRegistry: Record<string, any> = {
 
     return (
       <div
-        className="group relative flex flex-row bg-white border border-[#EBEBEB] rounded-[8px] p-3 gap-3 transition-all duration-200 hover:border-[#D0D0D0] hover:shadow-[0_2px_12px_rgba(0,0,0,0.07)] animate-in fade-in slide-in-from-bottom-3 zoom-in-98 duration-500 fill-mode-both w-full"
+        className="group relative flex flex-col bg-white border border-[#EBEBEB] rounded-[8px] overflow-hidden transition-all duration-200 hover:border-[#D0D0D0] hover:shadow-[0_2px_8px_rgba(0,0,0,0.06)] animate-in fade-in slide-in-from-bottom-3 zoom-in-98 duration-500 fill-mode-both w-full"
         style={delay > 0 ? { animationDelay: `${delay}s` } : undefined}
       >
-        {/* Product Image (Left) — same height as text content */}
-        <div className="relative w-[140px] self-stretch rounded-[6px] bg-[#F5F5F5] overflow-hidden shrink-0">
+        {/* Product Image (Top) */}
+        <div className="relative w-full aspect-[4/3] bg-[#F5F5F5] overflow-hidden">
           {p.imageUrl ? (
             <img
               src={p.imageUrl}
               alt={p.name}
-              className="w-full h-full object-contain"
+              className="w-full h-full object-contain mix-blend-multiply"
               onError={(e) => {
-                // CDN URL 404 fallback — replace with placeholder svg
                 const el = e.currentTarget as HTMLImageElement;
                 el.style.display = "none";
                 const placeholder = el.nextElementSibling as HTMLElement | null;
@@ -944,12 +904,12 @@ export const manualRegistry: Record<string, any> = {
               }}
             />
           ) : null}
-          {/* Placeholder (shown when no imageUrl or image fails to load) */}
+          {/* Placeholder */}
           <div
             style={{ display: p.imageUrl ? "none" : "flex" }}
             className="w-full h-full items-center justify-center bg-[#F5F5F5] text-[#C8C8C8] absolute inset-0"
           >
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
             </svg>
           </div>
@@ -965,7 +925,6 @@ export const manualRegistry: Record<string, any> = {
                 isSaved={isSaved}
                 onAdd={() => {
                   const onItemAdd = allProps.bindings?.onItemAdd;
-                  // Pass p.link so My Items remembers the Danawa product URL for later spec scraping
                   if (onItemAdd) onItemAdd(p.name, p.imageUrl, p.price, undefined, p.specs, p.link);
                   if (allProps.emit) allProps.emit("press", { product: p.name });
                 }}
@@ -978,40 +937,35 @@ export const manualRegistry: Record<string, any> = {
           })()}
         </div>
 
-        {/* Product Info (Right) */}
-        <div className="flex flex-col flex-1 min-w-0 justify-between py-0.5">
-          <div className="flex flex-col gap-0.5">
-            {/* Brand */}
-            {p.brand && (
-              <span className="text-[11px] font-bold text-[#1A1A1A] leading-none">
-                {p.brand}
-              </span>
-            )}
-            {/* Product Name */}
-            <p className="text-[12.5px] font-normal text-[#333333] leading-snug line-clamp-2 mt-0.5">
-              {p.name}
-            </p>
-            {/* Spec Chips */}
-            {Array.isArray(p.specs) && p.specs.length > 0 && (
-              <div className="flex flex-wrap gap-1 mt-1.5">
-                {p.specs.slice(0, 3).map((spec: string, i: number) => (
-                  <span
-                    key={i}
-                    className="text-[10px] text-[#666666] bg-[#F5F5F5] px-2 py-0.5 rounded-full whitespace-nowrap"
-                  >
-                    {spec}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Price */}
-          <div className="flex items-center justify-between mt-2">
-            <span className="text-[15px] font-bold text-[#1A1A1A] tracking-tight">
-              {p.price}
+        {/* Product Info (Bottom) */}
+        <div className="flex flex-col gap-1 p-2">
+          {/* Brand */}
+          {p.brand && (
+            <span className="text-[9px] font-bold text-[#1A1A1A] leading-none">
+              {p.brand}
             </span>
-          </div>
+          )}
+          {/* Product Name */}
+          <p className="text-[11px] font-normal text-[#333333] leading-snug line-clamp-2">
+            {p.name}
+          </p>
+          {/* Spec Chips */}
+          {Array.isArray(p.specs) && p.specs.length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-0.5">
+              {p.specs.slice(0, 2).map((spec: string, i: number) => (
+                <span
+                  key={i}
+                  className="text-[9px] text-[#666666] bg-[#F5F5F5] px-1.5 py-0.5 rounded-full whitespace-nowrap"
+                >
+                  {spec}
+                </span>
+              ))}
+            </div>
+          )}
+          {/* Price */}
+          <span className="text-[12px] font-bold text-[#1A1A1A] tracking-tight mt-0.5">
+            {p.price}
+          </span>
         </div>
       </div>
     );
@@ -1019,11 +973,12 @@ export const manualRegistry: Record<string, any> = {
 
 
   ProductCardList: (allProps: any) => {
+
     const p = allProps?.props || allProps || {};
     const cards = Array.isArray(p.cards) ? p.cards : [];
 
     return (
-      <div className="grid grid-cols-1 gap-3 w-full min-w-0">
+      <div className="grid grid-cols-2 gap-3 w-full min-w-0 px-6">
         {cards.map((card: any, idx: number) => (
           <div key={`${card.name || card.id || 'card'}-${idx}`}>
             {manualRegistry.ProductCard({ ...allProps, props: { ...card, _animationDelay: idx * 0.1 } })}

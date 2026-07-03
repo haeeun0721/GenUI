@@ -1,0 +1,115 @@
+{
+  "tabs": [
+    {
+      "id": "danawa-prodBlog-companyReview-button-tab-productOpinion",
+      "text": "다나와 상품의견"
+    },
+    {
+      "id": "danawa-prodBlog-companyReview-button-tab-companyReview",
+      "text": "쇼핑몰 상품리뷰"
+    }
+  ],
+  "containerInnerHTML": "\">\n\t\t\t\t<a href=\"#\" id=\"danawa-prodBlog-companyReview-button-tab-companyReview\" onclick=\"return false;\" data-uxlog-payload=\"eyJhY3Rpb24iOiJjIiwiYXJlYSI6ImhiMSIsInBhcmFtcyI6eyJjYXRlZ29yeV9zZXFfMSI6MjIyMTU0LCJjYXRlZ29yeV9zZXFfMiI6MCwiY2F0ZWdvcnlfc2VxXzMiOjAsImNhdGVnb3J5X3NlcV80IjowLCJjbGlja19uYW1lIjoi7J2Y6rKs66as67ewX+yHvO2VkeuqsCDsg4Htkojrpqzrt7AifX0=\">\n\t\t\t\t\t<h4 class=\"txt\">쇼핑몰 상품리뷰</h4>\n\t\t\t\t\t\t\t\t\t</a>\n\t\t\t</li>\n\t\t\t\t\t</ul>\n\t</div>\n\t\t\t<div class=\"mall_review\">\n\t\t\t<div class=\"no_data\">\n\t\t\t\t<p class=\"txt_no_v2\">등록된 상품리뷰가 없습니다.</p>\n\t\t\t</div>\n\t\t</div>\n\t\t\t\n",
+  "longTexts": [
+    {
+      "tag": "LI",
+      "cls": "sev_li more_service",
+      "text": "서비스더보기 서비스 전체보기 샵다나와 브랜드로그 중고마켓 동영상 중고매입 다나와특가몰 모바일 앱 다나와AS PC26 장터"
+    },
+    {
+      "tag": "LI",
+      "cls": "category__depth__row depth2  a",
+      "text": "신규메뉴라이프스타일 건기식청소년 성장 영양제수험생 집중력 케어야근 많은 직장인PMS 여성 케어갱년기 여성 케어임산부 맞춤 영양시니어 맞춤 케어"
+    },
+    {
+      "tag": "LI",
+      "cls": "category__depth__row depth2  a",
+      "text": "인기메뉴영양제오메가3루테인/눈영양제콘드로이친글루코사민/관절MSM쏘팔메토/마카폴리코사놀보스웰리아밀크씨슬인기메뉴포스파티딜세린신규메뉴멜라토닌감초추출물인기메뉴대마종자유락티움/감태추출물은행"
+    },
+    {
+      "tag": "LI",
+      "cls": "category__depth__row depth2  a",
+      "text": "유산균인기메뉴혈당 유산균신규메뉴구강 유산균다이어트 유산균갱년기/질 유산균프로바이오틱스프리바이오틱스신바이오틱스키즈 유산균피부 유산균기타 유산균"
+    },
+    {
+      "tag": "LI",
+      "cls": "category__depth__row depth2  a",
+      "text": "비타민/미네랄이뮨비타민인기메뉴멀티비타민비타민A비타민B비타민C비타민D비타민E간식형 비타민비타민세트칼슘엽산철분아연마그네슘"
+    },
+    {
+      "tag": "LI",
+      "cls": "category__depth__row depth2  a",
+      "text": "건강즙/환/분말인기메뉴배/도라지즙양배추즙양파/마늘즙석류즙/기타즙환자영양/강장음료건강환새싹보리분말선식/기타분말"
+    },
+    {
+      "tag": "LI",
+      "cls": "category__depth__row depth1 dp",
+      "text": "헬스/다이어트식품전체보기신규메뉴헬시플레저 다이어트한 끼 대체 식단체지방 컷팅소화/장 편한 관리운동 후 빠른 회복지방 흡수 차단프로틴/식사대용산양유/단백질단백질 바/간식단백질 음료로"
+    },
+    {
+      "tag": "LI",
+      "cls": "category__depth__row depth2  a",
+      "text": "신규메뉴헬시플레저 다이어트한 끼 대체 식단체지방 컷팅소화/장 편한 관리운동 후 빠른 회복지방 흡수 차단"
+    },
+    {
+      "tag": "LI",
+      "cls": "category__depth__row depth2  a",
+      "text": "다이어트/식단관리시서스가르시니아락토페린카테킨식이섬유/차전자피잔티젠공액리놀레산(CLA)그 외 보조제"
+    },
+    {
+      "tag": "LI",
+      "cls": "category__depth__row depth1 dp",
+      "text": "생수/음료/우유생수인기메뉴제로슈가음료제로탄산음료제로이온음료제로차음료탄산수/탄산음료콜라사이다웰치스/환타/탐스기타 탄산음료탄산수토닉워터/진저에일이온/스포츠음료비타민/에너지음료비타민음료"
+    },
+    {
+      "tag": "LI",
+      "cls": "category__depth__row depth1 dp",
+      "text": "커피/차인기메뉴커피믹스일반블랙프림커피음료대용량믹스 스틱원두 스틱리필형율무차핫초코캡슐커피네스프레소돌체구스토일리포드커피캡슐티기타원두커피/드립백홀빈분쇄드립커피녹차/보이차/꽃차녹차보이차허"
+    },
+    {
+      "tag": "LI",
+      "cls": "category__depth__row depth1 dp",
+      "text": "라면/통조림인기메뉴봉지라면일반라면볶음라면인기메뉴비빔라면짜장라면쌀국수/우동/그 외컵라면일반라면인기메뉴비빔라면볶음라면짜장라면쌀국수/우동/그 외즉석면요리/우동인기메뉴냉면쫄면짬뽕·짜장면칼"
+    },
+    {
+      "tag": "LI",
+      "cls": "category__depth__row depth1 dp",
+      "text": "즉석밥/국/도시락인기메뉴햇반/즉석밥볶음밥/비빔밥볶음밥비빔밥주먹밥·김밥덮밥국밥전투식량컵밥죽소고기죽전복죽호박죽야채죽팥/깨죽닭/삼계죽해물죽버섯죽그 외누룽지즉석국/찌개인기메뉴갈비탕곰탕·설"
+    },
+    {
+      "tag": "LI",
+      "cls": "category__depth__row depth1 dp",
+      "text": "냉장/냉동/간편요리인기메뉴밀키트/간편식고기구이/스테이크볶음요리생선구이닭발/닭꼬치/오돌뼈곱창/막창/대창탕/찜/조림족발/보쌈/편육파스타/면요리분식그 외만두고기만두김치만두해물만두닭가슴살"
+    },
+    {
+      "tag": "LI",
+      "cls": "category__depth__row depth2  a",
+      "text": "인기메뉴밀키트/간편식고기구이/스테이크볶음요리생선구이닭발/닭꼬치/오돌뼈곱창/막창/대창탕/찜/조림족발/보쌈/편육파스타/면요리분식그 외"
+    },
+    {
+      "tag": "LI",
+      "cls": "category__depth__row depth2  a",
+      "text": "피자/핫도그/햄버거콤비네이션피자페퍼로니피자불고기피자마르게리타피자치즈피자고르곤졸라/그 외핫도그햄버거기타냉동간식"
+    },
+    {
+      "tag": "LI",
+      "cls": "category__depth__row depth2  a",
+      "text": "볶음/조림 반찬장조림깻잎김치단무지콩자반마늘/락교/고추나물장아찌무말랭이/쌈무연근/우엉오이/피클그 외"
+    },
+    {
+      "tag": "LI",
+      "cls": "category__depth__row depth1 dp",
+      "text": "쌀/농산물햅쌀인기메뉴쌀/잡곡쌀현미찹쌀흑미기능성쌀/기타쌀혼합곡보리콩/팥귀리수수/조/깨/그 외쌀/잡곡세트과일참외/수박/멜론복숭아/자두/포도토마토망고/열대과일사과배오렌지/자몽/레몬키위/"
+    },
+    {
+      "tag": "LI",
+      "cls": "category__depth__row depth2  a",
+      "text": "과일참외/수박/멜론복숭아/자두/포도토마토망고/열대과일사과배오렌지/자몽/레몬키위/참다래바나나/파인애플감/홍시/곶감딸기/블루베리감귤/한라봉/만감류건과일냉동/간편과일과일세트매실/기타과일"
+    },
+    {
+      "tag": "LI",
+      "cls": "category__depth__row depth2  a",
+      "text": "채소/버섯배추/무고구마감자/옥수수콩나물/나물류고추/피망/파프리카오이/가지/호박양파/마늘/파/생강당근/뿌리채소상추/깻잎/쌈채소버섯류인삼/더덕/한약재기타채소냉동채소"
+    }
+  ]
+}

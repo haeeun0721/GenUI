@@ -1,0 +1,17 @@
+{
+  "anchorFound": true,
+  "anchorParentClass": "prod_opinion",
+  "anchorHTML": "\n\t\t\t\t\t<div class=\"b_tit \">\n\t\t\t\t\t\t<h3 class=\"txt\">의견/리뷰</h3>\n\t\t\t\t\t</div>\n\t\t\t\t\t\t\t\t\t\t\t<div id=\"bookmark_cm_opinion\" style=\"height: 100px; margin-top: -100px;\"></div>\n\t\t\t\t\t\t\t\t\t\t<div class=\"inner\">\n\t\t\t\t\t\t<div id=\"danawa-prodBlog-noticeBoard-list-self\" data-uxlog-payload=\"eyJhY3Rpb24iOiJjIiwiYXJlYSI6ImhhMiIsInBhcmFtcyI6eyJjYXRlZ29yeV9zZXFfMSI6MjIyMTU0LCJjYXRlZ29yeV9zZXFfMiI6MjIzMjA3LCJjYXRlZ29yeV9zZXFfMyI6MjIzMjEzLCJjYXRlZ29yeV9zZXFfNCI6MjIzMjM0LCJjbGlja19uYW1lIjoi7J2Y6rKs66as67ewX+yVjOumvO2MkCJ9fQ==\"><div class=\"noti_info\">\n\t<h4 class=\"s_tit\"><span class=\"ico\"></span>알림판</h4>\n\t<ul class=\"noti_list\" id=\"danawa-prodBlog-noticeBoard-wrap\">\n\t\t\t\t\t<li class=\"item\" id=\"danawa-prodBlog-noticeBoard-item-0\" data-board=\"288\" data-id=\"289\">\n\t\t\t\t<a href=\"#\" onclick=\"return false;\">\n\t\t\t\t\t\t\t\t\t\t\t<span class=\"head_v2\">알림</span>\n\t\t\t\t\t\t\t\t\t\t<span class=\"dsc\">\n\t\t\t\t\t\t\t\t\t\t\t\t\t[※필독][주의사항] 상품의견 서비스 이용시 유의해 주세요.\t\t\t\t\t\t\t\t\t\t\t</span>\n\t\t\t\t</a>\n\t\t\t</li>\n\t\t\t\t\t<li class=\"item\" id=\"danawa-prodBlog-noticeBoard-item-1\" data-board=\"250\" data-id=\"503\">\n\t\t\t\t<a href=\"#\" onclick=\"return false;\">\n\t\t\t\t\t\t\t\t\t\t\t<span class=\"head_v2\">알림</span>\n\t\t\t\t\t\t\t\t\t\t<span class=\"dsc\">\n\t\t\t\t\t\t\t\t\t\t\t\t\t잦은 오류, PC속도 잡자! PC안정화 위해 이건 꼭!\t\t\t\t\t\t\t\t\t\t\t</span>\n\t\t\t\t</a>\n\t\t\t</li>\n\t\t\t</ul>\n\t<div class=\"roll_btn\">\n\t\t<a id=\"danawa-prodBlog-noticeBoard-button-prev\" href=\"#\" onclick=\"return false;\" class=\"roll_btn_prev\"><span class=\"point_arw_l\"><em class=\"blind\">이전 보기</em></span></a>\n\t\t<a id=\"danawa-prodBlog-noticeBoard-button-next\" href=\"#\" onclick=\"return false;\" class=\"roll_btn_next\"><span class=\"point_arw_r\"><em class=\"blind\">다음 보기</em></span></a>\n\t</div>\n</div>\n</div>\n\n\t\t\t\t\t\t<div id=\"danawa-prodBlog-productOpinion-list-self\">\t<div class=\"companyReview_list_cover\" style=\"background:rgba(255,255,255,.5);position:absolute;top:0px;z-index:70; display:none;\">\n\t\t<div style=\"top:100px; text-align:center; position:relative;\">\n\t\t\t<img src=\"//img.danawa.com/totalMain/ajax-loader.gif\" alt=\"로딩중\">\n\t\t</div>\n\t</div>\n\t<div class=\"sub_tab sub_tab_v2\">\n\t\t<ul class=",
+  "relevantClasses": [
+    "smr_review",
+    "goods_review",
+    "text__review",
+    "#bookmark_cm_opinion_item",
+    "review",
+    "#opinionArea",
+    "prod_opinion",
+    "#bookmark_cm_opinion",
+    "mall_review",
+    "i_photo_review"
+  ]
+}

@@ -12,7 +12,8 @@ import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
-const CATEGORY = "유모차";
+const CATEGORY = process.argv[2] || "유모차";
+console.log(`\n🔗 임베딩 카테고리: ${CATEGORY}\n`);
 
 // Google Generative AI API 직접 호출 (SDK 없이)
 const GOOGLE_API_KEY = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
@@ -29,15 +30,18 @@ const DELAY_MS = 500;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ── 상품을 임베딩용 텍스트로 변환 ─────────────────────────────────────────
-function productToText(product) {
+function productToText(product, reviewsMap = {}) {
+  const reviews = reviewsMap[product.id]?.reviews ?? [];
+  const reviewText = reviews.slice(0, 5).map(r => `리뷰: ${r}`).join(" | ");
   const parts = [
     product.name,
     product.brand ? `브랜드: ${product.brand}` : "",
     product.price ? `가격: ${product.price}` : "",
     ...product.specs,
     product.description || "",
+    reviewText,
   ].filter(Boolean);
-  return parts.join(" | ").slice(0, 2000);
+  return parts.join(" | ").slice(0, 3000);
 }
 
 // ── Google Embedding API 배치 호출 ────────────────────────────────────────
@@ -97,6 +101,12 @@ async function main() {
   const products = JSON.parse(readFileSync(productsPath, "utf8"));
   console.log(`\n🚀 임베딩 생성 시작: ${products.length}개 상품\n`);
 
+  // 리뷰 데이터 로드
+  const reviewsPath = join(ROOT, "data", `reviews-${CATEGORY}.json`);
+  const reviewsMap = existsSync(reviewsPath) ? JSON.parse(readFileSync(reviewsPath, "utf8")) : {};
+  const reviewCount = Object.values(reviewsMap).filter(r => r.reviews?.length > 0).length;
+  console.log(`   리뷰 있는 제품: ${reviewCount}개 (임베딩에 포함)\n`);
+
   // 기존 임베딩 파일이 있으면 이어서 처리 (중단 재개)
   const embPath = join(ROOT, "data", `embeddings-${CATEGORY}.json`);
   const existingEmb = existsSync(embPath) ? JSON.parse(readFileSync(embPath, "utf8")) : {};
@@ -110,7 +120,7 @@ async function main() {
 
   for (let i = 0; i < pending.length; i += BATCH_SIZE) {
     const batch = pending.slice(i, i + BATCH_SIZE);
-    const texts = batch.map(productToText);
+    const texts = batch.map(p => productToText(p, reviewsMap));
 
     try {
       const batchEmbeddings = await embedBatch(texts);

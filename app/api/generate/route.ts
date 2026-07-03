@@ -9,7 +9,69 @@ import {
 import { SPEC_DATA_PART_TYPE } from "@json-render/core";
 import { headers } from "next/headers";
 import { initSidePanelStore, popSidePanelResults, setCurrentRequestId, initOptionListStore, popOptionListResults, initCompTableStore, popCompTableResults, setCurrentUserContext, setCurrentMessages, setCurrentSavedItems, setCurrentDecisionCriteria, setCurrentMyItemsContextSummary, setCurrentMyItemsRaw, setCurrentProductCategory, setCurrentLocale } from "@/lib/backend/tools/sidebar-store";
-import { searchProducts } from "@/lib/backend/agents/data_agent";
+import fs from "fs";
+import path from "path";
+
+// ---------------------------------------------------------------------------
+// Local DB lookup — replaces live Danawa scraping for My Items pre-fetch
+// ---------------------------------------------------------------------------
+
+const CATEGORY_FILE_MAP: Record<string, string> = {
+  "유모차": "products-유모차.json",
+  "로봇 청소기": "products-로봇 청소기.json",
+};
+
+function proxyImage(url: string): string {
+  if (!url) return "";
+  return `/api/image-proxy?url=${encodeURIComponent(url)}`;
+}
+
+function findProductInLocalDB(productCategory: string, name: string): string | null {
+  const fileName = CATEGORY_FILE_MAP[productCategory];
+  if (!fileName) return null;
+
+  try {
+    const filePath = path.join(process.cwd(), "data", fileName);
+    const raw = fs.readFileSync(filePath, "utf-8");
+    const products: any[] = JSON.parse(raw);
+
+    // 정확히 일치하는 제품 먼저 탐색
+    let found = products.find((p) => p.name === name);
+
+    // 없으면 부분 일치 (RAG가 이름을 약간 다르게 저장한 경우 대비)
+    if (!found) {
+      found = products.find(
+        (p) =>
+          p.name?.includes(name) ||
+          name.includes(p.name ?? "")
+      );
+    }
+
+    if (!found) return null;
+
+    const specs = Array.isArray(found.specs)
+      ? found.specs.join(" / ")
+      : typeof found.specs === "string"
+      ? found.specs
+      : "정보 없음";
+
+    return (
+      `[Product 1]\n` +
+      `Name: ${found.name}\n` +
+      `Price: ${found.price}\n` +
+      `Brand: ${found.brand ?? ""}\n` +
+      `Mall: ${found.mallName ?? ""}\n` +
+      `Image: ${proxyImage(found.image ?? found.imageUrl ?? "")}\n` +
+      `Link: ${found.link ?? ""}\n` +
+      `Specs: ${specs}\n` +
+      `Description: ${found.description || "정보 없음"}`
+    );
+  } catch (e) {
+    console.warn(`[LocalDB] Failed to read ${fileName}:`, e);
+    return null;
+  }
+}
+
 
 export const maxDuration = 60;
 
@@ -105,21 +167,21 @@ export async function POST(req: Request) {
   setCurrentMyItemsRaw(myItemsRaw);
 
   if (myItemsRaw.length > 0) {
-    console.log(`[Route] Pre-fetching ${myItemsRaw.length} My Items before agent...`);
+    console.log(`[Route] Looking up ${myItemsRaw.length} My Items from local DB...`);
     const summaries: string[] = [];
     for (const entry of myItemsRaw) {
       const pipeIdx = entry.indexOf("|");
       const name = pipeIdx !== -1 ? entry.slice(0, pipeIdx).trim() : entry.trim();
-      const link = pipeIdx !== -1 ? entry.slice(pipeIdx + 1).trim() : undefined;
-      try {
-        const result = await (searchProducts.execute as any)({ query: name, count: 1, excludeNames: [], link });
-        if (result?.contextSummary) summaries.push(result.contextSummary);
-      } catch (e) {
-        console.warn(`[Route] Pre-fetch failed for "${name}":`, e);
+      const summary = findProductInLocalDB(productCategory, name);
+      if (summary) {
+        summaries.push(summary);
+        console.log(`[LocalDB] Found: "${name}"`);
+      } else {
+        console.warn(`[LocalDB] Not found: "${name}" — skipping`);
       }
     }
     setCurrentMyItemsContextSummary(summaries.join("\n\n"));
-    console.log(`[Route] Pre-fetch complete. Summary length: ${summaries.join("\n\n").length}`);
+    console.log(`[Route] Local DB lookup complete. ${summaries.length}/${myItemsRaw.length} products found.`);
   } else {
     setCurrentMyItemsContextSummary("");
   }

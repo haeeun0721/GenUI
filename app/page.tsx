@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useState, useCallback, useMemo, memo, useRef, useEffect } from "react";
 import { useChat } from "@ai-sdk/react";
@@ -380,7 +380,7 @@ const MessageBubble = memo(({
 
     let userText = rawText;
     const cumulativeMatch = userText.match(/^\[SYSTEM: CUMULATIVE COMPARISON\] (.*?) 제품들을 Table/i);
-    
+
     if (cumulativeMatch) {
       userText = `"${cumulativeMatch[1].trim()}" 제품을 비교해줘.`;
     } else {
@@ -549,38 +549,38 @@ export default function ChatPage() {
   // Translation dictionary
   // ---------------------------------------------------------------------------
   const T = {
-    greeting:          locale === 'en' ? 'Hello, '                                          : '안녕하세요, ',
-    greetingSuffix:    locale === 'en' ? ''                                                 : '님',
-    proceedToPayment:  locale === 'en' ? 'Proceed to Payment'                              : '결제 진행하기',
-    askAnything:       locale === 'en' ? 'Ask me anything'                                 : '무엇이든 물어보세요',
-    participantId:     locale === 'en' ? 'PARTICIPANT ID'                                  : '참가자ID',
-    assignedItem:      locale === 'en' ? 'ASSIGNED ITEM'                                   : '배정받은 아이템',
-    purchaseContext:   locale === 'en' ? 'PURCHASE CONTEXT'                                : '구매 목적 및 상황',
+    greeting: locale === 'en' ? 'Hello, ' : '안녕하세요, ',
+    greetingSuffix: locale === 'en' ? '' : '님',
+    proceedToPayment: locale === 'en' ? 'Proceed to Payment' : '결제 진행하기',
+    askAnything: locale === 'en' ? 'Ask me anything' : '무엇이든 물어보세요',
+    participantId: locale === 'en' ? 'PARTICIPANT ID' : '참가자ID',
+    assignedItem: locale === 'en' ? 'ASSIGNED ITEM' : '배정받은 아이템',
+    purchaseContext: locale === 'en' ? 'PURCHASE CONTEXT' : '구매 목적 및 상황',
     contextPlaceholder: locale === 'en'
       ? 'e.g. I go out often alone. Lightweight and portable is important.'
       : '예: 외출이 잦고 혼자 다녀요. 가볍고 휴대하기 편한 게 중요해요.',
-    getStarted:        locale === 'en' ? 'Get Started'                                     : '시작하기',
-    criteriaEmpty:     locale === 'en' ? 'Click criteria chips\nto pin them here'          : '기준 칩을 클릭해\n여기에 고정해두세요',
-    optionsEmpty:      locale === 'en' ? 'Press ♥ on products\nto save them here'         : '관심 제품의 ♥를 눌러\n여기에 담아보세요',
-    optionListEmpty:   locale === 'en' ? 'Get product recommendations\nto see options here': '제품 추천을 받으면\n여기에 옵션이 표시됩니다',
-    impHigh:           locale === 'en' ? 'High'                                            : '중요',
-    impMedium:         locale === 'en' ? 'Med'                                             : '보통',
-    impLow:            locale === 'en' ? 'Low'                                             : '낮음',
-    stroller:          locale === 'en' ? 'Stroller'                                        : '유모차',
-    robotVacuum:       locale === 'en' ? 'Robot Vacuum'                                    : '로봇 청소기',
-    pinHint:           locale === 'en' ? 'Enter'                                           : '입력',
+    getStarted: locale === 'en' ? 'Get Started' : '시작하기',
+    criteriaEmpty: locale === 'en' ? 'Click criteria chips\nto pin them here' : '기준 칩을 클릭해\n여기에 고정해두세요',
+    optionsEmpty: locale === 'en' ? 'Press ♥ on products\nto save them here' : '관심 제품의 ♥를 눌러\n여기에 담아보세요',
+    optionListEmpty: locale === 'en' ? 'Get product recommendations\nto see options here' : '제품 추천을 받으면\n여기에 옵션이 표시됩니다',
+    impHigh: locale === 'en' ? 'High' : '중요',
+    impMedium: locale === 'en' ? 'Med' : '보통',
+    impLow: locale === 'en' ? 'Low' : '낮음',
+    stroller: locale === 'en' ? 'Stroller' : '유모차',
+    robotVacuum: locale === 'en' ? 'Robot Vacuum' : '로봇 청소기',
+    pinHint: locale === 'en' ? 'Enter' : '입력',
     // Receipt modal
-    finalProduct:      locale === 'en' ? 'FINAL SELECTION'                                 : '최종 선택 제품',
-    price:             locale === 'en' ? 'PRICE'                                            : '가격',
-    decisionCriteria:  locale === 'en' ? 'DECISION CRITERIA'                               : '결정 기준',
-    importance:        locale === 'en' ? 'IMPORTANCE'                                       : '중요도',
-    noCriteria:        locale === 'en' ? 'No saved criteria'                                : '저장된 기준 없음',
-    totalCriteria:     locale === 'en' ? 'Total Criteria'                                   : '얘 결정 기준',
-    productsConsidered:locale === 'en' ? 'PRODUCTS CONSIDERED'                              : '{T.productsConsidered}',
-    exploredCategories:locale === 'en' ? 'EXPLORED CATEGORIES'                              : '{T.exploredCategories}',
-    impKey:            locale === 'en' ? 'Key'                                              : '핵심',
-    impRef:            locale === 'en' ? 'Ref'                                              : '참고',
-    countSuffix:       locale === 'en' ? ''                                                 : '개',
+    finalProduct: locale === 'en' ? 'FINAL SELECTION' : '최종 선택 제품',
+    price: locale === 'en' ? 'PRICE' : '가격',
+    decisionCriteria: locale === 'en' ? 'DECISION CRITERIA' : '결정 기준',
+    importance: locale === 'en' ? 'IMPORTANCE' : '중요도',
+    noCriteria: locale === 'en' ? 'No saved criteria' : '저장된 기준 없음',
+    totalCriteria: locale === 'en' ? 'Total Criteria' : '얘 결정 기준',
+    productsConsidered: locale === 'en' ? 'PRODUCTS CONSIDERED' : '{T.productsConsidered}',
+    exploredCategories: locale === 'en' ? 'EXPLORED CATEGORIES' : '{T.exploredCategories}',
+    impKey: locale === 'en' ? 'Key' : '핵심',
+    impRef: locale === 'en' ? 'Ref' : '참고',
+    countSuffix: locale === 'en' ? '' : '개',
   };
   const [userContext, setUserContext] = useState(() =>
     typeof window !== 'undefined' ? (localStorage.getItem('gs_userContext') ?? '') : ''
@@ -588,7 +588,7 @@ export default function ChatPage() {
   const [assignedItem, setAssignedItem] = useState<"A" | "B" | "">(() =>
     typeof window !== 'undefined' ? ((localStorage.getItem('gs_assignedItem') as "A" | "B" | "") ?? '') : ''
   );
-  const [droppedCriteria, setDroppedCriteria] = useState<{ name: string; min?: string; priority: string; important?: boolean }[]>([]);
+  const [droppedCriteria, setDroppedCriteria] = useState<{ name: string; min?: string; priority: string; important?: boolean; importanceLevel?: string }[]>([]);
   const [searchCriteria, setSearchCriteria] = useState<{ name: string; min?: string; priority: string }[]>([]);
   const [droppedItems, setDroppedItems] = useState<{ name: string; image?: string; price?: string; description?: string; specs?: string[]; link?: string }[]>([]);
   const [mentionChips, setMentionChips] = useState<{ name: string; link?: string }[]>([]);
@@ -607,10 +607,11 @@ export default function ChatPage() {
   const [unchartedSpec, setUnchartedSpec] = useState<{ labels: string[] } | null>(null);
   const [dismissedUncharted, setDismissedUncharted] = useState<Set<string>>(new Set());
   const prevTableTurnRef = useRef<number>(-1);
-  // UnchartedTerritoryChip: 조건 전환(false→true) 감지용 refs
-  const prevConditionsRef = useRef<boolean>(false);   // 이전 allConditionsMet
-  const pendingFetchRef = useRef<boolean>(false);      // 스트리밍 해제 후 실행 대기 중 여부
-  const unchartedHasShownRef = useRef<boolean>(false); // 첫 표시 여부 (이후 애니메이션 스킵)
+  // UnchartedTerritoryChip: 조건 전환 감지용 refs
+  const prevConditionsRef = useRef<boolean>(false);      // 이전 allConditionsMet
+  const pendingFetchRef = useRef<boolean>(false);         // 스트리밍 해제 후 실행 대기 중 여부
+  const prevCriteriaLengthRef = useRef<number>(0);        // 이전 droppedCriteria 길이 (기준 추가 감지)
+  const unchartedHasShownRef = useRef<boolean>(false);    // 첫 표시 여부 (이후 애니메이션 스킵)
   // Panel resize state
   const [isResizing, setIsResizing] = useState(false);
   const [panelWidths, setPanelWidths] = useState<Record<string, number>>({
@@ -628,6 +629,9 @@ export default function ChatPage() {
   const [productCardListSpec, setProductCardListSpec] = useState<any>(null);
   const [compTableSpec, setCompTableSpec] = useState<any>(null);
   const [showSummaryModal, setShowSummaryModal] = useState(false);
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [selectedItemName, setSelectedItemName] = useState<string | null>(null);
+  const [showTour, setShowTour] = useState(false);
   // Panel visibility — hidden initially, slide in when AI produces relevant content
   const [showExplorationPanel, setShowExplorationPanel] = useState(false);
   const [showCompTablePanel, setShowCompTablePanel] = useState(false);
@@ -673,9 +677,9 @@ export default function ChatPage() {
       for (const slot of dynamicSlots) {
         if (!isVisible(prev[slot]) || prev[slot] === panelId) {
           if (prev[slot] !== panelId) {
-             const oldPanel = prev[slot];
-             const currentSlot = (Object.entries(prev).find(([, p]) => p === panelId)?.[0] as SlotId) ?? 'left';
-             return { ...prev, [slot]: panelId, [currentSlot]: oldPanel };
+            const oldPanel = prev[slot];
+            const currentSlot = (Object.entries(prev).find(([, p]) => p === panelId)?.[0] as SlotId) ?? 'left';
+            return { ...prev, [slot]: panelId, [currentSlot]: oldPanel };
           }
           return prev;
         }
@@ -1138,7 +1142,7 @@ export default function ChatPage() {
     if (m.parts?.some(p => p.type === "text" && /"type"\s*:\s*"(Table|ComparisonSelector)"/i.test((p as any).text))) return true;
 
     // 2. Check injected UI specs
-    if (m.parts?.some((p: any) => 
+    if (m.parts?.some((p: any) =>
       (p.type === "data-chat-ui-spec" && (p.data?.type === "Table" || p.data?.type === "ComparisonSelector")) ||
       p.type === "data-comp-table-spec"
     )) return true;
@@ -1151,8 +1155,7 @@ export default function ChatPage() {
     return false;
   }), [messages]);
 
-  // UnchartedTerritoryChip: 세 조건이 false→true로 전환될 때만 API 호출
-  // 조건이 이미 모두 참인 상태에서의 변화(My Items 추가 등)는 무시
+  // UnchartedTerritoryChip: 세 조건이 맞물릴 때마다 trigger (기준이 추가될 때마다 재실행, Empty 반환 시 자연 종료)
   useEffect(() => {
     const allConditionsMet =
       hasComparison && droppedItems.length > 0 && droppedCriteria.length > 0;
@@ -1160,8 +1163,11 @@ export default function ChatPage() {
     const wasAllMet = prevConditionsRef.current;
     prevConditionsRef.current = allConditionsMet;
 
-    // false → true 전환 시 fetch 대기 등록
-    if (allConditionsMet && !wasAllMet) {
+    const criteriaIncreased = droppedCriteria.length > prevCriteriaLengthRef.current;
+    prevCriteriaLengthRef.current = droppedCriteria.length;
+
+    // 조건이 최초 충족되거나, 이미 충족된 상태에서 기준이 추가된 경우 fetch 예약
+    if (allConditionsMet && (!wasAllMet || criteriaIncreased)) {
       pendingFetchRef.current = true;
     }
 
@@ -1345,6 +1351,7 @@ export default function ChatPage() {
           priority: item.priority || "medium",
           important: !!item.important,
           importanceLevel,
+          confidence: (item as any).confidence,
         } as any]);
         checkTradeoff({ name: item.name, important: !!item.important }, existingCriteria);
         setRightPanelCollapsed(false);
@@ -1508,9 +1515,10 @@ export default function ChatPage() {
                 type="button"
                 onClick={() => setAssignedItem("A")}
                 className={`flex-1 py-4 rounded-[8px] text-[15px] font-semibold border transition-all duration-200 ${assignedItem === "A"
-                  ? "bg-slate-900 text-white border-slate-900"
+                  ? "text-white"
                   : "bg-[#FAFAFA] text-slate-400 border-slate-200 hover:border-slate-400 hover:text-slate-600"
                   }`}
+                style={assignedItem === "A" ? { backgroundColor: "#000000", borderColor: "#000000" } : {}}
               >
                 {T.stroller}
               </button>
@@ -1518,9 +1526,10 @@ export default function ChatPage() {
                 type="button"
                 onClick={() => setAssignedItem("B")}
                 className={`flex-1 py-4 rounded-[8px] text-[15px] font-semibold border transition-all duration-200 ${assignedItem === "B"
-                  ? "bg-slate-900 text-white border-slate-900"
+                  ? "text-white"
                   : "bg-[#FAFAFA] text-slate-400 border-slate-200 hover:border-slate-400 hover:text-slate-600"
                   }`}
+                style={assignedItem === "B" ? { backgroundColor: "#000000", borderColor: "#000000" } : {}}
               >
                 {T.robotVacuum}
               </button>
@@ -1543,7 +1552,8 @@ export default function ChatPage() {
           <button
             onClick={() => { if (participantId.trim() && assignedItem && userContext.trim()) setHasStarted(true); }}
             disabled={!participantId.trim() || !assignedItem || !userContext.trim()}
-            className="w-full py-4 rounded-[8px] bg-slate-900 text-white text-[16px] font-semibold tracking-tight hover:bg-black active:scale-[0.98] transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+            className="w-full py-4 rounded-[8px] text-white text-[16px] font-semibold tracking-tight active:scale-[0.98] transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+            style={{ backgroundColor: "#000000" }}
           >
             {T.getStarted}
           </button>
@@ -1555,7 +1565,7 @@ export default function ChatPage() {
 
   // ── Panel render functions ────────────────────────────────────────────
   const renderExploration = () => (
-    <div className="flex flex-col h-full py-6 px-4 overflow-hidden">
+    <div data-tour="exploration" className="flex flex-col h-full py-6 px-4 overflow-hidden">
       <div className="flex flex-wrap items-center justify-between mb-4 flex-shrink-0 border-b border-slate-100 pb-3 gap-y-3 gap-x-2">
         <div className="flex items-center gap-2">
           {gripHandle('exploration')}
@@ -1602,9 +1612,9 @@ export default function ChatPage() {
 
   const renderCriteriaContent = () => {
     const impStyles: Record<string, { label: string; bg: string; color: string }> = {
-      high:   { label: T.impHigh,   bg: "#fff0f3", color: "#fb7185" },
+      high: { label: T.impHigh, bg: "#fff0f3", color: "#fb7185" },
       medium: { label: T.impMedium, bg: "#fffbeb", color: "#f59e0b" },
-      low:    { label: T.impLow,    bg: "#f8fafc", color: "#94a3b8" },
+      low: { label: T.impLow, bg: "#f8fafc", color: "#94a3b8" },
     };
     return (
       <div
@@ -1628,21 +1638,35 @@ export default function ChatPage() {
           {droppedCriteria.length > 0 ? (
             <div className="flex flex-wrap gap-2.5 w-full content-start">
               {droppedCriteria.map((criterion, i) => {
-                const level = (criterion as any).importanceLevel as "high" | "medium" | "low" | undefined;
-                const s = level ? impStyles[level] : null;
+                const impLevel = (criterion as any).importanceLevel as "high" | "medium" | "low" | undefined;
+                const s = impLevel ? impStyles[impLevel] : null;
                 return (
-                  <div key={i} onClick={() => { setOpenImportanceIdx(null); if (!searchCriteria.some(c => c.name === criterion.name)) setSearchCriteria(prev => [...prev, { name: criterion.name, min: criterion.min, priority: criterion.priority }]); inputRef.current?.focus(); }} className="flex items-center gap-2 bg-white border border-slate-200 rounded-2xl px-2.5 h-[32px] w-fit max-w-full group animate-in zoom-in-95 duration-200 cursor-pointer hover:bg-slate-50 hover:border-slate-300 transition-colors">
+                  <div key={i} onClick={() => { setOpenImportanceIdx(null); if (!searchCriteria.some(c => c.name === criterion.name)) setSearchCriteria(prev => [...prev, { name: criterion.name, min: criterion.min, priority: criterion.priority }]); inputRef.current?.focus(); }}
+                    className="flex items-center gap-2 rounded-2xl px-2.5 h-[32px] w-fit max-w-full group animate-in zoom-in-95 duration-200 cursor-pointer transition-colors"
+                    style={{ backgroundColor: '#ffffff', border: '1px solid #e2e8f0', color: '#1e293b' }}>
                     <div className="relative shrink-0 flex items-center">
                       <button onClick={(e) => { e.stopPropagation(); setOpenImportanceIdx(openImportanceIdx === i ? null : i); }} className="flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[9.5px] font-bold transition-all duration-150 leading-none" style={s ? { background: s.bg, color: s.color } : { background: "transparent", color: "#cbd5e1" }}>{s ? s.label : "·"}<ChevronDown className="w-2 h-2 opacity-60" /></button>
-                      {openImportanceIdx === i && (<div className="absolute top-full left-0 mt-1 z-50 bg-white border border-slate-200 rounded-[8px] shadow-lg py-1 min-w-[64px]" onClick={(e) => e.stopPropagation()}>{(["high", "medium", "low"] as const).map(opt => { const os = impStyles[opt]; return (<button key={opt} onClick={(e) => { e.stopPropagation(); setDroppedCriteria(prev => { const next = [...prev]; next[i] = { ...next[i], importanceLevel: opt, important: opt === "high" } as any; return next; }); setOpenImportanceIdx(null); }} className="w-full text-left px-3 py-1 text-[10.5px] font-medium hover:bg-slate-50 transition-colors" style={{ color: os.color }}>{os.label}</button>); })}</div>)}
+                      {openImportanceIdx === i && (
+                        <div className="absolute top-full left-0 mt-1 z-50 bg-white border border-slate-200 rounded-[12px] shadow-lg py-2 px-2 min-w-[120px]" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex flex-col gap-1">
+                            {(["high", "medium", "low"] as const).map(opt => { const os = impStyles[opt]; return (<button key={opt} onClick={(e) => { e.stopPropagation(); setDroppedCriteria(prev => { const next = [...prev]; next[i] = { ...next[i], importanceLevel: opt, important: opt === "high" } as any; return next; }); setOpenImportanceIdx(null); }} className="flex-1 rounded py-1 text-[10px] font-bold transition-all hover:bg-slate-50" style={{ color: os.color }}>{os.label}</button>); })}
+                          </div>
+                        </div>
+                      )}
                     </div>
                     <div className="flex items-center gap-1.5 overflow-hidden min-w-0">
-                      <span className="text-[12.5px] font-bold text-slate-800 select-none whitespace-nowrap shrink-0">{criterion.name}</span>
-                      {editingCriteriaIdx === i ? (<input autoFocus className="text-[10.5px] text-slate-500 border-b border-slate-300 outline-none w-[60px] bg-transparent py-0 shrink-0" value={editingMinText} onChange={(e) => setEditingMinText(e.target.value)} onBlur={() => { setDroppedCriteria(prev => { const next = [...prev]; next[i] = { ...next[i], min: editingMinText }; return next; }); setEditingCriteriaIdx(null); }} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />) : (<span className="text-[10.5px] text-slate-500 font-medium select-none truncate" title={criterion.min || T.pinHint}>{criterion.min || T.pinHint}</span>)}
+                      <span className="text-[12.5px] font-bold select-none whitespace-nowrap shrink-0 text-slate-800">{criterion.name}</span>
+                      {(criterion as any).confidence && (() => {
+                        const conf = (criterion as any).confidence as 'high' | 'medium' | 'low';
+                        const dotColor = conf === 'high' ? '#6366f1' : conf === 'medium' ? '#f59e0b' : '#cbd5e1';
+                        const dotLabel = conf === 'high' ? '확신 높음' : conf === 'medium' ? '보통' : '확신 낮음';
+                        return <span className="w-[7px] h-[7px] rounded-full flex-shrink-0" style={{ backgroundColor: dotColor }} title={dotLabel} />;
+                      })()}
+                      {editingCriteriaIdx === i ? (<input autoFocus className={`text-[10.5px] border-b outline-none w-[60px] bg-transparent py-0 shrink-0 text-slate-500 border-slate-300`} value={editingMinText} onChange={(e) => setEditingMinText(e.target.value)} onBlur={() => { setDroppedCriteria(prev => { const next = [...prev]; next[i] = { ...next[i], min: editingMinText }; return next; }); setEditingCriteriaIdx(null); }} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />) : (<span className="text-[10.5px] font-medium select-none truncate text-slate-500" title={criterion.min || T.pinHint}>{criterion.min || T.pinHint}</span>)}
                     </div>
-                    <div className="flex items-center gap-0.5 ml-1 pl-1 border-l border-slate-100">
-                      <button onClick={(e) => { e.stopPropagation(); setEditingCriteriaIdx(i); setEditingMinText(criterion.min || ""); }} className="p-0.5 text-slate-300 hover:text-slate-600 transition-colors"><Pencil className="w-2.5 h-2.5" /></button>
-                      <button onClick={(e) => { e.stopPropagation(); setDroppedCriteria(prev => prev.filter((_, idx) => idx !== i)); setTradeoffSpecs(prev => { const next = { ...prev }; delete next[criterion.name]; return next; }); }} className="p-0.5 text-slate-300 hover:text-slate-900 transition-colors"><X className="w-3 h-3" /></button>
+                    <div className="flex items-center gap-0.5 ml-1 pl-1 border-l border-slate-200">
+                      <button onClick={(e) => { e.stopPropagation(); setEditingCriteriaIdx(i); setEditingMinText(criterion.min || ""); }} className={`p-0.5 transition-colors text-slate-300 hover:text-slate-600`}><Pencil className="w-2.5 h-2.5" /></button>
+                      <button onClick={(e) => { e.stopPropagation(); setDroppedCriteria(prev => prev.filter((_, idx) => idx !== i)); setTradeoffSpecs(prev => { const next = { ...prev }; delete next[criterion.name]; return next; }); }} className={`p-0.5 transition-colors text-slate-300 hover:text-slate-900`}><X className="w-3 h-3" /></button>
                     </div>
                   </div>
                 );
@@ -1663,20 +1687,62 @@ export default function ChatPage() {
         <div className="flex items-center gap-2"><p className="text-[12.5px] font-black text-slate-600 tracking-widest uppercase">🛒 MY OPTIONS</p>{droppedItems.length > 0 && <span className="text-[12px] font-normal text-slate-300">({droppedItems.length})</span>}</div>
       </div>
       {/* 스크롤 콘텐츠 */}
-      <div className="flex flex-col gap-2 flex-1 overflow-y-auto px-6 pt-2 pb-6 no-scrollbar">
-        {droppedItems.length > 0 ? droppedItems.map((item, i) => (
-          <div key={i} onClick={() => insertMention(item.name)} className="group relative rounded-[8px] bg-white border border-slate-200 p-3 flex items-center gap-3 animate-in zoom-in-95 duration-200 hover:border-slate-300 transition-all cursor-pointer">
-            <button onClick={(e) => { e.stopPropagation(); setDroppedItems((prev) => prev.filter((c) => c.name !== item.name)); }} className="absolute top-2 right-2 text-slate-300 hover:text-slate-700 transition-colors z-10"><X className="w-3 h-3" /></button>
-            <div className="w-12 h-12 rounded-[4px] bg-slate-50 border border-slate-100 flex items-center justify-center flex-shrink-0 overflow-hidden">{item.image ? (<img src={item.image} alt={item.name} className="w-full h-full object-cover" />) : (<span className="text-[18px] font-black text-slate-300 uppercase">{item.name[0]}</span>)}</div>
-            <div className="flex flex-col min-w-0 flex-1 pr-4 gap-1"><p className="text-[12px] font-semibold text-slate-900 leading-tight break-keep">{item.name}</p>{item.price && <span className="text-[11.5px] font-medium text-slate-500">{item.price}</span>}</div>
-          </div>
-        )) : (<div className="flex-1 flex items-center justify-center"><p className="text-[12.5px] text-slate-300 font-medium text-center leading-relaxed flex flex-col items-center gap-1"><span className="flex items-center gap-1.5">{locale === 'en' ? 'Press' : '관심 제품의'}<span className="inline-flex items-center justify-center w-[20px] h-[20px] rounded-full bg-slate-300/60"><Heart className="w-[10px] h-[10px] text-white" fill="white" strokeWidth={0} /></span>{locale === 'en' ? 'on products' : '를 눌러'}</span><span>{locale === 'en' ? 'to save them here' : '여기에 담아보세요'}</span></p></div>)}
+      <div className="flex flex-col gap-2 flex-1 overflow-y-auto px-6 pt-2 pb-4 no-scrollbar">
+        {droppedItems.length > 0 ? droppedItems.map((item, i) => {
+          const isSelected = selectedItemName === item.name;
+          return (
+            <div
+              key={i}
+              onClick={() => { insertMention(item.name); }}
+              className={`group relative rounded-[8px] border p-3 flex items-center gap-3 animate-in zoom-in-95 duration-200 transition-all cursor-pointer ${isSelected
+                  ? 'bg-white border-slate-300 shadow-sm'
+                  : 'bg-white border-slate-200 hover:border-slate-300'
+                }`}
+            >
+              <button
+                onClick={(e) => { e.stopPropagation(); setDroppedItems((prev) => prev.filter((c) => c.name !== item.name)); if (selectedItemName === item.name) setSelectedItemName(null); }}
+                className="absolute top-2 right-2 text-slate-300 hover:text-slate-700 transition-colors z-10"
+              >
+                <X className="w-3 h-3" />
+              </button>
+              {/* 체크박스 - 클릭 시 구매 선택 토글 */}
+              <div
+                onClick={(e) => { e.stopPropagation(); setSelectedItemName(isSelected ? null : item.name); }}
+                className={`w-4 h-4 rounded-[3px] border-2 flex items-center justify-center flex-shrink-0 transition-all cursor-pointer ${isSelected ? 'border-black bg-black' : 'border-slate-300 bg-white hover:border-slate-500'
+                }`}>
+                {isSelected && (
+                  <svg width="9" height="7" viewBox="0 0 9 7" fill="none" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M1 3.5L3.5 6L8 1" />
+                  </svg>
+                )}
+              </div>
+              <div className="w-12 h-12 rounded-[4px] bg-slate-50 border border-slate-100 flex items-center justify-center flex-shrink-0 overflow-hidden">{item.image ? (<img src={item.image} alt={item.name} className="w-full h-full object-cover" />) : (<span className="text-[18px] font-black text-slate-300 uppercase">{item.name[0]}</span>)}</div>
+              <div className="flex flex-col min-w-0 flex-1 pr-4 gap-1"><p className={`text-[12px] font-semibold leading-tight break-keep ${isSelected ? 'text-black' : 'text-slate-700'}`}>{item.name}</p>{item.price && <span className="text-[11.5px] font-medium text-slate-500">{item.price}</span>}</div>
+            </div>
+          );
+        }) : (<div className="flex-1 flex items-center justify-center"><p className="text-[12.5px] text-slate-300 font-medium text-center leading-relaxed flex flex-col items-center gap-1"><span className="flex items-center gap-1.5">{locale === 'en' ? 'Press' : '관심 제품의'}<span className="inline-flex items-center justify-center w-[20px] h-[20px] rounded-full bg-slate-300/60"><Heart className="w-[10px] h-[10px] text-white" fill="white" strokeWidth={0} /></span>{locale === 'en' ? 'on products' : '를 눌러'}</span><span>{locale === 'en' ? 'to save them here' : '여기에 담아보세요'}</span></p></div>)}
+      </div>
+      {/* 구매하기 버튼 - 하단 고정 */}
+      <div className="flex-shrink-0 px-5 pb-5 pt-2">
+        <button
+          type="button"
+          onClick={() => setShowConfirmModal(true)}
+          disabled={!selectedItemName}
+          className={`w-full py-2.5 rounded-[10px] text-[13px] font-semibold transition-all duration-200 ${
+            selectedItemName
+              ? 'bg-black text-white border border-black hover:bg-neutral-800'
+              : 'bg-white text-slate-400 border border-slate-200 opacity-40 cursor-not-allowed'
+          }`}
+        >
+          {locale === 'en' ? 'Purchase' : '구매하기'}
+        </button>
       </div>
     </div>
   );
 
+
   const renderOptionList = () => (
-    <div className="flex flex-col h-full overflow-hidden">
+    <div data-tour="optionList" className="flex flex-col h-full overflow-hidden">
       <div className="flex-shrink-0 flex items-center gap-2 px-6 pt-5 pb-3 border-b border-slate-50">
         {gripHandle('optionList')}
         <p className="text-[12.5px] font-black text-slate-600 tracking-widest uppercase">📝 OPTION LIST</p>
@@ -1699,7 +1765,7 @@ export default function ChatPage() {
   );
 
   const renderCompTable = () => (
-    <div className="flex flex-col gap-4 p-6 flex-1 overflow-auto no-scrollbar">
+    <div data-tour="compTable" className="flex flex-col gap-4 p-6 flex-1 overflow-auto no-scrollbar">
       <div className="flex items-center gap-2">
         {gripHandle('compTable')}
         <p className="text-[12.5px] font-black text-slate-600 tracking-widest uppercase">⚖️ COMPARISON TABLE</p>
@@ -1732,13 +1798,25 @@ export default function ChatPage() {
 
   // 결정 요약 모달 데이터 계산
   const summaryTopProduct = (() => {
-    // 1순위: compTable rank 1 제품
+    // 0순위: 사용자가 체크박스로 선택한 아이템
+    if (selectedItemName) {
+      const selected = droppedItems.find(it => it.name === selectedItemName);
+      if (selected) return { name: selected.name, price: selected.price, imageUrl: selected.image, source: 'selected' as const };
+    }
     if (compTableSpec?.props?.rows?.length > 0) {
-      const rank1 = compTableSpec.props.rows.find((r: any) => String(r.rank) === "1");
-      if (rank1?.product) return { name: rank1.product, source: 'table' as const };
+      const rankRow = compTableSpec.props.rows.find((r: any) => String(r['순위'] ?? r['Rank'] ?? r.criterion) === '순위' || String(r.criterion) === '순위' || String(r.criterion) === 'Rank');
+      // rank row에서 1위 컬럼 찾기
+      const columns = compTableSpec.props.columns ?? [];
+      const rankRowActual = compTableSpec.props.rows.find((r: any) => r.criterion === '순위' || r.criterion === 'Rank');
+      if (rankRowActual) {
+        const firstProdCol = columns.find((c: any) => c.key !== 'criterion' && (rankRowActual[c.key] === '1위' || rankRowActual[c.key] === '1st'));
+        if (firstProdCol) {
+          return { name: firstProdCol.label, imageUrl: firstProdCol.imageUrl, source: 'table' as const };
+        }
+      }
     }
     // 2순위: My Items 첫 번째
-    if (droppedItems.length > 0) return { name: droppedItems[0].name, price: droppedItems[0].price, image: droppedItems[0].image, source: 'items' as const };
+    if (droppedItems.length > 0) return { name: droppedItems[0].name, price: droppedItems[0].price, imageUrl: droppedItems[0].image, source: 'items' as const };
     return null;
   })();
 
@@ -1758,9 +1836,40 @@ export default function ChatPage() {
   })();
 
   return (
-    <div className="h-screen flex flex-col w-full overflow-hidden bg-[#FAFAFA]">
+    <div className="h-screen flex flex-col w-full overflow-hidden bg-[#EEF2FF]">
 
       {/* ── 결정 요약 모달 ── */}
+      {/* ── 결제 확인 모달 ── */}
+      {showConfirmModal && (
+        <div
+          className="fixed inset-0 z-[9999] flex items-center justify-center"
+          style={{ backgroundColor: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-2xl flex flex-col items-center gap-6 px-10 py-9"
+            style={{ minWidth: '320px' }}
+          >
+            <p className="text-[16px] font-semibold text-slate-800 text-center leading-snug">
+              {locale === 'en' ? 'Proceed with purchase?' : '구매를 진행하시겠습니까?'}
+            </p>
+            <div className="flex gap-3 w-full">
+              <button
+                onClick={() => { setShowConfirmModal(false); setShowSummaryModal(true); }}
+                className="flex-1 py-2.5 rounded-xl bg-black text-[13px] font-semibold text-white hover:bg-neutral-800 transition-colors"
+              >
+                {locale === 'en' ? 'Yes' : '예'}
+              </button>
+              <button
+                onClick={() => { setShowConfirmModal(false); }}
+                className="flex-1 py-2.5 rounded-xl border border-slate-200 text-[13px] font-semibold text-slate-500 hover:bg-slate-50 transition-colors"
+              >
+                {locale === 'en' ? 'No' : '아니오'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showSummaryModal && (
         <div
           className="fixed inset-0 z-50 overflow-y-auto"
@@ -1777,6 +1886,13 @@ export default function ChatPage() {
               boxShadow: '0 4px 24px rgba(0,0,0,0.08)'
             }}>
 
+              {/* ── 완료 문구 (카드 10px 위) ── */}
+              <div style={{ position: 'absolute', bottom: 'calc(100% + 25px)', left: '50%', transform: 'translateX(-50%)', whiteSpace: 'nowrap' }}>
+                <span style={{ fontSize: '22px', fontWeight: '700', color: '#0f172a' }}>
+                  {locale === 'en' ? 'Purchase Complete.' : '결제가 완료되었습니다.'}
+                </span>
+              </div>
+
               {/* ── 위쪽 절반 (날짜 헤더 ~ 총계) ── */}
               <div style={{ backgroundColor: 'white', border: '1px solid #e2e8f0', borderTopLeftRadius: '20px', borderTopRightRadius: '20px', borderBottom: 'none' }}>
 
@@ -1791,46 +1907,78 @@ export default function ChatPage() {
                 </div>
 
                 {/* 최종 선택 제품 */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '0 44px 12px', borderBottom: '1px solid #f1f5f9' }}>
-                  <span style={{ fontSize: '11px', fontWeight: '600', color: '#94a3b8', letterSpacing: '0.08em', textTransform: 'uppercase' }}>{T.finalProduct}</span>
-                  {(summaryTopProduct as any)?.price && (
-                    <span style={{ fontSize: '11px', fontWeight: '600', color: '#94a3b8', letterSpacing: '0.08em', textTransform: 'uppercase' }}>{T.price}</span>
-                  )}
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', padding: '17px 44px 19px', borderBottom: '1px solid #f1f5f9' }}>
-                  <span style={{ fontSize: '15px', color: '#1e293b', flex: 1, lineHeight: 1.4, fontWeight: '500' }}>
-                    {summaryTopProduct ? summaryTopProduct.name : '—'}
-                  </span>
-                  {(summaryTopProduct as any)?.price && (
-                    <span style={{ fontSize: '15px', color: '#1e293b', marginLeft: '16px', whiteSpace: 'nowrap' }}>
-                      {(summaryTopProduct as any).price}
-                    </span>
-                  )}
-                </div>
-
-                {/* 결정 기준 */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '17px 44px 12px', borderBottom: '1px solid #f1f5f9' }}>
-                  <span style={{ fontSize: '11px', fontWeight: '600', color: '#94a3b8', letterSpacing: '0.08em', textTransform: 'uppercase' }}>{T.decisionCriteria}</span>
-                  <span style={{ fontSize: '11px', fontWeight: '600', color: '#94a3b8', letterSpacing: '0.08em', textTransform: 'uppercase' }}>{T.importance}</span>
-                </div>
-                <div style={{ padding: '5px 44px 0' }}>
-                  {droppedCriteria.length > 0 ? droppedCriteria.map((c, i) => (
-                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid #f8fafc' }}>
-                      <span style={{ fontSize: '14px', color: '#334155', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        {c.important && <span style={{ color: '#f59e0b', fontSize: '11px' }}>★</span>}
-                        {c.name}
+                <div style={{ padding: '0 44px 12px', borderBottom: '1px solid #f1f5f9' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '14px' }}>
+                    <span style={{ fontSize: '11px', fontWeight: '600', color: '#94a3b8', letterSpacing: '0.08em', textTransform: 'uppercase' }}>{T.finalProduct}</span>
+                    {(summaryTopProduct as any)?.price && (
+                      <span style={{ fontSize: '11px', fontWeight: '600', color: '#94a3b8', letterSpacing: '0.08em', textTransform: 'uppercase' }}>{T.price}</span>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '16px', paddingBottom: '4px' }}>
+                    {/* 제품 이미지 */}
+                    {(summaryTopProduct as any)?.imageUrl ? (
+                      <div style={{ width: '72px', height: '72px', borderRadius: '10px', backgroundColor: '#f8fafc', border: '1px solid #f1f5f9', overflow: 'hidden', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <img
+                          src={(summaryTopProduct as any).imageUrl}
+                          alt={summaryTopProduct?.name}
+                          style={{ width: '100%', height: '100%', objectFit: 'contain', mixBlendMode: 'multiply' }}
+                        />
+                      </div>
+                    ) : (
+                      <div style={{ width: '72px', height: '72px', borderRadius: '10px', backgroundColor: '#f8fafc', border: '1px solid #f1f5f9', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <svg width="24" height="24" fill="none" stroke="#cbd5e1" strokeWidth="1.5" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                        </svg>
+                      </div>
+                    )}
+                    <div style={{ flex: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <span style={{ fontSize: '15px', color: '#1e293b', lineHeight: 1.4, fontWeight: '500', flex: 1 }}>
+                        {summaryTopProduct ? summaryTopProduct.name : '—'}
                       </span>
-                      <span style={{ fontSize: '13px', color: '#94a3b8' }}>{c.important ? T.impKey : T.impRef}</span>
+                      {(summaryTopProduct as any)?.price && (
+                        <span style={{ fontSize: '15px', color: '#1e293b', marginLeft: '16px', whiteSpace: 'nowrap' }}>
+                          {(summaryTopProduct as any).price}
+                        </span>
+                      )}
                     </div>
-                  )) : (
-                    <p style={{ fontSize: '14px', color: '#94a3b8', padding: '12px 0' }}>{T.noCriteria}</p>
-                  )}
+                  </div>
                 </div>
 
-                {/* 총계 */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '19px 44px', borderTop: '1px solid #f1f5f9', marginTop: '4px' }}>
-                  <span style={{ fontSize: '14px', color: '#334155' }}>{T.totalCriteria}</span>
-                  <span style={{ fontSize: '14px', color: '#334155', fontWeight: '600' }}>{droppedCriteria.length}{T.countSuffix}</span>
+                {/* 결정 기준 여정 */}
+                <div style={{ padding: '17px 44px 8px', borderBottom: '1px solid #f1f5f9' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+                    <span style={{ fontSize: '11px', fontWeight: '600', color: '#94a3b8', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                      {locale === 'en' ? 'Decision Criteria' : '결정 기준 여정'}
+                    </span>
+                    <span style={{ fontSize: '11px', fontWeight: '600', color: '#94a3b8', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                      {locale === 'en' ? 'Importance' : '중요도'}
+                    </span>
+                  </div>
+                  {droppedCriteria.length > 0 ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', paddingBottom: '6px' }}>
+                      {droppedCriteria.map((c, i) => {
+                        const imp = c.priority === (locale === 'en' ? 'High' : '중요') ? { label: locale === 'en' ? 'Key' : '중요', bg: '#fff1f2', color: '#f43f5e' }
+                          : c.priority === (locale === 'en' ? 'Low' : '낮음') ? { label: locale === 'en' ? 'Ref' : '낮음', bg: '#f8fafc', color: '#94a3b8' }
+                            : { label: locale === 'en' ? 'Med' : '보통', bg: '#fefce8', color: '#ca8a04' };
+                        return (
+                          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '9px 0', borderBottom: '1px solid #f8fafc' }}>
+                            {/* 순서 번호 */}
+                            <span style={{ fontSize: '10px', fontWeight: '700', color: '#cbd5e1', width: '18px', flexShrink: 0, textAlign: 'center' }}>
+                              {i + 1}
+                            </span>
+                            {/* 기준명 */}
+                            <span style={{ fontSize: '14px', color: '#334155', flex: 1 }}>{c.name}</span>
+                            {/* 중요도 뱃지 */}
+                            <span style={{ fontSize: '11px', fontWeight: '600', color: imp.color, backgroundColor: imp.bg, padding: '2px 8px', borderRadius: '99px', flexShrink: 0 }}>
+                              {imp.label}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p style={{ fontSize: '14px', color: '#94a3b8', padding: '8px 0 14px' }}>{T.noCriteria}</p>
+                  )}
                 </div>
 
               </div>
@@ -1840,35 +1988,18 @@ export default function ChatPage() {
                 <div style={{ flex: 1, borderTop: '1px dashed #e2e8f0', margin: '0 24px', position: 'relative', zIndex: 1 }} />
               </div>
 
-              {/* ── 아래쪽 절반 (탐색 현황 + 바코드) ── */}
+              {/* ── 아래쪽 절반 (바코드) ── */}
               <div style={{ backgroundColor: 'white', border: '1px solid #e2e8f0', borderBottomLeftRadius: '20px', borderBottomRightRadius: '20px', borderTop: 'none' }}>
-
-                {/* 탐색 현황 */}
-                <div style={{ padding: '19px 44px 24px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: '600' }}>{T.productsConsidered}</span>
-                    <span style={{ fontSize: '13px', color: '#475569', fontWeight: '600' }}>{droppedItems.length}{T.countSuffix}</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                    <span style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: '600', flexShrink: 0 }}>{T.exploredCategories}</span>
-                    <span style={{ fontSize: '13px', color: '#475569', textAlign: 'right', maxWidth: '240px', lineHeight: 1.5, marginLeft: '16px' }}>
-                      {summaryExploredCategories.length > 0
-                        ? summaryExploredCategories.map((c: any) => c.label).join(', ')
-                        : '—'}
-                    </span>
-                  </div>
-                </div>
-
                 {/* 바코드 */}
-                <div style={{ padding: '5px 44px 34px', textAlign: 'center' }}>
-                  <div style={{ display: 'flex', justifyContent: 'center', gap: '1.5px', alignItems: 'stretch', height: '60px', marginBottom: '0' }}>
-                    {[2,1,3,1,2,1,1,3,2,1,2,3,1,1,2,1,3,1,2,1,1,2,3,1,2,1,1,3,1,2,1,3,2,1,1,2,1,2,3,1,2,1,2,1,3,2,1,1,2,3,1,2,1,3,1,2,1,2,1,3].map((w, i) => (
-                      <div key={i} style={{ width: `${w * 2}px`, backgroundColor: i % 11 === 0 ? 'transparent' : '#1e293b' }} />
+                <div style={{ padding: '28px 44px 32px', textAlign: 'center' }}>
+                  <div style={{ display: 'flex', justifyContent: 'center', gap: '1px', alignItems: 'stretch', height: '40px' }}>
+                    {[2, 1, 3, 1, 2, 1, 1, 3, 2, 1, 2, 3, 1, 1, 2, 1, 3, 1, 2, 1, 1, 2, 3, 1, 2, 1, 1, 3, 1, 2, 1, 3, 2, 1, 1, 2, 1, 2, 3, 1, 2, 1, 2, 1, 3, 2, 1, 1, 2, 3, 1, 2, 1, 3, 1, 2, 1, 2, 1, 3].map((w, i) => (
+                      <div key={i} style={{ width: `${w * 1.4}px`, backgroundColor: i % 11 === 0 ? 'transparent' : '#1e293b' }} />
                     ))}
                   </div>
                 </div>
-
               </div>
+
 
 
             </div>
@@ -1881,7 +2012,7 @@ export default function ChatPage() {
 
       {/* Full-width white header */}
 
-      <div className="shrink-0 bg-[#FAFAFA] px-8 py-4 flex items-center justify-between border-b border-slate-200">
+      <div className="shrink-0 bg-[#EEF2FF] px-8 py-4 flex items-center justify-between border-b border-indigo-100">
         <button
           type="button"
           onClick={() => resetSession()}
@@ -1903,20 +2034,13 @@ export default function ChatPage() {
               className="transition-colors duration-150"
               style={{ color: locale === 'en' ? '#0f172a' : '#94a3b8', fontWeight: locale === 'en' ? 700 : 400 }}
             >EN</button>
-            <span className="text-slate-300">/</span>
+            <span className="text-slate-300">|</span>
             <button
               onClick={() => setLocale('ko')}
               className="transition-colors duration-150"
               style={{ color: locale === 'ko' ? '#0f172a' : '#94a3b8', fontWeight: locale === 'ko' ? 700 : 400 }}
             >KO</button>
           </div>
-          <button
-            type="button"
-            onClick={() => setShowSummaryModal(true)}
-            className="px-4 py-2 rounded-[8px] text-[13px] font-semibold border border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300 transition-all duration-200"
-          >
-            {T.proceedToPayment}
-          </button>
         </div>
       </div>
 
@@ -1924,73 +2048,84 @@ export default function ChatPage() {
         <div className="flex w-full flex-1 min-h-0 p-3 pb-0 relative">
 
           {/* LEFT AREA FOR DYNAMIC PANELS */}
-          <div className="flex-1 flex min-w-0 h-full relative overflow-hidden pr-[48px]">
+          <div className="flex-1 flex min-w-0 h-full relative overflow-hidden pr-[48px] justify-center">
             {/* SLOT 1 (LEFT) RESIZE HANDLE */}
-          {isPanelShown(panelSlots.left) && (
-            <div
-              className="w-3 flex-shrink-0 flex items-center justify-center cursor-col-resize group"
-              onPointerDown={(e) => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); pointerDragRef.current = { type: 'col-ol', startX: e.clientX, startY: e.clientY, startVal: panelWidths[panelSlots.left], containerH: 0 }; setIsResizing(true); }}
-              onPointerMove={(e) => { const d = pointerDragRef.current; if (!d || d.type !== 'col-ol') return; setPanelWidths(prev => ({ ...prev, [panelSlots.left]: Math.max(160, Math.min(800, d.startVal - (e.clientX - d.startX))) })); }}
-              onPointerUp={() => { pointerDragRef.current = null; setIsResizing(false); }}
+            {isPanelShown(panelSlots.left) && (
+              <div
+                className="w-3 h-full flex-shrink-0 flex items-center justify-center cursor-col-resize group"
+                onPointerDown={(e) => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); pointerDragRef.current = { type: 'col-ol', startX: e.clientX, startY: e.clientY, startVal: panelWidths[panelSlots.left], containerH: 0 }; setIsResizing(true); }}
+                onPointerMove={(e) => { const d = pointerDragRef.current; if (!d || d.type !== 'col-ol') return; setPanelWidths(prev => ({ ...prev, [panelSlots.left]: Math.max(160, Math.min(800, d.startVal - (e.clientX - d.startX))) })); }}
+                onPointerUp={() => { pointerDragRef.current = null; setIsResizing(false); }}
+              >
+                <div className="w-[2px] h-8 rounded-full bg-slate-400/0 group-hover:bg-slate-400/60 transition-colors" />
+              </div>
+            )}
+
+            {/* SLOT 1 (LEFT) */}
+            <aside {...slotDropProps('left')} className={`bg-white z-10 flex flex-col overflow-hidden rounded-2xl shadow-[0_2px_8px_rgba(0,0,0,0.04)] ${isPanelShown(panelSlots.left) ? 'border border-slate-200' : 'border-0'} ${panelDropTarget === 'left' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`} style={{ width: isPanelShown(panelSlots.left) ? panelWidths[panelSlots.left] : 0, flexShrink: 1, transition: isResizing ? 'none' : 'width 0.45s cubic-bezier(0.4,0,0.2,1)' }}>
+              {isPanelShown(panelSlots.left) && renderPanel(panelSlots.left)}
+            </aside>
+
+            {/* SLOT 1 <-> SLOT 2 RESIZE HANDLE */}
+            {isPanelShown(panelSlots.left) && isPanelShown(panelSlots.compTableSlot) && (
+              <div
+                className="w-3 h-full flex-shrink-0 flex items-center justify-center cursor-col-resize group"
+                onPointerDown={(e) => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); pointerDragRef.current = { type: 'col-l', startX: e.clientX, startY: e.clientY, startVal: panelWidths[panelSlots.left], containerH: 0 }; setIsResizing(true); }}
+                onPointerMove={(e) => { const d = pointerDragRef.current; if (!d || d.type !== 'col-l') return; setPanelWidths(prev => ({ ...prev, [panelSlots.left]: Math.max(160, Math.min(800, d.startVal + (e.clientX - d.startX))) })); }}
+                onPointerUp={() => { pointerDragRef.current = null; setIsResizing(false); }}
+              >
+                <div className="w-[2px] h-8 rounded-full bg-slate-400/0 group-hover:bg-slate-400/60 transition-colors" />
+              </div>
+            )}
+
+
+            {/* SLOT 2 (COMP TABLE SLOT) */}
+            <aside
+              {...slotDropProps('compTableSlot')}
+              className={`bg-white overflow-hidden flex flex-col rounded-2xl shadow-[0_2px_8px_rgba(0,0,0,0.04)] h-full ${isPanelShown(panelSlots.compTableSlot) ? 'border border-slate-200' : 'border-0'} ${panelDropTarget === 'compTableSlot' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`}
+              style={{ width: isPanelShown(panelSlots.compTableSlot) ? panelWidths[panelSlots.compTableSlot] : 0, flexShrink: isPanelShown(panelSlots.compTableSlot) ? 0 : 1, transition: isResizing ? 'none' : 'width 0.45s cubic-bezier(0.4,0,0.2,1)' }}
             >
-              <div className="w-[2px] h-8 rounded-full bg-slate-400/0 group-hover:bg-slate-400/60 transition-colors" />
-            </div>
-          )}
+              {isPanelShown(panelSlots.compTableSlot) && renderPanel(panelSlots.compTableSlot)}
+            </aside>
 
-          {/* SLOT 1 (LEFT) */}
-          <aside {...slotDropProps('left')} className={`bg-white z-10 flex flex-col overflow-hidden rounded-2xl shadow-[0_2px_8px_rgba(0,0,0,0.04)] ${isPanelShown(panelSlots.left) ? 'border border-slate-200' : 'border-0'} ${panelDropTarget === 'left' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`} style={{ width: isPanelShown(panelSlots.left) ? panelWidths[panelSlots.left] : 0, flexShrink: 1, transition: isResizing ? 'none' : 'width 0.45s cubic-bezier(0.4,0,0.2,1)' }}>
-            {isPanelShown(panelSlots.left) && renderPanel(panelSlots.left)}
-          </aside>
+            {/* SLOT 2 <-> SLOT 3 RESIZE HANDLE */}
+            {isPanelShown(panelSlots.compTableSlot) && (
+              <div
+                className="w-3 h-full flex-shrink-0 flex items-center justify-center cursor-col-resize group"
+                onPointerDown={(e) => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); pointerDragRef.current = { type: 'col-ct', startX: e.clientX, startY: e.clientY, startVal: panelWidths[panelSlots.compTableSlot], containerH: 0 }; setIsResizing(true); }}
+                onPointerMove={(e) => { const d = pointerDragRef.current; if (!d || d.type !== 'col-ct') return; setPanelWidths(prev => ({ ...prev, [panelSlots.compTableSlot]: Math.max(160, Math.min(1200, d.startVal + (e.clientX - d.startX))) })); }}
+                onPointerUp={() => { pointerDragRef.current = null; setIsResizing(false); }}
+              >
+                <div className="w-[2px] h-8 rounded-full bg-slate-400/0 group-hover:bg-slate-400/60 transition-colors" />
+              </div>
+            )}
 
-          {/* SLOT 1 <-> SLOT 2 RESIZE HANDLE */}
-          {isPanelShown(panelSlots.left) && isPanelShown(panelSlots.compTableSlot) && (
-            <div
-              className="w-3 flex-shrink-0 flex items-center justify-center cursor-col-resize group"
-              onPointerDown={(e) => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); pointerDragRef.current = { type: 'col-l', startX: e.clientX, startY: e.clientY, startVal: panelWidths[panelSlots.left], containerH: 0 }; setIsResizing(true); }}
-              onPointerMove={(e) => { const d = pointerDragRef.current; if (!d || d.type !== 'col-l') return; setPanelWidths(prev => ({ ...prev, [panelSlots.left]: Math.max(160, Math.min(800, d.startVal + (e.clientX - d.startX))) })); }}
-              onPointerUp={() => { pointerDragRef.current = null; setIsResizing(false); }}
+            {/* SLOT 3 (FAR RIGHT SLOT) */}
+            <aside
+              {...slotDropProps('farRight')}
+              className={`bg-white overflow-hidden flex flex-col rounded-2xl shadow-[0_2px_8px_rgba(0,0,0,0.04)] h-full ${isPanelShown(panelSlots.farRight) ? 'border border-slate-200' : 'border-0'} ${panelDropTarget === 'farRight' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`}
+              style={{ width: isPanelShown(panelSlots.farRight) ? panelWidths[panelSlots.farRight] : 0, flexShrink: 1, transition: isResizing ? 'none' : 'width 0.45s cubic-bezier(0.4,0,0.2,1)' }}
             >
-              <div className="w-[2px] h-8 rounded-full bg-slate-400/0 group-hover:bg-slate-400/60 transition-colors" />
-            </div>
-          )}
+              {isPanelShown(panelSlots.farRight) && renderPanel(panelSlots.farRight)}
+            </aside>
+
+            {/* SLOT 3 RIGHT RESIZE HANDLE */}
+            {isPanelShown(panelSlots.farRight) && (
+              <div
+                className="w-3 h-full flex-shrink-0 flex items-center justify-center cursor-col-resize group"
+                onPointerDown={(e) => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); pointerDragRef.current = { type: 'col-fr', startX: e.clientX, startY: e.clientY, startVal: panelWidths[panelSlots.farRight], containerH: 0 }; setIsResizing(true); }}
+                onPointerMove={(e) => { const d = pointerDragRef.current; if (!d || d.type !== 'col-fr') return; setPanelWidths(prev => ({ ...prev, [panelSlots.farRight]: Math.max(160, Math.min(1200, d.startVal + (e.clientX - d.startX))) })); }}
+                onPointerUp={() => { pointerDragRef.current = null; setIsResizing(false); }}
+              >
+                <div className="w-[2px] h-8 rounded-full bg-slate-400/0 group-hover:bg-slate-400/60 transition-colors" />
+              </div>
+            )}
 
 
-          {/* SLOT 2 (COMP TABLE SLOT) */}
-          <aside
-            {...slotDropProps('compTableSlot')}
-            className={`bg-white overflow-hidden flex flex-col rounded-2xl shadow-[0_2px_8px_rgba(0,0,0,0.04)] h-full ${isPanelShown(panelSlots.compTableSlot) ? 'border border-slate-200' : 'border-0'} ${panelDropTarget === 'compTableSlot' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`}
-            style={{ width: isPanelShown(panelSlots.compTableSlot) ? panelWidths[panelSlots.compTableSlot] : 0, flexShrink: 1, transition: isResizing ? 'none' : 'width 0.45s cubic-bezier(0.4,0,0.2,1)' }}
-          >
-            {isPanelShown(panelSlots.compTableSlot) && renderPanel(panelSlots.compTableSlot)}
-          </aside>
-
-          {/* SLOT 2 <-> SLOT 3 RESIZE HANDLE */}
-          {isPanelShown(panelSlots.compTableSlot) && isPanelShown(panelSlots.farRight) && (
-            <div
-              className="w-3 flex-shrink-0 flex items-center justify-center cursor-col-resize group"
-              onPointerDown={(e) => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); pointerDragRef.current = { type: 'col-ct', startX: e.clientX, startY: e.clientY, startVal: panelWidths[panelSlots.compTableSlot], containerH: 0 }; setIsResizing(true); }}
-              onPointerMove={(e) => { const d = pointerDragRef.current; if (!d || d.type !== 'col-ct') return; setPanelWidths(prev => ({ ...prev, [panelSlots.compTableSlot]: Math.max(160, Math.min(800, d.startVal + (e.clientX - d.startX))) })); }}
-              onPointerUp={() => { pointerDragRef.current = null; setIsResizing(false); }}
-            >
-              <div className="w-[2px] h-8 rounded-full bg-slate-400/0 group-hover:bg-slate-400/60 transition-colors" />
-            </div>
-          )}
-
-          {/* SLOT 3 (FAR RIGHT SLOT) */}
-          <aside
-            {...slotDropProps('farRight')}
-            className={`bg-white overflow-hidden flex flex-col rounded-2xl shadow-[0_2px_8px_rgba(0,0,0,0.04)] h-full ${isPanelShown(panelSlots.farRight) ? 'border border-slate-200' : 'border-0'} ${panelDropTarget === 'farRight' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`}
-            style={{ width: isPanelShown(panelSlots.farRight) ? panelWidths[panelSlots.farRight] : 0, flexShrink: 1, transition: isResizing ? 'none' : 'width 0.45s cubic-bezier(0.4,0,0.2,1)' }}
-          >
-            {isPanelShown(panelSlots.farRight) && renderPanel(panelSlots.farRight)}
-          </aside>
-
-            {/* FLEX SPACER - Pushes dynamic slots to the left */}
-            <div className="flex-1" />
           </div>
 
           {/* RIGHT COLUMN OVERLAY — DC+My Options (항상 맨 우측 고정) */}
-          <div 
+          <div
             className="absolute top-3 bottom-0 right-3 flex z-40 transition-all duration-300"
             style={{ pointerEvents: rightPanelCollapsed ? 'none' : 'auto', height: 'calc(100% - 12px)' }}
           >
@@ -2063,7 +2198,7 @@ export default function ChatPage() {
               const rawText = (lastUserMsg as any).content || ((lastUserMsg as any).parts?.find((p: any) => p.type === 'text')?.text || "");
               let displayMsg = rawText;
               const cumulativeMatch = displayMsg.match(/^\[SYSTEM: CUMULATIVE COMPARISON\] (.*?) 제품들을 Table/i);
-              
+
               if (cumulativeMatch) {
                 displayMsg = `"${cumulativeMatch[1].trim()}" 제품을 비교해줘.`;
               } else {
@@ -2082,12 +2217,12 @@ export default function ChatPage() {
                 if (isPureCriteria && displayMsg && !displayMsg.includes("조건으로 추천해줘")) displayMsg += " 조건으로 추천해줘.";
                 if (isPureMyItems && displayMsg && !displayMsg.includes("비교해줘")) displayMsg += " 제품을 비교해줘.";
               }
-              
+
               if (displayMsg) {
                 return (
                   <div className="flex animate-in fade-in slide-in-from-bottom-1 duration-300 min-w-0">
                     <div
-                      className="px-3 py-1.5 ml-5 flex items-center gap-2 bg-white border border-slate-200 border-b-0 rounded-t-[12px] relative z-10 translate-y-[1px] overflow-hidden"
+                      className="px-3 py-1.5 ml-5 flex items-center gap-2 bg-white border border-indigo-300 border-b-0 rounded-t-[12px] relative z-10 translate-y-[1px] overflow-hidden"
                       style={{ maxWidth: 'calc(100% - 60px)' }}
                     >
                       <span className="shrink-0 flex items-center justify-center w-5 h-5 rounded-full bg-slate-100 text-slate-400 text-[11px] font-bold">Q</span>
@@ -2113,7 +2248,7 @@ export default function ChatPage() {
                 const label = e.dataTransfer.getData("text/plain");
                 if (jsonData) { try { const item = JSON.parse(jsonData); if (item.name && !searchCriteria.some(c => c.name === item.name)) setSearchCriteria(prev => [...prev, { name: item.name, min: item.min, priority: item.priority || "medium" }]); } catch { if (label && !searchCriteria.some(c => c.name === label)) setSearchCriteria(prev => [...prev, { name: label, priority: "medium" }]); } } else if (label && !searchCriteria.some(c => c.name === label)) setSearchCriteria(prev => [...prev, { name: label, priority: "medium" }]);
               }}
-              className="relative z-0 flex items-end gap-2 bg-white border border-slate-200 rounded-[24px] p-2 pl-4 pr-2 shadow-lg shadow-slate-200/50 hover:shadow-xl hover:border-slate-300 transition-all focus-within:border-slate-400 focus-within:ring-4 focus-within:ring-slate-100 min-h-[48px]"
+              className="relative z-0 flex items-end gap-2 bg-white/80 border border-indigo-300 rounded-[24px] p-2 pl-4 pr-2 shadow-lg shadow-indigo-200/40 hover:shadow-xl hover:border-indigo-400 transition-all focus-within:border-indigo-400 focus-within:ring-4 focus-within:ring-indigo-200/50 min-h-[48px]"
             >
               <div className="flex-1 flex flex-wrap items-center gap-1.5 min-w-0 max-h-[120px] overflow-y-auto py-1">
                 {mentionChips.map((chip, i) => (<div key={`mention-${i}`} className="flex items-center gap-1.5 bg-slate-50 border border-slate-100 rounded-full px-2 py-0.5 h-[28px] shrink-0 animate-in zoom-in-95 duration-200"><span className="text-[12px] font-bold text-slate-800">{chip.name}</span><button onClick={() => setMentionChips(prev => prev.filter((_, idx) => idx !== i))} className="ml-1 p-0.5 text-slate-300 hover:text-slate-900 transition-colors"><X className="w-2.5 h-2.5" /></button></div>))}
@@ -2124,7 +2259,7 @@ export default function ChatPage() {
                 const isInputEmpty = !input.trim() && searchCriteria.length === 0 && mentionChips.length === 0;
                 const isSubmitDisabled = isInputEmpty || isStreaming;
                 return (
-                  <button onClick={() => handleSubmit()} disabled={isSubmitDisabled} className="w-9 h-9 rounded-full flex items-center justify-center transition-all shadow-md shrink-0 self-end mb-0.5 bg-slate-900 text-white hover:bg-black active:scale-95 disabled:bg-slate-50 disabled:text-slate-300 disabled:hover:bg-slate-50 disabled:active:scale-100 disabled:shadow-none disabled:cursor-default border border-transparent disabled:border-slate-100">
+                  <button onClick={() => handleSubmit()} disabled={isSubmitDisabled} className="w-9 h-9 rounded-full flex items-center justify-center transition-all shadow-sm shrink-0 self-end mb-0.5 bg-indigo-300 text-white hover:bg-indigo-400 active:scale-95 disabled:bg-indigo-100 disabled:text-white disabled:hover:bg-indigo-100 disabled:active:scale-100 disabled:shadow-none disabled:cursor-default border-0">
                     {isStreaming ? (
                       <Loader2 className="h-4 w-4 animate-spin text-slate-400" />
                     ) : (
@@ -2138,6 +2273,7 @@ export default function ChatPage() {
         </div>
 
       </div>
+
     </div>
   );
 }
