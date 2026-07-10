@@ -1,0 +1,6 @@
+# GitHub Linguist — 임베딩/데이터 JSON을 언어 통계에서 제외
+# (HTML 91.5% 오분류 방지)
+data/embeddings-*.json linguist-generated=true
+data/products-*.json   linguist-generated=true
+data/cell-cache.json   linguist-generated=true
+data/comp-table-log.md linguist-generated=true
