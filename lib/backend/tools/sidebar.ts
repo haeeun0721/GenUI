@@ -6,7 +6,7 @@ import { currentRequestId, pushSidePanelResult, currentMessages, currentUserCont
 export const renderToSidebar = tool({
     description: "Render a UI component to the Exploration Journey panel. Use for Category 1a (CriteriaMap) or 1b (InformationCard).",
     inputSchema: z.object({
-        agent_reply: z.string().describe("The agent's full Korean reply to be visualized as a UI component."),
+        agent_reply: z.string().describe("The agent's full reply to be visualized as a UI component. Language must match the conversation locale."),
         intent_summary: z.string().describe("Brief description of the user's intent."),
         ui_intent_category: z.string().nullable().describe("Category of intent: '1a' (Criteria Exploration → CriteriaMap), or '1b' (Concept Explanation → InformationCard)."),
         turn_number: z.number().describe("The current turn number (incrementing for each new UI step)."),

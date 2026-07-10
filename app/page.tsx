@@ -563,11 +563,12 @@ export default function ChatPage() {
     criteriaEmpty: locale === 'en' ? 'Click criteria chips\nto pin them here' : '기준 칩을 클릭해\n여기에 고정해두세요',
     optionsEmpty: locale === 'en' ? 'Press ♥ on products\nto save them here' : '관심 제품의 ♥를 눌러\n여기에 담아보세요',
     optionListEmpty: locale === 'en' ? 'Get product recommendations\nto see options here' : '제품 추천을 받으면\n여기에 옵션이 표시됩니다',
-    impHigh: locale === 'en' ? 'High' : '중요',
-    impMedium: locale === 'en' ? 'Med' : '보통',
-    impLow: locale === 'en' ? 'Low' : '낮음',
+    impHigh: locale === 'en' ? 'High Imp.' : '중요도 높음',
+    impMedium: locale === 'en' ? 'Med Imp.' : '중요도 보통',
+    impLow: locale === 'en' ? 'Low Imp.' : '중요도 낮음',
     stroller: locale === 'en' ? 'Stroller' : '유모차',
     robotVacuum: locale === 'en' ? 'Robot Vacuum' : '로봇 청소기',
+    camera: locale === 'en' ? 'Camera' : '카메라',
     pinHint: locale === 'en' ? 'Enter' : '입력',
     // Receipt modal
     finalProduct: locale === 'en' ? 'FINAL SELECTION' : '최종 선택 제품',
@@ -585,8 +586,8 @@ export default function ChatPage() {
   const [userContext, setUserContext] = useState(() =>
     typeof window !== 'undefined' ? (localStorage.getItem('gs_userContext') ?? '') : ''
   );
-  const [assignedItem, setAssignedItem] = useState<"A" | "B" | "">(() =>
-    typeof window !== 'undefined' ? ((localStorage.getItem('gs_assignedItem') as "A" | "B" | "") ?? '') : ''
+  const [assignedItem, setAssignedItem] = useState<"A" | "B" | "C" | "">(() =>
+    typeof window !== 'undefined' ? ((localStorage.getItem('gs_assignedItem') as "A" | "B" | "C" | "") ?? '') : ''
   );
   const [droppedCriteria, setDroppedCriteria] = useState<{ name: string; min?: string; priority: string; important?: boolean; importanceLevel?: string }[]>([]);
   const [searchCriteria, setSearchCriteria] = useState<{ name: string; min?: string; priority: string }[]>([]);
@@ -606,11 +607,27 @@ export default function ChatPage() {
   // UnchartedTerritoryChip spec — set when Cat 2 fires with criteria + items
   const [unchartedSpec, setUnchartedSpec] = useState<{ labels: string[] } | null>(null);
   const [dismissedUncharted, setDismissedUncharted] = useState<Set<string>>(new Set());
+  // locale 전환 재번역 상태
+  const [isTranslating, setIsTranslating] = useState(false);
+  // locale 전환 override 스펙 (원본 messages를 건드리지 않고 누적 없이 교체)
+  const [localizedCriteriaMap, setLocalizedCriteriaMap] = useState<any>(null);
+  const [localizedConceptCards, setLocalizedConceptCards] = useState<any[] | null>(null);
+  // 사전 번역 컠테이너 (스트리밍 완료 시 반대 locale로 미리 번역해둠)
+  const [preTranslated, setPreTranslated] = useState<{
+    locale: 'ko' | 'en';
+    criteriaMap?: any;
+    conceptCards?: any[];
+    compTable?: any;
+    productCardList?: any;
+    uncharted?: { labels: string[] };
+    tradeoffs?: Record<string, any>;
+  } | null>(null);
+  const isPreTranslatingRef = useRef(false); // 중복 실행 방지
   const prevTableTurnRef = useRef<number>(-1);
   // UnchartedTerritoryChip: 조건 전환 감지용 refs
   const prevConditionsRef = useRef<boolean>(false);      // 이전 allConditionsMet
   const pendingFetchRef = useRef<boolean>(false);         // 스트리밍 해제 후 실행 대기 중 여부
-  const prevCriteriaLengthRef = useRef<number>(0);        // 이전 droppedCriteria 길이 (기준 추가 감지)
+  const prevCompTableCountRef = useRef<number>(0);        // 이전 비교표 생성 횟수 (비교 반복 감지)
   const unchartedHasShownRef = useRef<boolean>(false);    // 첫 표시 여부 (이후 애니메이션 스킵)
   // Panel resize state
   const [isResizing, setIsResizing] = useState(false);
@@ -627,6 +644,7 @@ export default function ChatPage() {
   const [compTableCollapsed, setCompTableCollapsed] = useState(false);
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(true);
   const [productCardListSpec, setProductCardListSpec] = useState<any>(null);
+  const [coverageNoticeSpec, setCoverageNoticeSpec] = useState<any>(null);
   const [compTableSpec, setCompTableSpec] = useState<any>(null);
   const [showSummaryModal, setShowSummaryModal] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
@@ -760,6 +778,83 @@ export default function ChatPage() {
     document.cookie = `gs_locale=${locale};path=/;max-age=86400`;
   }, [locale]);
 
+
+  // locale 변경 → 사전 번역이 준비되어 있으면 즉시 표시, 없으면 on-demand 번역
+  const prevLocaleRef = useRef<'ko' | 'en'>(locale);
+  useEffect(() => {
+    if (prevLocaleRef.current === locale) return;
+    prevLocaleRef.current = locale;
+
+    // ✅ Cache hit: 사전 번역된 결과가 있으면 즉시 표시
+    if (preTranslated?.locale === locale) {
+      if (preTranslated.criteriaMap) setLocalizedCriteriaMap(preTranslated.criteriaMap);
+      if (preTranslated.conceptCards) setLocalizedConceptCards(preTranslated.conceptCards);
+      if (preTranslated.compTable) setCompTableSpec(preTranslated.compTable);
+      if (preTranslated.productCardList) setProductCardListSpec(preTranslated.productCardList);
+      if (preTranslated.uncharted) setUnchartedSpec(preTranslated.uncharted);
+      if (preTranslated.tradeoffs) setTradeoffSpecs(prev => ({ ...prev, ...preTranslated.tradeoffs }));
+      setPreTranslated(null); // 사용 후 정리
+      return;
+    }
+
+    // ❌ Cache miss: on-demand 번역 (fallback)
+    const runTranslation = async () => {
+      setIsTranslating(true);
+      try {
+        const specsToTranslate: Record<string, any> = {};
+        if (sidebarSpec.CriteriaMap) specsToTranslate['criteriaMap'] = sidebarSpec.CriteriaMap;
+        sidebarSpec.conceptCards.forEach((card: any, i: number) => {
+          specsToTranslate[`card_${i}`] = { type: 'InformationCard', props: card };
+        });
+        if (compTableSpec) specsToTranslate['compTable'] = compTableSpec;
+        if (productCardListSpec) specsToTranslate['productCardList'] = productCardListSpec;
+        if (unchartedSpec) specsToTranslate['uncharted'] = { type: 'UnchartedTerritoryChip', props: unchartedSpec };
+        Object.entries(tradeoffSpecs).forEach(([key, spec]) => {
+          specsToTranslate[`tradeoff_${key}`] = spec;
+        });
+
+        if (Object.keys(specsToTranslate).length === 0) return;
+
+        const res = await fetch('/api/translate-spec', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ specs: specsToTranslate, targetLocale: locale }),
+        });
+        if (!res.ok) return;
+        const result: Record<string, any> = await res.json();
+
+        if (result.criteriaMap) setLocalizedCriteriaMap(result.criteriaMap);
+        const translatedCards = sidebarSpec.conceptCards
+          .map((_: any, i: number) => result[`card_${i}`]?.props)
+          .filter(Boolean);
+        if (translatedCards.length > 0) setLocalizedConceptCards(translatedCards);
+        if (result.compTable) setCompTableSpec(result.compTable);
+        if (result.productCardList) setProductCardListSpec(result.productCardList);
+        if (result.uncharted?.props?.labels) setUnchartedSpec({ labels: result.uncharted.props.labels });
+        const translatedTradeoffs: Record<string, any> = {};
+        Object.keys(tradeoffSpecs).forEach(key => {
+          if (result[`tradeoff_${key}`]) translatedTradeoffs[key] = result[`tradeoff_${key}`];
+        });
+        if (Object.keys(translatedTradeoffs).length > 0) setTradeoffSpecs(prev => ({ ...prev, ...translatedTradeoffs }));
+      } finally {
+        setIsTranslating(false);
+      }
+    };
+
+    void runTranslation();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locale]);
+
+  // 새 AI 응답이 오면 localized override를 초기화 (최신 AI 생성 spec이 우선됨)
+  const prevMessagesLengthRef = useRef(0);
+  useEffect(() => {
+    if (messages.length > prevMessagesLengthRef.current) {
+      setLocalizedCriteriaMap(null);
+      setLocalizedConceptCards(null);
+    }
+    prevMessagesLengthRef.current = messages.length;
+  }, [messages.length]);
+
   // 세션 상태 localStorage 자동 저장
   useEffect(() => {
     localStorage.setItem('gs_hasStarted', String(hasStarted));
@@ -786,6 +881,64 @@ export default function ChatPage() {
   }, [messages]);
 
   const isStreaming = status === "streaming" || status === "submitted";
+
+  // 스트리밍 완료 시 반대 locale로 백그라운드 사전 번역 (locale 전환 시 즉시 표시를 위해)
+  const prevIsStreamingRef = useRef(false);
+  useEffect(() => {
+    const wasStreaming = prevIsStreamingRef.current;
+    prevIsStreamingRef.current = isStreaming;
+
+    // 스트리밍이 끝난 직후(true → false)에만 실행
+    if (!wasStreaming || isStreaming) return;
+
+    const oppositeLocale = locale === 'ko' ? 'en' : 'ko';
+    const specsToTranslate: Record<string, any> = {};
+
+    if (sidebarSpec.CriteriaMap) specsToTranslate['criteriaMap'] = sidebarSpec.CriteriaMap;
+    sidebarSpec.conceptCards.forEach((card: any, i: number) => {
+      specsToTranslate[`card_${i}`] = { type: 'InformationCard', props: card };
+    });
+    if (compTableSpec) specsToTranslate['compTable'] = compTableSpec;
+    if (productCardListSpec) specsToTranslate['productCardList'] = productCardListSpec;
+    if (unchartedSpec) specsToTranslate['uncharted'] = { type: 'UnchartedTerritoryChip', props: unchartedSpec };
+    Object.entries(tradeoffSpecs).forEach(([key, spec]) => {
+      specsToTranslate[`tradeoff_${key}`] = spec;
+    });
+
+    if (Object.keys(specsToTranslate).length === 0) return;
+    if (isPreTranslatingRef.current) return;
+
+    isPreTranslatingRef.current = true;
+    fetch('/api/translate-spec', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ specs: specsToTranslate, targetLocale: oppositeLocale }),
+    })
+      .then(r => r.ok ? r.json() : null)
+      .then((result: Record<string, any> | null) => {
+        if (!result) return;
+        const translatedCards = sidebarSpec.conceptCards
+          .map((_: any, i: number) => result[`card_${i}`]?.props)
+          .filter(Boolean);
+        const translatedTradeoffs: Record<string, any> = {};
+        Object.keys(tradeoffSpecs).forEach(key => {
+          if (result[`tradeoff_${key}`]) translatedTradeoffs[key] = result[`tradeoff_${key}`];
+        });
+        setPreTranslated({
+          locale: oppositeLocale,
+          criteriaMap: result.criteriaMap,
+          conceptCards: translatedCards.length > 0 ? translatedCards : undefined,
+          compTable: result.compTable,
+          productCardList: result.productCardList,
+          uncharted: result.uncharted?.props?.labels ? { labels: result.uncharted.props.labels } : undefined,
+          tradeoffs: Object.keys(translatedTradeoffs).length > 0 ? translatedTradeoffs : undefined,
+        });
+        console.log(`[Pre-translation] ${oppositeLocale} 번역 완료 — locale 전환 시 즉시 사용 가능`);
+      })
+      .catch(() => { })
+      .finally(() => { isPreTranslatingRef.current = false; });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isStreaming]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -1112,6 +1265,35 @@ export default function ChatPage() {
     return { CriteriaMap: latestCriteriaMapSpec, conceptCards };
   }, [allSpecs]);
 
+  // 실시간 확신도 동기화 (Decision Criteria 패널)
+  useEffect(() => {
+    if (!sidebarSpec.CriteriaMap || !sidebarSpec.CriteriaMap.props?.categories) return;
+    
+    // AI 최신 CriteriaMap에서 { 기준명: 확신도 } 맵 구축
+    const latestConfidenceMap = new Map<string, string>();
+    sidebarSpec.CriteriaMap.props.categories.forEach((cat: any) => {
+      cat.items?.forEach((item: any) => {
+        if (item.name && item.confidence) {
+          latestConfidenceMap.set(item.name, item.confidence);
+        }
+      });
+    });
+
+    // droppedCriteria에 이미 들어있는 항목이 있다면, 최신 확신도로 업데이트
+    setDroppedCriteria((prev) => {
+      let changed = false;
+      const next = prev.map((crit) => {
+        const latestConf = latestConfidenceMap.get(crit.name);
+        if (latestConf && (crit as any).confidence !== latestConf) {
+          changed = true;
+          return { ...crit, confidence: latestConf };
+        }
+        return crit;
+      });
+      return changed ? next : prev;
+    });
+  }, [sidebarSpec.CriteriaMap]);
+
   useEffect(() => {
     if (sidebarSpec.conceptCards.length === 0) {
       globalSeenTerms.clear();
@@ -1155,7 +1337,16 @@ export default function ChatPage() {
     return false;
   }), [messages]);
 
-  // UnchartedTerritoryChip: 세 조건이 맞물릴 때마다 trigger (기준이 추가될 때마다 재실행, Empty 반환 시 자연 종료)
+  // 비교표 생성 횟수 (비교가 반복될 때마다 UnchartedTerritory 재실행 감지용)
+  const compTableCount = useMemo(() => messages.reduce((count, m) => {
+    const hasPart = (m.parts ?? []).some((p: any) => p.type === 'data-comp-table-spec');
+    const hasTool = ((m as any).toolInvocations ?? []).some((ti: any) =>
+      (ti.toolName === 'renderInChat' || ti.toolName === 'renderToCompTable') && ti.args?.ui_intent_category === '2'
+    );
+    return count + (hasPart || hasTool ? 1 : 0);
+  }, 0), [messages]);
+
+  // UnchartedTerritoryChip: 세 조건이 맞물릴 때마다 trigger (비교가 반복될 때마다 재실행, Empty 반환 시 자연 종료)
   useEffect(() => {
     const allConditionsMet =
       hasComparison && droppedItems.length > 0 && droppedCriteria.length > 0;
@@ -1163,11 +1354,11 @@ export default function ChatPage() {
     const wasAllMet = prevConditionsRef.current;
     prevConditionsRef.current = allConditionsMet;
 
-    const criteriaIncreased = droppedCriteria.length > prevCriteriaLengthRef.current;
-    prevCriteriaLengthRef.current = droppedCriteria.length;
+    const compTableIncreased = compTableCount > prevCompTableCountRef.current;
+    prevCompTableCountRef.current = compTableCount;
 
-    // 조건이 최초 충족되거나, 이미 충족된 상태에서 기준이 추가된 경우 fetch 예약
-    if (allConditionsMet && (!wasAllMet || criteriaIncreased)) {
+    // 조건이 최초 충족되거나, 이미 충족된 상태에서 비교가 새로 실행된 경우 fetch 예약
+    if (allConditionsMet && (!wasAllMet || compTableIncreased)) {
       pendingFetchRef.current = true;
     }
 
@@ -1193,6 +1384,10 @@ export default function ChatPage() {
         const existingLabels = categories.map((c: any) => c.label as string).filter(Boolean);
         const criteriaNames = droppedCriteria.map(c => c.name);
 
+        // 이미 칩으로 제안된 labels를 Claude에게 알려서 새로운 영역을 제안하게 함
+        const alreadySuggested: string[] = [];
+        setUnchartedSpec(prev => { if (prev) alreadySuggested.push(...prev.labels); return prev; });
+
         const res = await fetch("/api/unexplored-areas", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1200,6 +1395,7 @@ export default function ChatPage() {
             existingCategories: existingLabels,
             productCategory,
             droppedCriteria: criteriaNames,
+            alreadySuggested,
           }),
         });
 
@@ -1208,8 +1404,15 @@ export default function ChatPage() {
         if (res.ok) {
           const data = await res.json();
           if (data.labels && data.labels.length > 0) {
-            setUnchartedSpec({ labels: data.labels });
+            setUnchartedSpec(prev => {
+              if (!prev) return { labels: data.labels };
+              // 기존 labels에 새 labels를 누적 (중복 제거)
+              const existingSet = new Set(prev.labels);
+              const merged = [...prev.labels, ...data.labels.filter((l: string) => !existingSet.has(l))];
+              return { labels: merged };
+            });
           }
+          // Empty 반환 시 → 새 칩을 만들지 않음. 기존 칩은 그대로 유지.
         }
       } catch (err) {
         console.error("[fetchUncharted] Error:", err);
@@ -1218,7 +1421,7 @@ export default function ChatPage() {
 
     fetchUncharted();
     return () => { isMounted = false; };
-  }, [hasComparison, droppedItems.length, droppedCriteria.length, isStreaming, assignedItem]);
+  }, [hasComparison, droppedItems.length, droppedCriteria.length, compTableCount, isStreaming, assignedItem]);
 
 
   const scrollToTurn = useCallback((turnNumber: number, textToHighlight?: string) => {
@@ -1315,7 +1518,7 @@ export default function ChatPage() {
     if (existingCriteria.length === 0) return;
     setTradeoffLoading(prev => new Set([...prev, newCriterion.name]));
     try {
-      const productCategory = assignedItem === "A" ? "유모차" : assignedItem === "B" ? "로봇 청소기" : "소비재";
+      const productCategory = assignedItem === "A" ? "유모차" : assignedItem === "B" ? "로봇 청소기" : assignedItem === "C" ? "카메라" : "소비재";
       const res = await fetch("/api/check-tradeoff", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1395,6 +1598,8 @@ export default function ChatPage() {
   useEffect(() => {
     let accumulatedCards: any[] = [];
     let latestSpecBase: any = null;
+    let latestCoverageNotice: any = null;
+    let latestRagNotFound: any = null;
 
     for (const msg of messages) {
       if (msg.role !== 'assistant') continue;
@@ -1402,14 +1607,28 @@ export default function ChatPage() {
       // 1순위: data-option-list-spec 스트림 파트
       for (const part of (msg.parts ?? []) as any[]) {
         if ((part as any).type === 'data-option-list-spec' && (part as any).data) {
-          console.log('[OptionList] data-option-list-spec part found:', (part as any).data?.type);
           const spec = (part as any).data;
-          latestSpecBase = spec;
-          if (spec?.props?.cards && Array.isArray(spec.props.cards)) {
-            for (const newCard of spec.props.cards) {
-              const existingIdx = accumulatedCards.findIndex((c: any) => c.name === newCard.name);
-              if (existingIdx !== -1) accumulatedCards[existingIdx] = newCard;
-              else accumulatedCards.unshift(newCard);
+          console.log('[OptionList] data-option-list-spec part found:', spec?.type);
+
+          if (spec?.type === 'CoverageNotice') {
+            // 미반영 기준 알림 — 별도 상태로 저장
+            latestCoverageNotice = spec;
+          } else if (spec?.type === 'RagNotFound') {
+            // DB에 없음 — 별도 상태로 저장, productCardListSpec 초기화
+            latestRagNotFound = spec;
+            latestCoverageNotice = null;
+            latestSpecBase = null;
+            accumulatedCards = [];
+          } else {
+            // ProductCardList 등 일반 spec
+            latestSpecBase = spec;
+            latestRagNotFound = null; // 새 검색 시 이전 RagNotFound 클리어
+            if (spec?.props?.cards && Array.isArray(spec.props.cards)) {
+              for (const newCard of spec.props.cards) {
+                const existingIdx = accumulatedCards.findIndex((c: any) => c.name === newCard.name);
+                if (existingIdx !== -1) accumulatedCards[existingIdx] = newCard;
+                else accumulatedCards.unshift(newCard);
+              }
             }
           }
         }
@@ -1418,7 +1637,7 @@ export default function ChatPage() {
       // 2순위 fallback: tool invocation result에서 직접 추출
       for (const ti of (msg as any).toolInvocations ?? []) {
         if (ti.toolName === 'renderToOptionList') {
-          console.log('[OptionList] toolInvocation found — state:', ti.state, '| result type:', ti.result?.type, '| error:', ti.result?.error, '| cards:', ti.result?.props?.cards?.length);
+          console.log('[OptionList] toolInvocation found — state:', ti.state, '| result type:', ti.result?.type);
           if (ti.state === 'result' && ti.result) {
             const raw = ti.result;
             const spec = typeof raw === 'string' ? (() => { try { return JSON.parse(raw); } catch { return null; } })() : raw;
@@ -1435,8 +1654,11 @@ export default function ChatPage() {
       }
     }
 
-    console.log('[OptionList] final — latestSpecBase:', !!latestSpecBase, '| cards count:', accumulatedCards.length);
-    if (latestSpecBase) {
+    setCoverageNoticeSpec(latestCoverageNotice);
+
+    if (latestRagNotFound) {
+      setProductCardListSpec(latestRagNotFound);
+    } else if (latestSpecBase) {
       setProductCardListSpec({
         ...latestSpecBase,
         props: { ...latestSpecBase.props, cards: accumulatedCards }
@@ -1488,9 +1710,24 @@ export default function ChatPage() {
     return (
       <div className="h-screen w-full flex items-center justify-center bg-[#FAFAFA]">
         <div className="w-full max-w-lg flex flex-col gap-10 px-8 animate-in fade-in zoom-in-95 duration-700">
-          {/* Branding */}
-          <div className="flex flex-col gap-1">
-            <h1 className="text-[48px] font-bold text-slate-900 tracking-tight leading-none">GenSpace</h1>
+          {/* Branding + locale toggle */}
+          <div className="flex items-center justify-between">
+            <h1 className="text-[48px] font-extrabold text-slate-900 tracking-tight leading-none">GenUIdance</h1>
+            <div className="flex items-center gap-1.5 text-[15px] font-medium select-none">
+              <button
+                onClick={() => setLocale('en')}
+                disabled={locale === 'en'}
+                className="transition-colors duration-150 disabled:cursor-default"
+                style={{ color: locale === 'en' ? '#0f172a' : '#94a3b8', fontWeight: locale === 'en' ? 700 : 400 }}
+              >EN</button>
+              <span className="text-slate-300">|</span>
+              <button
+                onClick={() => setLocale('ko')}
+                disabled={locale === 'ko'}
+                className="transition-colors duration-150 disabled:cursor-default"
+                style={{ color: locale === 'ko' ? '#0f172a' : '#94a3b8', fontWeight: locale === 'ko' ? 700 : 400 }}
+              >KO</button>
+            </div>
           </div>
 
           {/* Participant ID */}
@@ -1513,17 +1750,6 @@ export default function ChatPage() {
             <div className="flex gap-3">
               <button
                 type="button"
-                onClick={() => setAssignedItem("A")}
-                className={`flex-1 py-4 rounded-[8px] text-[15px] font-semibold border transition-all duration-200 ${assignedItem === "A"
-                  ? "text-white"
-                  : "bg-[#FAFAFA] text-slate-400 border-slate-200 hover:border-slate-400 hover:text-slate-600"
-                  }`}
-                style={assignedItem === "A" ? { backgroundColor: "#000000", borderColor: "#000000" } : {}}
-              >
-                {T.stroller}
-              </button>
-              <button
-                type="button"
                 onClick={() => setAssignedItem("B")}
                 className={`flex-1 py-4 rounded-[8px] text-[15px] font-semibold border transition-all duration-200 ${assignedItem === "B"
                   ? "text-white"
@@ -1532,6 +1758,17 @@ export default function ChatPage() {
                 style={assignedItem === "B" ? { backgroundColor: "#000000", borderColor: "#000000" } : {}}
               >
                 {T.robotVacuum}
+              </button>
+              <button
+                type="button"
+                onClick={() => setAssignedItem("C")}
+                className={`flex-1 py-4 rounded-[8px] text-[15px] font-semibold border transition-all duration-200 ${assignedItem === "C"
+                  ? "text-white"
+                  : "bg-[#FAFAFA] text-slate-400 border-slate-200 hover:border-slate-400 hover:text-slate-600"
+                  }`}
+                style={assignedItem === "C" ? { backgroundColor: "#000000", borderColor: "#000000" } : {}}
+              >
+                {T.camera}
               </button>
             </div>
           </div>
@@ -1578,11 +1815,11 @@ export default function ChatPage() {
       </div>
       <div className="flex-1 overflow-y-auto styled-scrollbar pr-1">
         <div className={journeyTab === "criteria" ? "" : "hidden"}>
-          {unchartedSpec && unchartedSpec.labels.length > 0 && (<div className="mb-3">{manualRegistry.UnchartedTerritoryChip({ props: { labels: unchartedSpec.labels, skipAnimation: unchartedHasShownRef.current, onExplore: (label: string) => { unchartedHasShownRef.current = true; const cat = assignedItem === "A" ? "유모차" : assignedItem === "B" ? "로봇 청소기" : "제품"; handleSubmit(`${cat} ${label}${getEunNeun(label)} 어떻게 봐야 해?`); setDismissedUncharted(prev => { const next = new Set(prev); next.add(label); return next; }); setUnchartedSpec(prev => prev ? { labels: prev.labels.filter(l => l !== label) } : null); } } })}</div>)}
-          {sidebarSpec.CriteriaMap ? (<ExplorerRenderer spec={sidebarSpec.CriteriaMap} bindings={sidebarBindings} />) : (<div className="flex flex-col items-center justify-center h-full gap-2 py-12"><p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">{locale === 'en' ? 'Start a conversation' : '대화를 시작하면'}<br />{locale === 'en' ? 'to build your criteria map' : '여기에 탐색 기록이 쌓여요'}</p></div>)}
+          {unchartedSpec && unchartedSpec.labels.length > 0 && (<div className="mb-3">{manualRegistry.UnchartedTerritoryChip({ props: { labels: unchartedSpec.labels, skipAnimation: unchartedHasShownRef.current, onExplore: (label: string) => { unchartedHasShownRef.current = true; const cat = assignedItem === "A" ? "유모차" : assignedItem === "B" ? "로봇 청소기" : assignedItem === "C" ? "카메라" : "제품"; handleSubmit(`${cat} 구매에서 '${label}' 기준을 구성하는 하위 평가 기준들을 알려줘.`); setDismissedUncharted(prev => { const next = new Set(prev); next.add(label); return next; }); setUnchartedSpec(prev => prev ? { labels: prev.labels.filter(l => l !== label) } : null); } } })}</div>)}
+          {(localizedCriteriaMap ?? sidebarSpec.CriteriaMap) ? (<ExplorerRenderer spec={localizedCriteriaMap ?? sidebarSpec.CriteriaMap} bindings={sidebarBindings} />) : (<div className="flex flex-col items-center justify-center h-full gap-2 py-12"><p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">{locale === 'en' ? 'Start a conversation' : '대화를 시작하면'}<br />{locale === 'en' ? 'to build your criteria map' : '여기에 탐색 기록이 쌓여요'}</p></div>)}
         </div>
         <div className={journeyTab === "information" ? "" : "hidden"}>
-          {sidebarSpec.conceptCards.length > 0 ? (<div className="flex flex-col gap-3 py-1">{sidebarSpec.conceptCards.map((card: any, i: number) => (<InformationCardItem key={`${card.term}-${i}`} card={card} index={i} />))}</div>) : (<div className="flex flex-col items-center justify-center h-full gap-2 py-12"><p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">{locale === 'en' ? 'Ask a concept question' : '개념 질문을 하면'}<br />{locale === 'en' ? 'to build your knowledge base' : '여기에 설명이 쌓여요'}</p></div>)}
+          {(localizedConceptCards ?? sidebarSpec.conceptCards).length > 0 ? (<div className="flex flex-col gap-3 py-1">{(localizedConceptCards ?? sidebarSpec.conceptCards).map((card: any, i: number) => (<InformationCardItem key={`${card.term}-${i}`} card={card} index={i} />))}</div>) : (<div className="flex flex-col items-center justify-center h-full gap-2 py-12"><p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">{locale === 'en' ? 'Ask a concept question' : '용어나 기능을 물어보면'}<br />{locale === 'en' ? 'to build your knowledge base' : '여기에 정보가 쌓여요'}</p></div>)}
         </div>
       </div>
     </div>
@@ -1611,10 +1848,10 @@ export default function ChatPage() {
 
 
   const renderCriteriaContent = () => {
-    const impStyles: Record<string, { label: string; bg: string; color: string }> = {
-      high: { label: T.impHigh, bg: "#fff0f3", color: "#fb7185" },
-      medium: { label: T.impMedium, bg: "#fffbeb", color: "#f59e0b" },
-      low: { label: T.impLow, bg: "#f8fafc", color: "#94a3b8" },
+    const impStyles: Record<string, { label: string; className: string; dotClass: string }> = {
+      high: { label: T.impHigh, className: "text-rose-500 bg-rose-50/50 border-rose-100", dotClass: "bg-rose-400" },
+      medium: { label: T.impMedium, className: "text-amber-500 bg-amber-50/50 border-amber-100", dotClass: "bg-amber-400" },
+      low: { label: T.impLow, className: "text-slate-400 bg-slate-50/50 border-slate-100", dotClass: "bg-slate-300" },
     };
     return (
       <div
@@ -1644,24 +1881,23 @@ export default function ChatPage() {
                   <div key={i} onClick={() => { setOpenImportanceIdx(null); if (!searchCriteria.some(c => c.name === criterion.name)) setSearchCriteria(prev => [...prev, { name: criterion.name, min: criterion.min, priority: criterion.priority }]); inputRef.current?.focus(); }}
                     className="flex items-center gap-2 rounded-2xl px-2.5 h-[32px] w-fit max-w-full group animate-in zoom-in-95 duration-200 cursor-pointer transition-colors"
                     style={{ backgroundColor: '#ffffff', border: '1px solid #e2e8f0', color: '#1e293b' }}>
-                    <div className="relative shrink-0 flex items-center">
-                      <button onClick={(e) => { e.stopPropagation(); setOpenImportanceIdx(openImportanceIdx === i ? null : i); }} className="flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[9.5px] font-bold transition-all duration-150 leading-none" style={s ? { background: s.bg, color: s.color } : { background: "transparent", color: "#cbd5e1" }}>{s ? s.label : "·"}<ChevronDown className="w-2 h-2 opacity-60" /></button>
+                    <div className="relative shrink-0 flex items-center gap-1 mr-1">
+                      <button onClick={(e) => { e.stopPropagation(); setOpenImportanceIdx(openImportanceIdx === i ? null : i); }} className={`flex items-center gap-1 border rounded-[6px] px-1.5 py-0.5 text-[9px] font-bold transition-all duration-150 ${s ? s.className : "bg-transparent text-slate-300 border-transparent"}`}>
+                        {s && <div className={`w-1 h-1 rounded-full ${s.dotClass}`} />}
+                        {s ? s.label : "·"}
+                        <ChevronDown className="w-2 h-2 opacity-60 ml-0.5" />
+                      </button>
+
                       {openImportanceIdx === i && (
                         <div className="absolute top-full left-0 mt-1 z-50 bg-white border border-slate-200 rounded-[12px] shadow-lg py-2 px-2 min-w-[120px]" onClick={(e) => e.stopPropagation()}>
                           <div className="flex flex-col gap-1">
-                            {(["high", "medium", "low"] as const).map(opt => { const os = impStyles[opt]; return (<button key={opt} onClick={(e) => { e.stopPropagation(); setDroppedCriteria(prev => { const next = [...prev]; next[i] = { ...next[i], importanceLevel: opt, important: opt === "high" } as any; return next; }); setOpenImportanceIdx(null); }} className="flex-1 rounded py-1 text-[10px] font-bold transition-all hover:bg-slate-50" style={{ color: os.color }}>{os.label}</button>); })}
+                            {(["high", "medium", "low"] as const).map(opt => { const os = impStyles[opt]; return (<button key={opt} onClick={(e) => { e.stopPropagation(); setDroppedCriteria(prev => { const next = [...prev]; next[i] = { ...next[i], importanceLevel: opt, important: opt === "high" } as any; return next; }); setOpenImportanceIdx(null); }} className={`flex-1 rounded py-1 text-[10px] font-bold transition-all hover:bg-slate-50 ${os.className.split(' ')[0]}`}>{os.label}</button>); })}
                           </div>
                         </div>
                       )}
                     </div>
                     <div className="flex items-center gap-1.5 overflow-hidden min-w-0">
                       <span className="text-[12.5px] font-bold select-none whitespace-nowrap shrink-0 text-slate-800">{criterion.name}</span>
-                      {(criterion as any).confidence && (() => {
-                        const conf = (criterion as any).confidence as 'high' | 'medium' | 'low';
-                        const dotColor = conf === 'high' ? '#6366f1' : conf === 'medium' ? '#f59e0b' : '#cbd5e1';
-                        const dotLabel = conf === 'high' ? '확신 높음' : conf === 'medium' ? '보통' : '확신 낮음';
-                        return <span className="w-[7px] h-[7px] rounded-full flex-shrink-0" style={{ backgroundColor: dotColor }} title={dotLabel} />;
-                      })()}
                       {editingCriteriaIdx === i ? (<input autoFocus className={`text-[10.5px] border-b outline-none w-[60px] bg-transparent py-0 shrink-0 text-slate-500 border-slate-300`} value={editingMinText} onChange={(e) => setEditingMinText(e.target.value)} onBlur={() => { setDroppedCriteria(prev => { const next = [...prev]; next[i] = { ...next[i], min: editingMinText }; return next; }); setEditingCriteriaIdx(null); }} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />) : (<span className="text-[10.5px] font-medium select-none truncate text-slate-500" title={criterion.min || T.pinHint}>{criterion.min || T.pinHint}</span>)}
                     </div>
                     <div className="flex items-center gap-0.5 ml-1 pl-1 border-l border-slate-200">
@@ -1695,8 +1931,8 @@ export default function ChatPage() {
               key={i}
               onClick={() => { insertMention(item.name); }}
               className={`group relative rounded-[8px] border p-3 flex items-center gap-3 animate-in zoom-in-95 duration-200 transition-all cursor-pointer ${isSelected
-                  ? 'bg-white border-slate-300 shadow-sm'
-                  : 'bg-white border-slate-200 hover:border-slate-300'
+                ? 'bg-white border-slate-300 shadow-sm'
+                : 'bg-white border-slate-200 hover:border-slate-300'
                 }`}
             >
               <button
@@ -1709,7 +1945,7 @@ export default function ChatPage() {
               <div
                 onClick={(e) => { e.stopPropagation(); setSelectedItemName(isSelected ? null : item.name); }}
                 className={`w-4 h-4 rounded-[3px] border-2 flex items-center justify-center flex-shrink-0 transition-all cursor-pointer ${isSelected ? 'border-black bg-black' : 'border-slate-300 bg-white hover:border-slate-500'
-                }`}>
+                  }`}>
                 {isSelected && (
                   <svg width="9" height="7" viewBox="0 0 9 7" fill="none" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M1 3.5L3.5 6L8 1" />
@@ -1728,11 +1964,10 @@ export default function ChatPage() {
           type="button"
           onClick={() => setShowConfirmModal(true)}
           disabled={!selectedItemName}
-          className={`w-full py-2.5 rounded-[10px] text-[13px] font-semibold transition-all duration-200 ${
-            selectedItemName
+          className={`w-full py-2.5 rounded-[10px] text-[13px] font-semibold transition-all duration-200 ${selectedItemName
               ? 'bg-black text-white border border-black hover:bg-neutral-800'
               : 'bg-white text-slate-400 border border-slate-200 opacity-40 cursor-not-allowed'
-          }`}
+            }`}
         >
           {locale === 'en' ? 'Purchase' : '구매하기'}
         </button>
@@ -1747,7 +1982,12 @@ export default function ChatPage() {
         {gripHandle('optionList')}
         <p className="text-[12.5px] font-black text-slate-600 tracking-widest uppercase">📝 OPTION LIST</p>
       </div>
-      <div className="flex-1 overflow-y-auto overflow-x-hidden no-scrollbar p-4">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden no-scrollbar p-4 flex flex-col gap-3">
+        {/* CoverageNotice (미반영 기준 알림) — 카드 위에 표시 */}
+        {coverageNoticeSpec && manualRegistry.CoverageNotice && (
+          manualRegistry.CoverageNotice({ props: coverageNoticeSpec.props })
+        )}
+        {/* 제품 카드 또는 RagNotFound 또는 빈 상태 */}
         {productCardListSpec ? (
           <ExplorerRenderer
             spec={productCardListSpec}
@@ -2016,9 +2256,9 @@ export default function ChatPage() {
         <button
           type="button"
           onClick={() => resetSession()}
-          className="text-[22px] font-bold text-slate-900 tracking-tight leading-tight hover:text-slate-600 transition-colors cursor-pointer"
+          className="text-[22px] font-extrabold text-slate-900 tracking-tight leading-tight hover:text-slate-600 transition-colors cursor-pointer"
         >
-          GenSpace
+          GenUIdance
         </button>
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-1.5">
@@ -2028,17 +2268,22 @@ export default function ChatPage() {
             </span>
           </div>
           {/* 언어 토글 */}
-          <div className="flex items-center gap-1 text-[15px] font-medium select-none">
+          <div className="flex items-center gap-1.5 text-[15px] font-medium select-none">
+            {isTranslating && (
+              <span className="inline-block w-3 h-3 border-2 border-slate-300 border-t-slate-600 rounded-full animate-spin" />
+            )}
             <button
               onClick={() => setLocale('en')}
-              className="transition-colors duration-150"
-              style={{ color: locale === 'en' ? '#0f172a' : '#94a3b8', fontWeight: locale === 'en' ? 700 : 400 }}
+              disabled={isTranslating || locale === 'en'}
+              className="transition-colors duration-150 disabled:cursor-not-allowed"
+              style={{ color: locale === 'en' ? '#0f172a' : '#94a3b8', fontWeight: locale === 'en' ? 700 : 400, opacity: isTranslating ? 0.5 : 1 }}
             >EN</button>
             <span className="text-slate-300">|</span>
             <button
               onClick={() => setLocale('ko')}
-              className="transition-colors duration-150"
-              style={{ color: locale === 'ko' ? '#0f172a' : '#94a3b8', fontWeight: locale === 'ko' ? 700 : 400 }}
+              disabled={isTranslating || locale === 'ko'}
+              className="transition-colors duration-150 disabled:cursor-not-allowed"
+              style={{ color: locale === 'ko' ? '#0f172a' : '#94a3b8', fontWeight: locale === 'ko' ? 700 : 400, opacity: isTranslating ? 0.5 : 1 }}
             >KO</button>
           </div>
         </div>

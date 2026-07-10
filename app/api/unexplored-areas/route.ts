@@ -8,12 +8,16 @@ export async function POST(req: Request) {
     const existingCategories: string[] = body.existingCategories ?? [];
     const productCategory: string = body.productCategory ?? "";
     const droppedCriteria: string[] = body.droppedCriteria ?? [];
+    const alreadySuggested: string[] = body.alreadySuggested ?? [];
 
     const uiContext = [
       `PRODUCT_CATEGORY: ${productCategory}`,
       `EXISTING_CATEGORIES: ${existingCategories.join(", ") || "없음"}`,
       `SAVED_CRITERIA: ${droppedCriteria.join(", ") || "없음"}`,
-    ].join("\n");
+      alreadySuggested.length > 0
+        ? `ALREADY_SUGGESTED: ${alreadySuggested.join(", ")}  ← 이미 제안한 영역이므로 제외하고 새로운 영역만 제안`
+        : "",
+    ].filter(Boolean).join("\n");
 
     console.log("[UnchartedTerritoryChip] Calling UI Agent (category=6)...");
     const specText = await generateUISpec(uiContext, "", "6", 1, "", [], droppedCriteria);

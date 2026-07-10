@@ -42,6 +42,12 @@ const BRANDS_BY_CATEGORY = {
     "마미로봇", "아이클레보", "유진로봇", "나르왈", "드리미", "룸바", "Roomba",
     "Roborock", "Ecovacs", "Dyson", "Dreame", "Narwal",
   ],
+  "카메라": [
+    "소니", "캐논", "니콘", "후지", "후지필름", "파나소닉", "올림푸스", "OM System",
+    "라이카", "시그마", "펜탁스", "리코", "고프로", "DJI",
+    "Sony", "Canon", "Nikon", "Fujifilm", "Fuji", "Panasonic", "Olympus",
+    "Leica", "Sigma", "Pentax", "Ricoh", "GoPro",
+  ],
 };
 const KNOWN_BRANDS = BRANDS_BY_CATEGORY[CATEGORY] ?? [];
 
@@ -49,6 +55,11 @@ const KNOWN_BRANDS = BRANDS_BY_CATEGORY[CATEGORY] ?? [];
 const EXCLUDE_KEYWORDS_BY_CATEGORY = {
   "유모차": ["강아지", "개모차", "반려", "펫", "pet", "dog", "고양이", "애견", "냥이", "멍"],
   "로봇 청소기": ["부품", "필터", "걸레", "소모품", "먼지통", "배터리팩", "브러시"],
+  "카메라": [
+    "렌즈", "배터리", "충전기", "케이스", "가방", "스트랩", "필터", "캡", "후드",
+    "삼각대", "짐벌", "메모리", "SD카드", "플래시", "조명", "리모컨", "그립",
+    "보호필름", "악세사리", "소모품", "부품", "adapter", "어댑터",
+  ],
 };
 const EXCLUDE_KEYWORDS = EXCLUDE_KEYWORDS_BY_CATEGORY[CATEGORY] ?? [];
 

@@ -2,179 +2,14 @@ import { generateText } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { google } from "@ai-sdk/google";
 import { currentProductCategory, currentLocale } from "../tools/sidebar-store";
+import { enrichCompTableCells, detectCriterionType, computeRankingAndReasoning, preFillTableCells } from "./data_agent";
 
-// ---------------------------------------------------------------------------
-// Tavily 웹 검색 헬퍼 (비교표 미확인 셀 보완용)
-// ---------------------------------------------------------------------------
-
-type TavilyResult = { title: string; url: string; content: string; score: number };
-
-async function tavilySearch(query: string): Promise<TavilyResult[]> {
-  const apiKey = process.env.TAVILY_API_KEY;
-  if (!apiKey) { console.warn("[Tavily] API 키 없음"); return []; }
-
-  const res = await fetch("https://api.tavily.com/search", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      query,
-      search_depth: "basic",
-      max_results: 5,
-      include_answer: false,
-    }),
-    signal: AbortSignal.timeout(10000),
-  });
-  if (!res.ok) { console.warn(`[Tavily] ${res.status}`); return []; }
-  const data = await res.json() as { results?: TavilyResult[] };
-  return data.results ?? [];
-}
-
-/** JSON 문자열에서 "-" 값인 셀 목록 추출 */
-function findMissingCells(
-  tableJson: { props?: { columns?: Array<{ key: string; label: string }>; rows?: Array<Record<string, string>> } },
-): Array<{ rowCriterion: string; colKey: string; productLabel: string }> {
-  const columns = tableJson.props?.columns ?? [];
-  const rows = tableJson.props?.rows ?? [];
-  const productCols = columns.filter(c => c.key !== "criterion");
-  const missing: Array<{ rowCriterion: string; colKey: string; productLabel: string }> = [];
-
-  for (const row of rows) {
-    const criterion = row["criterion"] ?? "";
-    if (!criterion || criterion === "순위" || criterion === "Rank") continue;
-    for (const col of productCols) {
-      const val = row[col.key];
-      if (!val || val === "-") {
-        missing.push({ rowCriterion: criterion, colKey: col.key, productLabel: col.label });
-      }
-    }
-  }
-  return missing;
-}
-
-/** uiContext 문자열에서 제품명 → 스펙+설명 텍스트 매핑 추출 */
-function parseProductSpecsFromContext(uiContext: string): Map<string, string[]> {
-  const map = new Map<string, string[]>();
-  const blocks = uiContext.split(/\[Product \d+\]/);
-  for (const block of blocks) {
-    const nameMatch = block.match(/Name:\s*(.+)/);
-    if (!nameMatch) continue;
-    const name = nameMatch[1].trim();
-    const specsMatch = block.match(/Specs:\s*(.+)/);
-    const descMatch = block.match(/Description:\s*(.+)/);
-    const specsRaw = specsMatch ? specsMatch[1].trim() : "";
-    const desc = descMatch ? descMatch[1].trim() : "";
-    const specs = specsRaw.split("/").map(s => s.trim()).filter(Boolean);
-    if (desc) specs.push(desc);
-    map.set(name, specs);
-  }
-  return map;
-}
-
-/** 짧은 테이블 열 레이블에 가장 잘 매칭되는 제품의 스펙 반환 */
-function findSpecsForLabel(shortLabel: string, specMap: Map<string, string[]>): string[] {
-  const lower = shortLabel.toLowerCase().trim();
-  for (const [name, specs] of specMap) {
-    const nameLower = name.toLowerCase();
-    if (nameLower.includes(lower) || lower.includes(nameLower.slice(0, 8))) return specs;
-  }
-  const firstWord = lower.split(/\s+/)[0] ?? "";
-  if (firstWord.length >= 2) {
-    for (const [name, specs] of specMap) {
-      if (name.toLowerCase().includes(firstWord)) return specs;
-    }
-  }
-  return [];
-}
-
-/** 기준 키워드가 스펙 텍스트에 직접 근거하는지 확인 */
-function isCriterionGrounded(criterion: string, specs: string[]): boolean {
-  if (specs.length === 0) return false;
-  const specText = specs.join(" ").toLowerCase();
-  const keywords = criterion.toLowerCase().split(/\s+/).filter(w => w.length >= 2);
-  if (keywords.length === 0) return false;
-  return keywords.some(kw => specText.includes(kw));
-}
-
-/** ○/X로 채워졌으나 Danawa 스펙에 근거 없는 셀 탐지 (할루시네이션 후보) */
-function findUngroundedCells(
-  tableJson: { props?: { columns?: Array<{ key: string; label: string }>; rows?: Array<Record<string, string>> } },
-  uiContext: string,
-): Array<{ rowCriterion: string; colKey: string; productLabel: string; originalValue: string }> {
-  const specMap = parseProductSpecsFromContext(uiContext);
-  const columns = tableJson.props?.columns ?? [];
-  const rows = tableJson.props?.rows ?? [];
-  const productCols = columns.filter(c => c.key !== "criterion");
-  const ungrounded: Array<{ rowCriterion: string; colKey: string; productLabel: string; originalValue: string }> = [];
-  for (const row of rows) {
-    const criterion = row["criterion"] ?? "";
-    if (!criterion || criterion === "순위" || criterion === "Rank") continue;
-    for (const col of productCols) {
-      const val = row[col.key];
-      if (val !== "○" && val !== "X") continue;
-      const specs = findSpecsForLabel(col.label, specMap);
-      if (!isCriterionGrounded(criterion, specs)) {
-        ungrounded.push({ rowCriterion: criterion, colKey: col.key, productLabel: col.label, originalValue: val });
-      }
-    }
-  }
-  return ungrounded;
-}
-
-/** Claude로 기준의 한국어 유의어 생성 */
-async function expandCriterionSynonyms(criteria: string[]): Promise<Record<string, string[]>> {
-  if (criteria.length === 0) return {};
-  const { text } = await generateText({
-    model: anthropic("claude-haiku-4-5"),
-    system: "You are a Korean product spec synonym generator. Given a list of product criteria in Korean, return a JSON object where each key is the criterion and the value is an array of 2-3 Korean synonyms or related search terms. Output only valid JSON.",
-    prompt: `Generate synonyms for these criteria: ${JSON.stringify(criteria)}`,
-    temperature: 0,
-  });
-  try {
-    const match = text.match(/\{[\s\S]*\}/);
-    return match ? JSON.parse(match[0]) : {};
-  } catch { return {}; }
-}
-
-/** 검색 스니펫을 기반으로 셀 값 판단 */
-async function judgeCell(
-  productName: string,
-  criterion: string,
-  snippets: TavilyResult[],
-  locale: string
-): Promise<{ value: string; sourceUrl?: string; usedSnippet?: string }> {
-  if (snippets.length === 0) return { value: "-" };
-
-  const snippetText = snippets
-    .slice(0, 3)
-    .map((r, i) => `[${i + 1}] (${r.url})\n${r.content.slice(0, 300)}`)
-    .join("\n\n");
-
-  const { text } = await generateText({
-    model: anthropic("claude-haiku-4-5"),
-    system: `You are a product spec verifier. Given search snippets, determine if the product has the specified feature.
-Respond with ONLY a JSON object: { "value": "○" | "X" | "-", "sourceIndex": <1-based index of snippet used, or null> }
-"○" = feature confirmed present, "X" = feature confirmed absent, "-" = cannot determine from snippets.`,
-    prompt: `Product: ${productName}\nFeature/Criterion: ${criterion}\n\nSearch Snippets:\n${snippetText}`,
-    temperature: 0,
-  });
-
-  try {
-    const match = text.match(/\{[\s\S]*?\}/);
-    const result = match ? JSON.parse(match[0]) : { value: "-" };
-    const srcIdx: number | null = result.sourceIndex ?? null;
-    const usedSnippetObj = srcIdx != null ? snippets[srcIdx - 1] : null;
-    const sourceUrl   = usedSnippetObj?.url;
-    // 판단에 쓰인 실제 문장 (앞 120자)
-    const usedSnippet = usedSnippetObj?.content.slice(0, 120).replace(/\s+/g, " ").trim();
-    return { value: result.value ?? "-", sourceUrl, usedSnippet };
-  } catch { return { value: "-" }; }
-}
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
-const UI_AGENT_MODEL = "claude-sonnet-4-6" as const;
+const UI_AGENT_MODEL = "claude-haiku-4-5" as const;
 
 type Locale = "ko" | "en";
 
@@ -259,14 +94,6 @@ Only add "important": true after ALL three gates pass using user_context.
 
   RARITY CAP: "important": true is capped at 3 across the entire output.
 
-STEP 7 — CONFIDENCE ESTIMATION:
-For every item, estimate the user's certainty about this criterion from the conversation context.
-Output "confidence": "high" | "medium" | "low".
-
-  "high"  → user stated a specific value or threshold (e.g., "5kg 이하", "원터치"), repeated multiple times, or used strong language ("꼭", "반드시", "무조건").
-  "medium" → mentioned as a general preference, once, without specifics or strong emphasis.
-  "low"   → surfaced from Uncharted Territory, or user used hedging language ("가능하면", "있으면 좋겠어", "잘 모르겠어"), or it was inferred rather than explicitly stated.
-
 ## OUTPUT
 
 {
@@ -276,12 +103,11 @@ Output "confidence": "high" | "medium" | "low".
       {
         "label": "${labelPlaceholder}",
         "items": [
-          { "name": "<criterion>", "confidence": "medium" },
+          { "name": "<criterion>" },
           {
             "name": "<criterion>",
             "important": true,
-            "reason": "${reasonPlaceholder}",
-            "confidence": "high"
+            "reason": "${reasonPlaceholder}"
           }
         ]
       }
@@ -351,24 +177,14 @@ CRITERION ROWS (MANDATORY):
 - CRITICAL: Do NOT add any rows that are not in decision_criteria. Do NOT auto-select specs from product_data.
 - Row label = the criterion name from decision_criteria (strip parenthetical notes and importance brackets).
   e.g., "접이식 여부 (입력: 접을 수 있어야 함) [중요]" → row label: "접이식 여부"
-- If a criterion describes a product type (e.g., "디럭스 유모차"), check product_data for matching spec and use "○" or "-".
+- If a criterion describes a product type (e.g., "디럭스 유모차"), output "-" for that row. Do NOT guess.
 
-FILLING CELL VALUES — STRICT EVIDENCE-ONLY POLICY:
-  1. Check product_data and saved_items for a DIRECT textual match of the criterion (or its synonym).
-  2. ALWAYS prefer a short concrete value over a symbol:
-     - If product_data contains a specific value for the criterion (number, range, short phrase ≤ 15 chars), copy it verbatim as the cell value.
-       Examples: "15~165°", "6.2kg", "최대 22kg", "원터치폴딩", "양방향"
-     - If the criterion is purely boolean (feature present/absent) and NO concrete value exists:
-       Use "○" if a synonym is LITERALLY present in the product_data text.
-       Use "X" ONLY if the product_data text explicitly states the feature is absent.
-     - If a value exists but is too long (> 15 chars), extract only the most informative short fragment (≤ 15 chars).
-  3. CRITICAL — NO GUESSING: If the value is NOT directly found in product_data text, output "-".
-     Do NOT use your training-data knowledge about the product.
-     Do NOT infer from brand reputation, product line, or general category knowledge.
-     Do NOT assume a feature exists because it is common for this product type.
-     The downstream pipeline will automatically run a web search to fill all "-" cells.
-  4. Concrete numeric values (weight, price, dimensions): only copy verbatim from product_data. If absent → "-".
-  CRITICAL: Never append "(추정)" or "(estimated)". If uncertain → "-".
+FILLING CELL VALUES — CRITICAL RULE:
+- Output "-" for EVERY data cell, no exceptions.
+- The Data Agent will programmatically inject values from the Danawa DB after this step.
+- Cells still "-" after DB injection will be filled by Tavily web search.
+- Do NOT use your own knowledge to fill any cell. A wrong value is worse than "-".
+
 
 [RANKING]
 Do NOT compute or assign rank values. Leave all rank row cells as "-".
@@ -388,7 +204,7 @@ Only write '_rankReasoning' as an empty string: "".
     ],
     "rows": [
       { "criterion": "${locale === 'en' ? 'Rank' : '순위'}", "prod_0": "1위", "prod_1": "2위" },
-      { "criterion": "<criterion label>", "prod_0": "<value or - >", "prod_1": "<value or - >" }
+      { "criterion": "<criterion label>", "prod_0": "-", "prod_1": "-" }
     ]
   }
 }
@@ -433,69 +249,93 @@ const buildProductCardListSystem = (locale: Locale, productCategory: string) => 
 };
 
 const buildTradeoffHintSystem = (locale: Locale) => {
+  const lang = locale === "en" ? "English" : "Korean";
   const whyEnding = locale === "en"
-    ? "Max 55 chars. Write in English."
-    : "Max 55 chars. End with '요'.";
+    ? "Max 60 chars. Plain English."
+    : "Max 60자. '요'로 종결.";
   const whyPlaceholder = locale === "en"
-    ? "<specific physical or cost mechanism, max 55 chars, in English>"
-    : "<specific physical or cost mechanism, max 55 chars, ending in '요'>";
+    ? "<one sentence: what the buyer must sacrifice and why — max 60 chars>"
+    : "<구매자가 포기해야 하는 것과 이유 — max 60자, '요'로 종결>";
 
   return `
 ## Required JSON Component: TradeoffHint (Category 5)
 
+## PURPOSE
+Surface the real decision dilemma the buyer faces when combining two criteria.
+Answer: "When trying to maximize both criteria simultaneously, what structural conflict arises?"
+
 ## INPUT
-- new_criterion: The criterion just added by the user, with its importance level.
-- existing_criteria: List of criteria already saved, each with importance level.
-- product_category: The product type being evaluated.
+- new_criterion: The criterion just added by the user.
+- existing_criteria: Criteria the user has already saved.
+- product_category: The product category being evaluated.
 
-## RULES
+## TRADE-OFF TAXONOMY — Only 3 valid types
 
-DEFINITION — Trade-off is STRICTLY an INVERSE relationship caused by a physical, mechanical, or cost constraint:
-- When new_criterion is maximized, an existing criterion necessarily degrades as a direct consequence, or vice versa.
+TYPE 1 — PERFORMANCE
+  Improving both criteria simultaneously causes one to degrade due to physics or engineering limits.
+  Test: "Is there a physical or engineering reason why raising A forces B to decrease?"
+  Examples:
+    ✓ Suction power ↑ → Noise ↑ (same motor spins faster and louder)
+    ✓ Lighter weight ↑ → Battery capacity ↓ (battery is the main weight contributor)
+    ✓ Foldable frame ↑ → Total weight ↑ (hinges and locking parts add weight)
+    ✓ Screen size ↑ → Portability ↓ (physical dimensions increase)
 
-NOT a trade-off:
-- Complementary relationships (A↑ → B↑)
-- Threshold/prerequisite relationships (A must reach level X for B to be possible)
-- Conditional relationships (A↑ → B↓ only in specific configurations)
-- Correlation without a clear causal mechanism
-- Manufacturer or brand decisions that could be avoided with better engineering
-- Vague or speculative relationships ("might affect", "could influence")
+TYPE 2 — BUDGET
+  Within the same price range, spending more on A forces lower quality on B.
+  Test: "Within the same budget tier, does investing more in A actually reduce what's available for B?"
+  Examples:
+    ✓ Premium materials ↑ → Drive performance ↓ (material cost displaces component cost at same price point)
+    ✓ Brand premium ↑ → Spec-to-price ratio ↓ (marketing costs are embedded in the unit price)
+  Note: "It might get more expensive" does NOT qualify — must be a within-budget trade-off.
 
-STEP 1 — Direction check (repeat for each existing criterion):
-  Assume new_criterion is pushed to its MAXIMUM possible value.
-  → Does [existing criterion] move toward its WORST value as a direct consequence?
-  → YES → proceed to STEP 2
-  → NO, UNCERTAIN, or "it depends" → NOT a trade-off, skip
+TYPE 3 — USE-CASE
+  A product optimized for A is structurally disadvantaged in situations requiring B.
+  Test: "Is the situation where A excels fundamentally different from the situation where B is needed?"
+  Examples:
+    ✓ Portability (compact size) ↑ → Large storage capacity ↓ (compact products have physically limited interior space)
+    ✓ Outdoor durability ↑ → Indoor convenience ↓ (weatherproofing adds weight and thickness)
+    ✓ Professional-grade performance ↑ → Beginner ease-of-use ↓ (more features means more complex controls)
 
-STEP 2 — Causal inverse confirmation:
-  "If a manufacturer maximizes new_criterion,
-   does [existing criterion] necessarily degrade
-   due to a physical, mechanical, or cost constraint?"
-  → Is there a specific, identifiable mechanism (e.g., added material increases weight, larger motor raises noise)?
-  → YES, mechanism is clear and direct → trade-off confirmed
-  → "It depends" or "not necessarily" → NOT a trade-off, skip
+## DISQUALIFIERS — Never output these patterns
+  ✗ "Products like that are hard to find" → supply scarcity, not a trade-off
+  ✗ "Brands don't usually do that" → market convention, not a causal mechanism
+  ✗ "That combination might be expensive" → price prediction, not a structural conflict
+  ✗ "Those are generally hard to combine" → correlation without a reason
 
-Only output TradeoffHint if BOTH steps confirm inverse direction with a clear causal mechanism.
+## SELECTION RULES
+1. Compare new_criterion against each item in existing_criteria.
+2. For each pair: Can you describe a specific mechanism from TYPE 1, 2, or 3?
+   - "Yes" → add to candidates
+   - "No" → skip
+3. If multiple candidates exist → output only the 1 most decisive trade-off for the buyer's situation.
+4. If no candidates exist → output Empty.
 
-- conflictsWith MUST be copied exactly from existing_criteria — do not paraphrase.
-- why: one sentence describing the specific physical or cost mechanism causing the conflict. Everyday language, no jargon. ${whyEnding}
-  BAD: vague consequence ("사용이 불편할 수 있어요", "may affect comfort")
-  GOOD: specific mechanism ("모터가 강할수록 소음이 커져요", "larger motor directly raises noise")
-- When in doubt, return Empty.
+## OUTPUT FIELDS
+- newCriterion: exact name of new_criterion
+- conflictsWith: verbatim copy from existing_criteria (no paraphrasing)
+- tradeoffType: "performance" | "budget" | "usecase"
+- why: one sentence explaining the real mechanism the buyer will encounter.
+  ${whyEnding}
+  Forbidden: **, *, markdown, jargon, marketing language.
+  Allowed: "because the added hinge parts increase weight", "because internal space is physically reduced"
+  Examples:
+    ✓ "A higher-suction motor rotates faster, which directly increases operating noise." (performance)
+    ✓ "A foldable frame adds hinge components, which raises the total weight." (performance)
+    ✓ "Within the same budget, choosing premium materials leaves less for performance components." (budget)
+    ✓ "Making the body more compact physically reduces the interior space available for storage." (usecase)
 
-## OUTPUT
-
-If a real trade-off is found:
+If a genuine trade-off exists:
 {
   "type": "TradeoffHint",
   "props": {
     "newCriterion": "<exact name of new_criterion>",
-    "conflictsWith": "<exact name from existing_criteria — copy verbatim>",
+    "conflictsWith": "<verbatim copy from existing_criteria>",
+    "tradeoffType": "<performance | budget | usecase>",
     "why": "${whyPlaceholder}"
   }
 }
 
-If NO trade-off exists:
+If not:
 { "type": "Empty", "props": {} }
 `.trim();
 };
@@ -646,19 +486,29 @@ export async function generateUISpec(
       console.log("\x1b[35m [비교표 파이프라인 시작]\x1b[0m");
       console.log("\x1b[35m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m\n");
 
-      // ── STEP 1: 1차 표 생성 (Danawa RAG 데이터 기반) ──────────────────────
-      console.log("\x1b[33m[STEP 1] Claude로 1차 표 생성 (Danawa 스펙만 사용)...\x1b[0m");
+      // ── STEP 0: Data Agent — DB 스펙 키 기반 셀 값 사전 결정 (LLM 호출 없음) ──
+      // Claude가 데이터를 "추론"하는 문제를 원천 차단.
+      // 이 결과를 프롬프트에 포함 → Claude는 JSON 구조 생성에만 집중.
+      console.log("\x1b[33m[STEP 0] Data Agent: DB 스펙 키 기반 셀 값 사전 결정 중...\x1b[0m");
+      const preFilledTable = preFillTableCells(decisionCriteria, uiContext);
+      const preFilledJson = JSON.stringify(preFilledTable.rows, null, 2);
+
+      // ── STEP 1: 1차 표 생성 (Claude는 구조만, 셀 값은 pre_filled_cells 사용) ──
+      console.log("\x1b[33m[STEP 1] Claude로 JSON 구조 생성 (셀 값은 pre_filled_cells 기반)...\x1b[0m");
       const s1 = Date.now();
+      const promptWithPreFill = prompt +
+        `\n\npre_filled_cells (Data Agent DB 조회 결과 — 이 값을 그대로 사용할 것):` +
+        `\n${preFilledJson}`;
       const { text: firstPassText } = await generateText({
         model: anthropic(UI_AGENT_MODEL),
         system,
-        prompt,
+        prompt: promptWithPreFill,
         temperature: 0,
       });
       console.log(`\x1b[33m[STEP 1] 완료 (${Date.now() - s1}ms)\x1b[0m`);
 
       // JSON 파싱
-      let tableJson: { props?: { columns?: Array<{ key: string; label: string }>; rows?: Array<Record<string, string>> }; [k: string]: unknown };
+      let tableJson: { props?: { columns?: Array<{ key: string; label: string }>; rows?: Array<Record<string, string>> };[k: string]: unknown };
       try {
         const match = firstPassText.match(/\{[\s\S]*\}/);
         tableJson = match ? JSON.parse(match[0]) : null;
@@ -676,7 +526,7 @@ export async function generateUISpec(
         const imageMap = new Map<string, string>();
         const blocks = uiContext.split(/\[Product \d+\]/);
         for (const block of blocks) {
-          const nameMatch  = block.match(/Name:\s*(.+)/);
+          const nameMatch = block.match(/Name:\s*(.+)/);
           const imageMatch = block.match(/Image:\s*(\S+)/);
           if (nameMatch && imageMatch) {
             imageMap.set(nameMatch[1].trim().toLowerCase(), imageMatch[1].trim());
@@ -695,7 +545,7 @@ export async function generateUISpec(
           let found: string | undefined;
           for (const [name, url] of imageMap) {
             if (name.includes(colLower) || colLower.includes(name) ||
-                name.split(/\s+/).some(w => w.length >= 3 && colLower.includes(w))) {
+              name.split(/\s+/).some(w => w.length >= 3 && colLower.includes(w))) {
               found = url;
               break;
             }
@@ -710,215 +560,60 @@ export async function generateUISpec(
       }
 
 
-      // ── STEP 2: 셀 신뢰도 분석 ("-" 미확인 + 근거 없는 ○/X 할루시네이션 탐지) ──
-      console.log("\n\x1b[33m[STEP 2] 1차 표 결과 분석:\x1b[0m");
-      const columns = tableJson.props?.columns ?? [];
-      const productCols = columns.filter(c => c.key !== "criterion");
-      const allRows = tableJson.props?.rows ?? [];
-
-      // 신뢰도 검사 먼저 실행
-      const missingCells = findMissingCells(tableJson);
-      const ungroundedCells = findUngroundedCells(tableJson, uiContext);
-      const ungroundedKeys = new Set(
-        ungroundedCells.map(c => `${c.colKey}__${c.rowCriterion}`)
-      );
-
-      // 표 전체 상태 출력: ✓=확인됨(초록), ⚠=근거없음(노랑), ?=누락(빨강)
-      for (const row of allRows) {
-        const criterion = row["criterion"] ?? "";
-        if (!criterion) continue;
-        const cells = productCols.map(col => {
-          const val = row[col.key];
-          const missing = !val || val === "-";
-          const isUngrounded = ungroundedKeys.has(`${col.key}__${criterion}`);
-          const symbol = missing
-            ? "\x1b[31m?\x1b[0m"
-            : isUngrounded
-            ? `\x1b[33m⚠${val}\x1b[0m`
-            : `\x1b[32m${val}\x1b[0m`;
-          return `${col.label.slice(0, 8)}: ${symbol}`;
-        }).join("  |  ");
-        console.log(`         ${criterion.padEnd(15)} │ ${cells}`);
-      }
-
-      // 두 목록 통합 (중복 없이)
-      const allCellsToVerify = [
-        ...missingCells,
-        ...ungroundedCells.map(c => ({
-          rowCriterion: c.rowCriterion,
-          colKey: c.colKey,
-          productLabel: c.productLabel,
-        })),
-      ];
-
-      if (allCellsToVerify.length === 0) {
-        console.log("\x1b[32m\n[STEP 2] 모든 셀 Danawa 스펙으로 확인됨 → 웹 검색 생략, WSM 순위 계산으로 이동\x1b[0m\n");
-        // 웹 검색 없이 바로 STEP 5로 이동
-      } else {
-      if (missingCells.length > 0) {
-        console.log(`\n\x1b[33m[STEP 2] 미확인 셀 ${missingCells.length}개 (값 없음 "-"):\x1b[0m`);
-        missingCells.forEach(c =>
-          console.log(`         • ${c.productLabel} × "${c.rowCriterion}" (값 없음)`)
-        );
-      }
-      if (ungroundedCells.length > 0) {
-        console.log(`\n\x1b[33m[STEP 2] 근거 불명 셀 ${ungroundedCells.length}개 (할루시네이션 의심):\x1b[0m`);
-        ungroundedCells.forEach(c =>
-          console.log(`         • ${c.productLabel} × "${c.rowCriterion}" (Claude "${c.originalValue}" 입력 → 스펙 근거 없음)`)
-        );
-      }
-      console.log(`\n\x1b[33m[STEP 2] 총 ${allCellsToVerify.length}개 셀 웹 검색 대상\x1b[0m`);
-
-
-      // ── STEP 3: 유의어 생성 + Tavily 검색 ────────────────────────────────
-      const uniqueCriteria = [...new Set(allCellsToVerify.map(c => c.rowCriterion))];
-      console.log(`\n\x1b[33m[STEP 3-A] 유의어 생성 (Claude Haiku): ${JSON.stringify(uniqueCriteria)}\x1b[0m`);
-      const s3a = Date.now();
-      const synonymMap = await expandCriterionSynonyms(uniqueCriteria);
-      console.log(`\x1b[33m[STEP 3-A] 유의어 결과 (${Date.now() - s3a}ms):\x1b[0m`);
-      for (const [crit, syns] of Object.entries(synonymMap)) {
-        console.log(`         "${crit}" → [${(syns as string[]).join(", ")}]`);
-      }
-
-      console.log(`\n\x1b[33m[STEP 3-B] Tavily 병렬 검색 시작 (${allCellsToVerify.length}개 쿼리)...\x1b[0m`);
-      const s3b = Date.now();
-      const searchResultMap = new Map<string, TavilyResult[]>();
-      await Promise.all(
-        allCellsToVerify.map(async ({ rowCriterion, productLabel }) => {
-          const key = `${productLabel}__${rowCriterion}`;
-          if (searchResultMap.has(key)) return;
-          const synonyms = synonymMap[rowCriterion] ?? [];
-          const terms = [rowCriterion, ...synonyms].slice(0, 3).join(" OR ");
-          const query = `${productLabel} (${terms})`;
-          const results = await tavilySearch(query);
-          searchResultMap.set(key, results);
-          console.log(`         🔍 "${query}" → ${results.length}개 결과`);
-          results.slice(0, 2).forEach(r =>
-            console.log(`            - ${r.title.slice(0, 50)} (${r.url.slice(0, 60)})`)
-          );
-        })
-      );
-      console.log(`\x1b[33m[STEP 3-B] 검색 완료 (${Date.now() - s3b}ms)\x1b[0m`);
-
-      // ── STEP 4: 셀 값 판단 + 표 업데이트 ────────────────────────────────
-      console.log(`\n\x1b[33m[STEP 4] Claude Haiku로 셀 값 판단 중...\x1b[0m`);
-      const s4 = Date.now();
-      const sourceLog: string[] = [];
-      const rows = tableJson.props?.rows ?? [];
-
-      await Promise.all(
-        allCellsToVerify.map(async ({ rowCriterion, colKey, productLabel }) => {
-          const key = `${productLabel}__${rowCriterion}`;
-          const snippets = searchResultMap.get(key) ?? [];
-          const { value, sourceUrl, usedSnippet } = await judgeCell(productLabel, rowCriterion, snippets, currentLocale);
-
-          const targetRow = rows.find(r => r["criterion"] === rowCriterion);
-          if (targetRow) targetRow[colKey] = value;
-
-          const symbol = value === "○" ? "\x1b[32m○\x1b[0m" : value === "X" ? "\x1b[31mX\x1b[0m" : "\x1b[90m-\x1b[0m";
-          const src = sourceUrl ? `\x1b[90m← ${sourceUrl.slice(0, 70)}\x1b[0m` : "\x1b[90m(증거 없음)\x1b[0m";
-          console.log(`         ${symbol} ${productLabel} × "${rowCriterion}" ${src}`);
-          if (usedSnippet) {
-            console.log(`            \x1b[90m📄 "${usedSnippet}"\x1b[0m`);
-          }
-          sourceLog.push(`  ${value} ${productLabel} × ${rowCriterion}${sourceUrl ? ` (${sourceUrl})` : ""}`);
-        })
-      );
-      console.log(`\x1b[33m[STEP 4] 완료 (${Date.now() - s4}ms)\x1b[0m`);
-      } // end STEP 3-4 block
-
-      // ── STEP 5: WSM (Weighted Sum Model) 기반 최종 순위 결정 ───────────────
-      // 표가 완전히 채워진 후, 사용자 기준 중요도를 가중치로 삼아 순위 결정
+      // ── STEP 1.5: DB 값 주입 ────────────────────────────────────────────────
+      // 파이프라인 원칙: ① DB 우선 → ② 웹 검색(Tavily) 순서.
+      // Claude(STEP 1)는 구조만 생성, 셀 값은 모두 "-".
+      // 이 단계에서 STEP 0이 DB에서 찾은 값을 테이블에 주입.
+      // DB에서 못 찾은 셀("-")은 이후 Tavily(STEP 2~4)가 채움.
+      console.log("\x1b[33m[STEP 1.5] DB 값 주입 (Danawa 스펙 키 매칭 결과)...\x1b[0m");
       {
-        // 기준명 → 가중치 파싱 (decisionCriteria: "접이식 여부 (입력: ...) [중요]" 형태)
-        function parseCriterionWeight(str: string): { name: string; weight: number } {
-          const bracket = str.match(/\[(중요|보통|낮음|high|medium|low)\]/i);
-          const raw = bracket?.[1]?.toLowerCase() ?? "보통";
-          const weight = raw === "중요" || raw === "high" ? 0.5
-            : raw === "낮음" || raw === "low" ? 0.2
-            : 0.3;
-          const name = str.replace(/\s*\([^)]*\)/g, "").replace(/\s*\[.*?\]/g, "").trim();
-          return { name, weight };
-        }
+        const preFilledMap = new Map<string, Record<string, string>>();
+        preFilledTable.rows.forEach(row => preFilledMap.set(row.criterion, row.cells));
 
-        function findWeight(rowLabel: string, criteriaList: string[]): number {
-          const rowLower = rowLabel.toLowerCase();
-          for (const c of criteriaList) {
-            const { name, weight } = parseCriterionWeight(c);
-            const nameLower = name.toLowerCase();
-            if (nameLower.includes(rowLower) || rowLower.includes(nameLower)) return weight;
-            // 단어 단위 부분 매칭
-            const words = nameLower.split(/\s+/).filter(w => w.length >= 2);
-            if (words.some(w => rowLower.includes(w))) return weight;
-          }
-          return 0.3; // 매칭 안 되면 기본 [보통]
-        }
+        const allRows = (tableJson as any).props?.rows ?? [];
+        const productCols = ((tableJson as any).props?.columns ?? []).filter((c: any) => c.key !== "criterion");
+        let injected = 0;
 
-        function scoreCellValue(val: string): number {
-          if (!val || val === "-") return 0.5;  // 미확인 → 중립
-          if (val === "○") return 1.0;           // 기능 있음
-          if (val === "X") return 0.0;           // 기능 없음
-          return 0.7;                            // 수치/텍스트값 → 중립 이상
-        }
+        for (const row of allRows) {
+          const criterion = row["criterion"] as string;
+          if (!criterion || criterion === "순위" || criterion === "Rank") continue;
 
-        const finalRows = tableJson.props?.rows ?? [];
-        const rankRow = finalRows.find(r => r["criterion"] === "순위" || r["criterion"] === "Rank");
-        const productCols2 = (tableJson.props?.columns ?? []).filter(c => c.key !== "criterion");
+          const dbCells = preFilledMap.get(criterion);
 
-        if (rankRow && productCols2.length > 0) {
-          const wsmScores: Record<string, number> = {};
-
-          for (const col of productCols2) {
-            let wsmSum = 0;
-            let totalWeight = 0;
-            for (const row of finalRows) {
-              const criterion = row["criterion"] ?? "";
-              if (!criterion || criterion === "순위" || criterion === "Rank") continue;
-              const w = findWeight(criterion, decisionCriteria);
-              const s = scoreCellValue(String(row[col.key] ?? "-"));
-              wsmSum += s * w;
-              totalWeight += w;
+          for (const col of productCols) {
+            if (dbCells && dbCells[col.key] && dbCells[col.key] !== "-") {
+              // DB에서 값을 찾음 → 주입
+              row[col.key] = dbCells[col.key];
+              injected++;
+            } else {
+              // DB에 없음 → "-" 유지 (Tavily가 채울 예정)
+              row[col.key] = "-";
             }
-            wsmScores[col.key] = totalWeight > 0 ? wsmSum / totalWeight : 0;
           }
+        }
+        console.log(`\x1b[33m[STEP 1.5] 완료 — DB 값 ${injected}개 주입, 나머지는 Tavily 대상\x1b[0m`);
+      }
 
-          const sorted = Object.entries(wsmScores).sort((a, b) => b[1] - a[1]);
-          sorted.forEach(([key], idx) => { rankRow[key] = `${idx + 1}위`; });
+      // ── STEP 2 ~ 4.7: Data Agent가 스펙 보강 담당 ────────────────────────────
+      // Tavily 검색, 유의어 생성, 셀 판단, 재검색 모두 Data Agent 책임.
+      // UI Agent는 JSON 생성(STEP 1)과 순위 결정(STEP 5)에만 집중.
+      await enrichCompTableCells(tableJson, uiContext, currentLocale);
 
-          console.log(`\x1b[32m\n[STEP 5] WSM 순위 결정 (중요도 가중합):`);
-          sorted.forEach(([key], idx) => {
-            const col = productCols2.find(c => c.key === key);
-            const cLabel = col?.label ?? key;
-            console.log(`         ${idx + 1}위: ${cLabel} (WSM: ${wsmScores[key].toFixed(3)})`);
-          });
-          // 각 기준의 가중치 출력
-          const dataRows2 = finalRows.filter(r => r["criterion"] && r["criterion"] !== "순위" && r["criterion"] !== "Rank");
-          console.log(`         [가중치 상세]`);
-          dataRows2.forEach(row => {
-            const criterion = row["criterion"] ?? "";
-            const w = findWeight(criterion, decisionCriteria);
-            const wLabel = w === 0.5 ? "중요" : w === 0.2 ? "낮음" : "보통";
-            console.log(`           "${criterion}" → w=${w} [${wLabel}]`);
-          });
-          console.log(`\x1b[0m`);
 
-          // _rankReasoning: 1위 제품 기준으로 Claude Haiku가 생성
-          const winner = productCols2[sorted.findIndex(([k]) => k === sorted[0][0])];
-          const winnerLabel = productCols2.find(c => c.key === sorted[0][0])?.label ?? "";
-          const criteriaStr = decisionCriteria.map(c => parseCriterionWeight(c).name).join(", ");
-          const lang = currentLocale === "en" ? "English" : "Korean";
-          try {
-            const { text: reasoning } = await generateText({
-              model: anthropic("claude-haiku-4-5"),
-              system: `You are a friendly shopping advisor. Explain in 2-3 sentences why the winning product is recommended, referencing only the user's criteria. Never mention scores, weights, or formulas. Write in ${lang}.`,
-              prompt: `Winning product: ${winnerLabel}\nUser criteria (in priority order): ${criteriaStr}\nWrite a warm, conversational explanation for a first-time buyer.`,
-              temperature: 0.3,
-            });
-            // _rankReasoning 업데이트
-            if (tableJson.props) (tableJson.props as any)._rankReasoning = reasoning.trim();
-          } catch { /* reasoning 생성 실패 시 기존 값 유지 */ }
+      // ── STEP 5: WSM 기반 최종 순위 결정 + 분석 코멘트 생성 ─────────────────
+      // Data Agent가 표 데이터를 받아 가중합 순위를 계산하고 _rankReasoning 반환.
+      // UI Agent는 결과를 tableJson에 주입하는 역할만 수행.
+      {
+        const { reasoning } = await computeRankingAndReasoning(
+          tableJson,
+          decisionCriteria,
+          currentLocale
+        );
+        if (tableJson.props && reasoning) {
+          (tableJson.props as any)._rankReasoning = reasoning;
         }
       }
+
 
       console.log(`\n\x1b[32m━━ 파이프라인 완료 (총 ${Date.now() - t0}ms) ━━\x1b[0m\n`);
       return JSON.stringify(tableJson);

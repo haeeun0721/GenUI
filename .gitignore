@@ -53,8 +53,8 @@ examples/stripe-app/*/stripe-app.json
 examples/stripe-app/*/.build
 examples/stripe-app/*/yarn.lock
 
-# RAG 임베딩 파일 (용량 크므로 제외 - embed-products.mjs로 재생성 가능)
-data/embeddings-*.json
+# RAG 임베딩 파일 (유모차만 제외 - 로봇청소기/카메라는 git에 포함)
+data/embeddings-유모차.json
 
 # Windows 임시 파일
 nul

@@ -9,68 +9,8 @@ import {
 import { SPEC_DATA_PART_TYPE } from "@json-render/core";
 import { headers } from "next/headers";
 import { initSidePanelStore, popSidePanelResults, setCurrentRequestId, initOptionListStore, popOptionListResults, initCompTableStore, popCompTableResults, setCurrentUserContext, setCurrentMessages, setCurrentSavedItems, setCurrentDecisionCriteria, setCurrentMyItemsContextSummary, setCurrentMyItemsRaw, setCurrentProductCategory, setCurrentLocale } from "@/lib/backend/tools/sidebar-store";
-import fs from "fs";
-import path from "path";
+import { findProductInLocalDB } from "@/lib/backend/agents/data_agent";
 
-// ---------------------------------------------------------------------------
-// Local DB lookup — replaces live Danawa scraping for My Items pre-fetch
-// ---------------------------------------------------------------------------
-
-const CATEGORY_FILE_MAP: Record<string, string> = {
-  "유모차": "products-유모차.json",
-  "로봇 청소기": "products-로봇 청소기.json",
-};
-
-function proxyImage(url: string): string {
-  if (!url) return "";
-  return `/api/image-proxy?url=${encodeURIComponent(url)}`;
-}
-
-function findProductInLocalDB(productCategory: string, name: string): string | null {
-  const fileName = CATEGORY_FILE_MAP[productCategory];
-  if (!fileName) return null;
-
-  try {
-    const filePath = path.join(process.cwd(), "data", fileName);
-    const raw = fs.readFileSync(filePath, "utf-8");
-    const products: any[] = JSON.parse(raw);
-
-    // 정확히 일치하는 제품 먼저 탐색
-    let found = products.find((p) => p.name === name);
-
-    // 없으면 부분 일치 (RAG가 이름을 약간 다르게 저장한 경우 대비)
-    if (!found) {
-      found = products.find(
-        (p) =>
-          p.name?.includes(name) ||
-          name.includes(p.name ?? "")
-      );
-    }
-
-    if (!found) return null;
-
-    const specs = Array.isArray(found.specs)
-      ? found.specs.join(" / ")
-      : typeof found.specs === "string"
-      ? found.specs
-      : "정보 없음";
-
-    return (
-      `[Product 1]\n` +
-      `Name: ${found.name}\n` +
-      `Price: ${found.price}\n` +
-      `Brand: ${found.brand ?? ""}\n` +
-      `Mall: ${found.mallName ?? ""}\n` +
-      `Image: ${proxyImage(found.image ?? found.imageUrl ?? "")}\n` +
-      `Link: ${found.link ?? ""}\n` +
-      `Specs: ${specs}\n` +
-      `Description: ${found.description || "정보 없음"}`
-    );
-  } catch (e) {
-    console.warn(`[LocalDB] Failed to read ${fileName}:`, e);
-    return null;
-  }
-}
 
 
 export const maxDuration = 60;
@@ -146,15 +86,29 @@ export async function POST(req: Request) {
 
   // Extract DECISION CRITERIA from message and store for UI Agent use
   const decisionCriteriaMatch = latestText.match(/\[DECISION CRITERIA:\s*(.*?)\](?=\n|$)/i);
+  // 괄호 안의 쉼표(예: "4,500Pa")를 무시하고 분리하기 위해 depth 추적 방식 사용
+  function splitCriteriaRespectingParens(str: string): string[] {
+    const result: string[] = [];
+    let depth = 0;
+    let current = "";
+    for (const ch of str) {
+      if (ch === "(") { depth++; current += ch; }
+      else if (ch === ")") { depth--; current += ch; }
+      else if (ch === "," && depth === 0) { const t = current.trim(); if (t) result.push(t); current = ""; }
+      else { current += ch; }
+    }
+    const t = current.trim(); if (t) result.push(t);
+    return result;
+  }
   const decisionCriteriaList = decisionCriteriaMatch
-    ? decisionCriteriaMatch[1].split(",").map((s: string) => s.trim()).filter(Boolean)
+    ? splitCriteriaRespectingParens(decisionCriteriaMatch[1])
     : [];
   setCurrentDecisionCriteria(decisionCriteriaList);
 
   // Extract ASSIGNED ITEM and map to product category for agent persona
   const assignedItemMatch = latestText.match(/\[ASSIGNED ITEM:\s*([^\]]+)\]/);
   const assignedItem = assignedItemMatch ? assignedItemMatch[1].trim() : "";
-  const productCategory = assignedItem === "A" ? "유모차" : assignedItem === "B" ? "로봇 청소기" : "";
+  const productCategory = assignedItem === "A" ? "유모차" : assignedItem === "B" ? "로봇 청소기" : assignedItem === "C" ? "카메라" : "";
   setCurrentProductCategory(productCategory);
   const agent = createAgent(productCategory);
 

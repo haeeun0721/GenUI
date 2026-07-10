@@ -54,11 +54,90 @@ function HeartButton({
 export const manualRegistry: Record<string, any> = {
   Empty: () => null,
 
+  RagNotFound: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const message: string = p.message || "요청하신 기준에 해당하는 제품 데이터가 현재 DB에 없습니다.";
+    const skipped: string[] = p.skippedCriteria || [];
+    return (
+      <div className="flex flex-col gap-3 w-full rounded-xl border border-slate-200 bg-white px-4 py-4">
+        <div className="flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
+          <span className="text-[13px] font-semibold text-slate-700">DB에서 찾을 수 없는 기준이에요</span>
+        </div>
+        <p className="text-[12px] text-slate-500 leading-relaxed">{message}</p>
+        {skipped.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {skipped.map((c: string, i: number) => (
+              <span
+                key={i}
+                className="text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200"
+              >
+                {c}
+              </span>
+            ))}
+          </div>
+        )}
+        <p className="text-[11px] text-slate-400">더 일반적인 조건으로 다시 검색해보거나, 해당 기능에 대해 질문해주세요.</p>
+      </div>
+    );
+  },
+
+
+  CoverageNotice: (allProps: any) => {
+    const p = allProps?.props || allProps || {};
+    const applied: string[] = p.appliedCriteria || [];
+    const skipped: string[] = p.skippedCriteria || [];
+    if (applied.length === 0 && skipped.length === 0) return null;
+
+    const Chip = ({ label, badgeLabel, badgeClass, dotClass }: {
+      label: string; badgeLabel: string; badgeClass: string; dotClass: string;
+    }) => (
+      <div
+        className="flex items-center gap-1 rounded-2xl px-2 h-[22px] w-fit shrink-0"
+        style={{ backgroundColor: '#ffffff', border: '1px solid #e2e8f0' }}
+      >
+        <div className={`flex items-center gap-0.5 border rounded-[4px] px-1 py-0 text-[8px] font-bold ${badgeClass}`}>
+          <div className={`w-1 h-1 rounded-full ${dotClass}`} />
+          {badgeLabel}
+        </div>
+        <span className="text-[11px] font-semibold whitespace-nowrap text-slate-800">{label}</span>
+      </div>
+    );
+
+    return (
+      <div className="flex flex-col gap-2 w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5">
+        <div className="flex items-center gap-1.5">
+          <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+          <span className="text-[11px] font-semibold text-slate-600">일부 기준이 반영되지 않았어요</span>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {applied.map((c: string, i: number) => (
+            <Chip key={`a-${i}`} label={c} badgeLabel="반영됨" badgeClass="text-emerald-600 bg-emerald-50 border-emerald-100" dotClass="bg-emerald-400" />
+          ))}
+          {skipped.map((c: string, i: number) => (
+            <Chip key={`s-${i}`} label={c} badgeLabel="미반영" badgeClass="text-amber-500 bg-amber-50 border-amber-100" dotClass="bg-amber-400" />
+          ))}
+        </div>
+        <p className="text-[10.5px] text-slate-400">미반영 기준은 현재 DB에 스펙 데이터가 없어요.</p>
+      </div>
+    );
+  },
+
   TradeoffHint: (allProps: any) => {
     const p = allProps?.props || allProps || {};
     if (!p.conflictsWith) return null;
     const whyText = p.why || p.reason;
     if (!whyText) return null;
+
+    // tradeoffType별 라벨·색상 매핑
+    const typeConfig: Record<string, { label: string; color: string; bg: string }> = {
+      performance: { label: "성능 교환관계", color: "text-orange-500", bg: "bg-orange-50" },
+      budget:      { label: "예산 교환관계", color: "text-blue-500",   bg: "bg-blue-50"   },
+      usecase:     { label: "용도 충돌",     color: "text-purple-500", bg: "bg-purple-50" },
+    };
+    const ttype = (p.tradeoffType as string | undefined)?.toLowerCase() ?? "";
+    const cfg = typeConfig[ttype] ?? { label: "구매 딜레마", color: "text-slate-500", bg: "bg-slate-50" };
+
     return (
       <div className="flex flex-col border border-slate-200 rounded-xl overflow-hidden w-full bg-white px-3.5 pt-3 pb-3 gap-2">
         {/* Title row */}
@@ -67,22 +146,25 @@ export const manualRegistry: Record<string, any> = {
           <p className="text-[12px] font-semibold text-slate-700 truncate flex-1">
             {p.newCriterion} ↔ {p.conflictsWith}
           </p>
+          {/* 타입 배지 */}
+          <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${cfg.color} ${cfg.bg}`}>
+            {cfg.label}
+          </span>
           {p.onDismiss && (
             <button onClick={p.onDismiss} className="text-slate-300 hover:text-slate-600 transition-colors shrink-0">
               <X className="w-3.5 h-3.5" />
             </button>
           )}
         </div>
-        {/* 왜 충돌하나요 */}
+        {/* 왜 이런 딜레마가 생기나요 */}
         <div className="flex flex-col gap-0.5">
-          <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">왜 충돌하나요</span>
+          <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">왜 이런 딜레마가 생기나요</span>
           <p className="text-[11px] text-slate-600 leading-relaxed">{whyText}</p>
         </div>
-
-
       </div>
     );
   },
+
 
   UnchartedTerritoryChip: (allProps: any) => {
     const p = allProps?.props || allProps || {};
@@ -141,6 +223,9 @@ export const manualRegistry: Record<string, any> = {
       // Track which categories and chips are currently animating (brand new in the current turn)
       const [animatingKeys, setAnimatingKeys] = useState<Set<string>>(new Set());
 
+      // categories 배열은 매 렌더마다 새 참조가 생성되므로 JSON 직렬화로 실제 내용 변화만 감지
+      const categoriesKey = JSON.stringify(categories);
+
       useEffect(() => {
         if (categories.length === 0) {
           globalSeenCats.clear();
@@ -195,7 +280,8 @@ export const manualRegistry: Record<string, any> = {
             return next;
           });
         }
-      }, [categories]);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [categoriesKey]);
 
       if (categories.length === 0) {
         return (

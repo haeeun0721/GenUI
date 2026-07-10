@@ -6,8 +6,8 @@ import "streamdown/styles.css";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "json-render Chat Example",
-  description: "AI-powered data explorer using ToolLoopAgent and json-render",
+  title: "GenUIdance",
+  description: "Generative UI for decision-making — AI that builds your criteria map in real time",
 };
 
 export default function RootLayout({
