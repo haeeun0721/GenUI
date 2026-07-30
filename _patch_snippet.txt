@@ -1,0 +1,44 @@
+﻿      // 가격/예산 기준은 ragSearch의 하드 필터(parseConstraints)가 처리하므로
+      // Coverage Check 대상에서 제외. 스펙 키에는 "예산"이 없어 항상 미커버로 오인됨.
+      const PRICE_CRITERION_PATTERN = /예산|가격|만원|budget|price|\d+(?:,\d+)?원/i;
+
+      // 브랜드명 기준도 Coverage Check 제외 — 스펙 키가 아니라 RAG가 brand 필드로 처리함
+      const BRAND_CRITERION_PATTERN = /삼성|lg|로보락|샤오미|다이슨|드리미|에코백스|아이로봇|르판트|모바|eufy|bosch|irobot|neato|shark|roborock|dreame|ecovacs/i;
+
+      // 정형 스펙 표현 판별 — 수치 단위 또는 알려진 스펙 키워드 포함 여부
+      // 정성적 표현("신혼부부용", "디자인 예쁜")은 Coverage Check 없이 RAG+Reranker에 위임
+      const NUMERIC_SPEC_PATTERN = /\d+\s*(pa|db|mah|rpm|cm|mm|kg|g|w|l|시간|분|초|℃)/i;
+      const KNOWN_SPEC_FEATURE_PATTERN = /흡입력|소음|배터리|용량|무게|중량|물걸레|헤파|hepa|uv살균|자외선|장애물|lds|라이다|카펫|브러시|브러쉬|사용시간|충전시간|손떨림|4k|8k|iso|연사|셔터|블루투스|wi-?fi|gps|방진|방적|raw|log촬영|펫케어|엉킴방지|먼지엉킴|머리카락컷팅|직배수/i;
+      function isStructuredSpecCriterion(text: string): boolean {
+        return NUMERIC_SPEC_PATTERN.test(text) || KNOWN_SPEC_FEATURE_PATTERN.test(text);
+      }
+
+      const parsedCriteria = queryParts.map(part => {
+        const words = part.trim().split(/\s+/);
+        const nameOnly = words.slice(0, 2).join(" ");
+        const isPriceCriterion = PRICE_CRITERION_PATTERN.test(part);
+        const isBrandCriterion = BRAND_CRITERION_PATTERN.test(part);
+        const isStructuredSpec = isStructuredSpecCriterion(part);
+        console.log([DEBUG PriceRegex] part: "", matches: );
+        return { nameOnly, annotated: part.trim(), isPriceCriterion, isBrandCriterion, isStructuredSpec };
+      });
+
+      // 정형 스펙 표현만 Coverage Check 대상으로 한정
+      const specCriteria = parsedCriteria.filter(
+        p => !p.isPriceCriterion && !p.isBrandCriterion && p.isStructuredSpec
+      );
+      const priceCriteria = parsedCriteria.filter(p => p.isPriceCriterion);
+      const brandCriteria = parsedCriteria.filter(p => p.isBrandCriterion);
+      const qualitativeCriteria = parsedCriteria.filter(
+        p => !p.isPriceCriterion && !p.isBrandCriterion && !p.isStructuredSpec
+      );
+
+      if (priceCriteria.length > 0) {
+        console.log([Coverage] 가격 기준은 하드 필터로 처리 (Coverage Check 제외): );
+      }
+      if (brandCriteria.length > 0) {
+        console.log([Coverage] 브랜드 기준은 RAG가 처리 (Coverage Check 제외): );
+      }
+      if (qualitativeCriteria.length > 0) {
+        console.log([Coverage] 정성적 표현은 RAG가 처리 (Coverage Check 제외): );
+      }
