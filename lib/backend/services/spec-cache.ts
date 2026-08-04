@@ -85,12 +85,20 @@ export function makeCacheKey(productName: string, fieldKey: string): string {
   return `${productName.trim()}||${field}`;
 }
 
-/** 캐시에서 스펙 조회. 없거나 값이 "-"면 null 반환. */
+/** 캐시에서 스펙 조회.
+ *  - 값이 없으면 null 반환 (Tavily 검색 필요)
+ *  - 값이 "-"이고 cachedAt 기준 24시간 이내면 entry 반환 (재검색 안 함)
+ *  - 값이 "-"이고 24시간 이상 지났으면 null 반환 (재검색 허용)
+ */
 export function getSpec(productName: string, fieldKey: string): SpecCacheEntry | null {
   ensureLoaded();
   const entry = memCache.get(makeCacheKey(productName, fieldKey));
-  if (!entry || entry.value === "-") return null;
-  return entry;
+  if (!entry) return null;
+  if (entry.value !== "-") return entry;
+  // "-" 결과는 24시간 TTL 내에서만 캐시로 인정
+  const AGE_MS = Date.now() - new Date(entry.cachedAt).getTime();
+  const TTL_24H = 24 * 60 * 60 * 1000;
+  return AGE_MS < TTL_24H ? entry : null;
 }
 
 /** 캐시에 스펙 저장. 자동으로 디스크에 비동기 반영. */

@@ -1,5 +1,5 @@
 import { generateText } from "ai";
-import { anthropic } from "@ai-sdk/anthropic";
+import { openai } from "@ai-sdk/openai";
 import { NextRequest } from "next/server";
 
 /**
@@ -54,11 +54,11 @@ Rules:
 
     try {
       const { text } = await generateText({
-        model: anthropic("claude-haiku-4-5"),
+        model: openai("gpt-4o"),
         system: systemPrompt,
         prompt: `Translate all specs in this object to ${lang}:\n\n${JSON.stringify(batchInput, null, 2)}`,
         temperature: 0,
-        maxTokens: 4096,  // 스펙 필드 축소로 입력/출력 모두 감소
+        maxOutputTokens: 4096,  // 스펙 필드 축소로 입력/출력 모두 감소
       });
 
       // Extract the outermost JSON object
@@ -90,7 +90,7 @@ Rules:
 
   try {
     const { text } = await generateText({
-      model: anthropic("claude-haiku-4-5"),
+      model: openai("gpt-4o"),
       system: systemPrompt,
       prompt: `Translate this UI spec to ${lang}:\n\n${JSON.stringify(spec, null, 2)}`,
       temperature: 0,

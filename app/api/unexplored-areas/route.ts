@@ -7,20 +7,21 @@ export async function POST(req: Request) {
     const body = await req.json();
     const existingCategories: string[] = body.existingCategories ?? [];
     const productCategory: string = body.productCategory ?? "";
-    const droppedCriteria: string[] = body.droppedCriteria ?? [];
     const alreadySuggested: string[] = body.alreadySuggested ?? [];
 
     const uiContext = [
       `PRODUCT_CATEGORY: ${productCategory}`,
       `EXISTING_CATEGORIES: ${existingCategories.join(", ") || "없음"}`,
-      `SAVED_CRITERIA: ${droppedCriteria.join(", ") || "없음"}`,
       alreadySuggested.length > 0
         ? `ALREADY_SUGGESTED: ${alreadySuggested.join(", ")}  ← 이미 제안한 영역이므로 제외하고 새로운 영역만 제안`
         : "",
     ].filter(Boolean).join("\n");
 
-    console.log("[UnchartedTerritoryChip] Calling UI Agent (category=6)...");
-    const specText = await generateUISpec(uiContext, "", "6", 1, "", [], droppedCriteria);
+    console.log(`\n\x1b[35m========== UnchartedTerritoryChip ==========\x1b[0m`);
+    console.log(`\x1b[90m[Input] product_category:\x1b[0m ${productCategory}`);
+    console.log(`\x1b[90m[Input] existing_categories:\x1b[0m ${existingCategories.join(", ") || "(없음)"}`);
+    console.log(`\x1b[90m[Input] already_suggested:\x1b[0m ${alreadySuggested.join(", ") || "(없음)"}`);
+    const specText = await generateUISpec(uiContext, "", "6", 1, "", [], []);
 
     // Robust JSON extraction (same brace-matching pattern as check-tradeoff)
     const firstBrace = specText.indexOf("{");

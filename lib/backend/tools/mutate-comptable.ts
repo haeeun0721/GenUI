@@ -1,0 +1,194 @@
+import { tool } from "ai";
+import { z } from "zod";
+import {
+  currentRequestId,
+  pushCompTableResult,
+  currentDecisionCriteria,
+  currentProductCategory,
+  currentLocale,
+} from "./sidebar-store";
+import {
+  computeRankingAndReasoning,
+  findProductInLocalDB,
+} from "../agents/data_agent";
+import { ragSearch } from "../rag/search";
+import { lookupProductSpec } from "../services/spec-lookup";
+
+/**
+ * mutateComparisonTable — 이미 화면에 표시된 ComparisonTable에 기준(행)/제품(열)을 추가/삭제
+ *
+ * row(기준) add/remove 로직은 app/api/update-table/route.ts의 STRATEGY A(증분 업데이트)와
+ * 동일한 building block(lookupProductSpec)을 재사용하되, update-table/route.ts 자체는
+ * 건드리지 않는다 — 그 경로는 Decision Criteria 패널 변경 시에도 여전히 그대로 동작해야 하기 때문.
+ *
+ * 셀 값 조회는 전부 lookupProductSpec(공유 캐시 → 로컬 DB → Tavily 3단계 + judgeCell 검증 +
+ * SiblingGuard)로 통일했다. 예전엔 이 파일이 findProductSpecInDB/tavilySearch/judgeCell을
+ * 직접 조합해서 auto-enrich/fetch-spec이 쓰는 더 정교한 파이프라인과 따로 놀았는데, 그러다보니
+ * 개선(SiblingGuard 등)이 한쪽에만 적용되는 문제가 있었다.
+ *
+ * product(열) add는 mutateSurface(Option List add)와 동일하게 RAG(ragSearch)로 제품을 찾는다.
+ * 단일 셀 재조회(특정 제품 × 특정 기준 하나만 갱신)는 여전히 범위 밖이다.
+ */
+
+function cleanCriterionLabel(c: string): string {
+  return c.replace(/\s*\[.*?\]\s*/g, "").replace(/\s*\(.*?\)\s*/g, "").trim();
+}
+
+export const mutateComparisonTable = tool({
+  description: `
+Add or remove criterion ROWS, or add/remove product COLUMNS, on the CURRENTLY DISPLAYED ComparisonTable.
+Only use when [CURRENT_COMPARISON_TABLE] is present. Cannot re-check a single cell.
+`.trim(),
+  inputSchema: z.object({
+    surface: z.literal("comparisonTable"),
+    op: z.enum(["add_criteria", "remove_criteria", "add_product", "remove_product"]),
+    current_table: z.any().describe("The current Table spec JSON ({ props: { columns, rows } }) to patch in place."),
+    criteria_to_add: z.array(z.string()).optional(),
+    criteria_to_remove: z.array(z.string()).optional(),
+    products_to_add: z.array(z.string()).optional().describe("add_product: product names/brands/queries to search for (RAG) and add as new columns."),
+    products_to_remove: z.array(z.string()).optional().describe("remove_product: exact product column labels to remove."),
+    op_summary: z.string().describe("Brief Korean description of the action."),
+  }),
+  execute: async (args) => {
+    const capturedRequestId = currentRequestId;
+    console.log(`[mutateComparisonTable] op=${args.op} | ${args.op_summary}`);
+
+    const tableJson = JSON.parse(JSON.stringify(args.current_table ?? { props: { columns: [], rows: [] } }));
+    // current_table은 [CURRENT_COMPARISON_TABLE] 태그(props만 담김)에서 온 것이라 type이 없을 수 있다 —
+    // 프론트엔드 렌더러가 컴포넌트를 식별하려면 반드시 필요하므로 여기서 항상 보장한다.
+    tableJson.type = "Table";
+    tableJson.props ??= { columns: [], rows: [] };
+    const cols: any[] = tableJson.props.columns ?? [];
+    let rows: any[] = tableJson.props.rows ?? [];
+    const productCols = cols.filter((c: any) => c.key !== "criterion");
+
+    if (args.op === "remove_criteria") {
+      const toRemove = (args.criteria_to_remove ?? []).map((c) => cleanCriterionLabel(c).toLowerCase()).filter(Boolean);
+      rows = rows.filter((r: any) => {
+        if (r.criterion === "순위" || r.criterion === "Rank") return true;
+        const rn = cleanCriterionLabel(String(r.criterion ?? "")).toLowerCase();
+        if (!rn) return true;
+        return !toRemove.some((tr) => rn === tr || rn.includes(tr) || tr.includes(rn));
+      });
+      console.log(`[mutateComparisonTable] 삭제 후 ${rows.length}개 행 남음`);
+    } else if (args.op === "add_criteria") {
+      const requested = (args.criteria_to_add ?? []).map(cleanCriterionLabel).filter(Boolean);
+      const existing = new Set(rows.map((r: any) => cleanCriterionLabel(String(r.criterion ?? "")).toLowerCase()));
+      const toAdd = requested.filter((c) => !existing.has(c.toLowerCase()));
+
+      // 제품 컬럼 라벨 → 전체 제품명 매핑 (update-table/route.ts STRATEGY A와 동일한 패턴)
+      const fullNameMap = new Map<string, string>();
+      for (const col of productCols) {
+        const dbEntry = findProductInLocalDB(currentProductCategory, col.label);
+        const nameMatch = dbEntry?.match(/Name:\s*(.+)/);
+        fullNameMap.set(col.label, nameMatch ? nameMatch[1].trim() : col.label);
+      }
+
+      for (const criterion of toAdd) {
+        const newRow: Record<string, string> = { criterion };
+        for (const col of productCols) newRow[col.key] = "-";
+
+        await Promise.all(
+          productCols.map(async (col: any) => {
+            const fullName = fullNameMap.get(col.label) ?? col.label;
+            const result = await lookupProductSpec(fullName, criterion, currentProductCategory);
+            newRow[col.key] = result.uncertain ? "-" : result.value;
+            console.log(`[mutateComparisonTable] "${fullName}" × "${criterion}" → "${newRow[col.key]}" (source=${result.source}${result.uncertain ? ", 불확실→폐기" : ""})`);
+          })
+        );
+
+        const rankIdx = rows.findIndex((r: any) => r.criterion === "순위" || r.criterion === "Rank");
+        if (rankIdx === -1) rows.push(newRow);
+        else rows.splice(rankIdx + 1, 0, newRow);
+        console.log(`[mutateComparisonTable] 새 행 추가: "${criterion}"`);
+      }
+    } else if (args.op === "remove_product") {
+      const toRemove = (args.products_to_remove ?? []).map((p) => p.toLowerCase().trim()).filter(Boolean);
+      const removedCols = productCols.filter((c: any) => {
+        const cl = c.label.toLowerCase();
+        return toRemove.some((tr) => cl === tr || cl.includes(tr) || tr.includes(cl));
+      });
+      if (removedCols.length === 0) {
+        console.warn("[mutateComparisonTable] remove_product: 매칭되는 제품 컬럼 없음");
+      } else {
+        const removedKeys = new Set(removedCols.map((c: any) => c.key));
+        tableJson.props.columns = cols.filter((c: any) => !removedKeys.has(c.key));
+        rows = rows.map((r: any) => {
+          const next = { ...r };
+          removedKeys.forEach((k) => { delete next[k]; });
+          return next;
+        });
+        console.log(`[mutateComparisonTable] 제품 컬럼 삭제: ${removedCols.map((c: any) => c.label).join(", ")}`);
+      }
+    } else if (args.op === "add_product") {
+      const requested = (args.products_to_add ?? []).map((s) => s.trim()).filter(Boolean);
+      const existingLabelsLower = new Set(productCols.map((c: any) => c.label.toLowerCase()));
+
+      const searchResults = await Promise.all(
+        requested.map(async (q) => {
+          try {
+            const found = await ragSearch(q, currentProductCategory, 5, productCols.map((c: any) => c.label));
+            const qLower = q.toLowerCase();
+            const filtered = found.filter((p) =>
+              p.name?.toLowerCase().includes(qLower) ||
+              p.brand?.toLowerCase().includes(qLower) ||
+              qLower.split(/\s+/).every((w: string) => p.name?.toLowerCase().includes(w) || p.brand?.toLowerCase().includes(w))
+            );
+            return (filtered.length > 0 ? filtered : found)[0] ?? null;
+          } catch (err) {
+            console.error(`[mutateComparisonTable/add_product] 검색 실패 "${q}":`, err);
+            return null;
+          }
+        })
+      );
+
+      const seenLower = new Set<string>();
+      const newProducts = searchResults.filter((p): p is NonNullable<typeof p> => {
+        if (!p) return false;
+        const nameLower = p.name.toLowerCase();
+        if (existingLabelsLower.has(nameLower) || seenLower.has(nameLower)) return false;
+        seenLower.add(nameLower);
+        return true;
+      });
+
+      const criterionRows = rows.filter((r: any) => r.criterion && r.criterion !== "순위" && r.criterion !== "Rank");
+
+      for (const prod of newProducts) {
+        let idx = 0;
+        while (cols.some((c: any) => c.key === `prod_${idx}`)) idx++;
+        const newKey = `prod_${idx}`;
+        cols.push({ key: newKey, label: prod.name, imageUrl: (prod as any).image ?? "" });
+
+        await Promise.all(
+          criterionRows.map(async (row: any) => {
+            const criterion = String(row.criterion ?? "");
+            const result = await lookupProductSpec(prod.name, criterion, currentProductCategory);
+            row[newKey] = result.uncertain ? "-" : result.value;
+            console.log(`[mutateComparisonTable/add_product] "${prod.name}" × "${criterion}" → "${row[newKey]}" (source=${result.source}${result.uncertain ? ", 불확실→폐기" : ""})`);
+          })
+        );
+        console.log(`[mutateComparisonTable/add_product] 새 제품 컬럼 추가: "${prod.name}"`);
+      }
+    }
+
+    tableJson.props.rows = rows;
+    // 프론트엔드(app/page.tsx)에는 "renderToCompTable의 재생성이 활성 기준 행을 실수로
+    // 누락시켰을 때 복구"하는 안전장치가 있는데, 이 mutate 결과도 같은 채널로 나가기 때문에
+    // remove_criteria로 의도적으로 지운 행까지 그 안전장치가 되살릴 수 있다. 이 결과는
+    // "이미 정확히 패치된 최종 상태"임을 표시해 그 복구 로직을 건너뛰게 한다.
+    tableJson.props._isMutateResult = true;
+    // 프론트엔드가 Comparison Table 이력 배너(꼬리 질문 목록)를 구성할 때 쓰는 메타데이터.
+    tableJson.props._lastMutateOp = args.op;
+    tableJson.props._lastMutateOpSummary = args.op_summary;
+
+    try {
+      const { reasoning } = await computeRankingAndReasoning(tableJson, currentDecisionCriteria, currentLocale);
+      if (reasoning) tableJson.props._rankReasoning = reasoning;
+    } catch (err) {
+      console.warn("[mutateComparisonTable] 순위 재계산 실패, 기존 값 유지:", err);
+    }
+
+    if (capturedRequestId) pushCompTableResult(capturedRequestId, tableJson);
+    return tableJson;
+  },
+});

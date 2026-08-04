@@ -95,7 +95,7 @@ export const renderToOptionList = tool({
     ui_intent_category: z
       .string()
       .nullable()
-      .describe("Always '3' for Product Recommendation."),
+      .describe("Always 'ProductCardList' for Product Recommendation."),
   }),
   execute: async ({ search_query, intent_summary, ui_intent_category }) => {
     console.log(
@@ -173,9 +173,18 @@ export const renderToOptionList = tool({
         return { nameOnly, annotated: part.trim(), isPriceCriterion, isBrandCriterion, isStructuredSpec };
       });
 
-      // 정형 스펙 표현만 Coverage Check 대상으로 한정
+      // 한국어 지배 텍스트인지 판단 (Coverage Check는 한국어 스펙 키워드만 대상)
+      // 영어로 전달된 intent_summary 문장이 search_query로 들어오는 경우를 차단
+      function isKoreanDominant(text: string): boolean {
+        const koreanChars = (text.match(/[\uAC00-\uD7AF]/g) || []).length;
+        const totalChars = text.replace(/\s/g, '').length;
+        // 한국어 문자 비율이 15% 미만이면 영어로 받아들여 스킵
+        return totalChars === 0 || koreanChars / totalChars >= 0.15;
+      }
+
+      // 정형 스펙 표현만 Coverage Check 대상 + 한국어 지배 텍스트만
       const specCriteria = parsedCriteria.filter(
-        p => !p.isPriceCriterion && !p.isBrandCriterion && p.isStructuredSpec
+        p => !p.isPriceCriterion && !p.isBrandCriterion && p.isStructuredSpec && isKoreanDominant(p.annotated)
       );
       const priceCriteria = parsedCriteria.filter(p => p.isPriceCriterion);
       const brandCriteria = parsedCriteria.filter(p => p.isBrandCriterion);
@@ -317,7 +326,9 @@ export const renderToOptionList = tool({
 
       if (uiSpecString && !uiSpecString.startsWith("ERROR:")) {
         // Case 2: 일부 기준 미반영 → CoverageNotice를 제품 카드 앞에 push
-        if (skippedCriteria.length > 0) {
+        // 조건: 적어도 하나는 반영되고(coveredAnnotated.length > 0) 하나는 미반영(skippedCriteria.length > 0)
+        // 전체 미반영 또는 전체 반영이면 표시 안 함
+        if (skippedCriteria.length > 0 && coveredAnnotated.length > 0) {
           const coverageNoticeSpec = {
             type: "CoverageNotice",
             props: {

@@ -1,10 +1,11 @@
 import { tool, generateText } from "ai";
-import { anthropic } from "@ai-sdk/anthropic";
+import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
 import * as cheerio from "cheerio";
 import * as fs from "fs";
 import * as path from "path";
 import { getSpec, setSpec, makeCacheKey as sharedMakeCacheKey } from "../services/spec-cache";
+import { computeWsmRanking } from "../../shared/wsm-ranking";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -153,7 +154,7 @@ function isPlaceholder(url: string): boolean {
 // AI가 스펙을 임의 생성하지 않고 실제 HTML에서만 추출.
 // ---------------------------------------------------------------------------
 
-async function scrapeDanawaDetail(
+export async function scrapeDanawaDetail(
   link: string
 ): Promise<{ specs: string[]; description: string; price: string }> {
   try {
@@ -515,21 +516,50 @@ function makeCacheKey(productName: string, criterion: string): string {
   return sharedMakeCacheKey(productName, criterion);
 }
 
+export interface TavilySearchOptions {
+  /** 기본 5, Tavily 최대 20 */
+  maxResults?: number;
+  /** URL 하나당 뽑아낼 스니펫 개수 (1~3). advanced 검색에서만 의미 있음 */
+  chunksPerSource?: number;
+  /** 이 도메인들은 애초에 검색 결과에서 제외 (진짜 Tavily API 파라미터 — 쿼리 텍스트 "-단어"와 달리 실제로 지켜짐) */
+  excludeDomains?: string[];
+  /** Tavily가 검색 결과를 요약한 "AI Answer"도 같이 요청 (수치 fast-path가 이걸 읽음) */
+  includeAnswer?: boolean;
+}
+
 export async function tavilySearch(
   query: string,
-  searchDepth: "basic" | "advanced" = "basic"
+  searchDepth: "basic" | "advanced" = "basic",
+  options: TavilySearchOptions = {}
 ): Promise<TavilyResult[]> {
   const apiKey = process.env.TAVILY_API_KEY;
   if (!apiKey) { console.warn("[Tavily] API 키 없음"); return []; }
+  const body: Record<string, unknown> = {
+    query,
+    search_depth: searchDepth,
+    max_results: options.maxResults ?? 5,
+  };
+  if (searchDepth === "advanced" && options.chunksPerSource) body.chunks_per_source = options.chunksPerSource;
+  if (options.excludeDomains?.length) body.exclude_domains = options.excludeDomains;
+  if (options.includeAnswer) body.include_answer = "basic";
+
   const res = await fetch("https://api.tavily.com/search", {
     method: "POST",
     headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
-    body: JSON.stringify({ query, search_depth: searchDepth, max_results: 5 }),
-    signal: AbortSignal.timeout(10000),
+    body: JSON.stringify(body),
+    // advanced + 더 많은 결과 요청은 basic보다 느리므로 타임아웃을 넉넉하게
+    signal: AbortSignal.timeout(searchDepth === "advanced" ? 20000 : 10000),
   });
   if (!res.ok) { console.warn(`[Tavily] ${res.status}`); return []; }
-  const data = await res.json() as { results?: TavilyResult[] };
-  return data.results ?? [];
+  const data = await res.json() as { results?: TavilyResult[]; answer?: string };
+  const results = data.results ?? [];
+  // include_answer로 받은 요약은 results[] 밖의 별도 필드로 오므로, 기존 코드(spec-lookup.ts의
+  // tryExtractFromAIAnswer)가 찾는 형태에 맞춰 title="Tavily AI Answer Overview"인 가짜 결과로
+  // 앞에 끼워 넣는다 — 반환 타입을 안 바꾸면서 이 필드를 실제로 쓰이게 하기 위함.
+  if (data.answer) {
+    results.unshift({ title: "Tavily AI Answer Overview", url: "", content: data.answer, score: 1 });
+  }
+  return results;
 }
 
 
@@ -563,7 +593,7 @@ function cleanLabel(c: string): string {
  * 다나와 스펙은 "셔터스피드:1/8000초", "프로세서:Bionz XR" 처럼
  * value 내부에 "내부키:" 접두어가 붙는 경우가 있어서 이를 제거.
  */
-function parseSpecEntry(entry: string): { key: string; rawValue: string } {
+export function parseSpecEntry(entry: string): { key: string; rawValue: string } {
   const idx = entry.indexOf(":");
   if (idx === -1) return { key: entry.trim(), rawValue: "" };
   const key = entry.substring(0, idx).trim();
@@ -575,7 +605,7 @@ function parseSpecEntry(entry: string): { key: string; rawValue: string } {
 }
 
 /** 스펙 rawValue를 표시용 셀 값으로 변환 */
-function toDisplayValue(rawValue: string): string {
+export function toDisplayValue(rawValue: string): string {
   if (!rawValue || rawValue === "-") return "-";
   if (rawValue === "○") return "○";
   // 명시적 부재 표현 → "X"
@@ -671,9 +701,11 @@ export function preFillTableCells(
 }
 
 type CompTableJson = {
+  type?: string;
   props?: {
-    columns?: Array<{ key: string; label: string }>;
+    columns?: Array<{ key: string; label: string; imageUrl?: string }>;
     rows?: Array<Record<string, string>>;
+    _rankReasoning?: string;
   };
   [k: string]: unknown;
 };
@@ -752,18 +784,33 @@ function findUngroundedCells(tableJson: CompTableJson, uiContext: string) {
   return ungrounded;
 }
 
+// ── 유의어 캐시 (프로세스 수명 동안 유지) ─────────────────────────────
+const synonymsCache = new Map<string, Record<string, string[]>>();
+
 export async function expandCriterionSynonyms(criteria: string[]): Promise<Record<string, string[]>> {
   if (criteria.length === 0) return {};
+
+  // 정렬한 키로 캐시 조회 (순서 무관)
+  const cacheKey = [...criteria].sort().join('|');
+  if (synonymsCache.has(cacheKey)) {
+    console.log(`\x1b[36m[Synonyms] 캐시 히트: [${criteria.join(', ')}]\x1b[0m`);
+    return synonymsCache.get(cacheKey)!;
+  }
+
   const { text } = await generateText({
-    model: anthropic("claude-haiku-4-5"),
+    model: openai("gpt-4o"),
     system: "You are a Korean product spec synonym generator. Given a list of product criteria in Korean, return a JSON object where each key is the criterion and the value is an array of 2-3 Korean synonyms or related search terms. Output only valid JSON.",
     prompt: `Generate synonyms for these criteria: ${JSON.stringify(criteria)}`,
     temperature: 0,
   });
+  let result: Record<string, string[]> = {};
   try {
     const match = text.match(/\{[\s\S]*\}/);
-    return match ? JSON.parse(match[0]) : {};
-  } catch { return {}; }
+    result = match ? JSON.parse(match[0]) : {};
+  } catch { result = {}; }
+
+  synonymsCache.set(cacheKey, result);
+  return result;
 }
 
 export function detectCriterionType(criterion: string): "value" | "boolean" {
@@ -790,47 +837,172 @@ function extractKeywordWindow(content: string, keywords: string[], windowSize = 
   return content.slice(bestStart, bestStart + windowSize).trim();
 }
 
+/** 기준명/유의어 비교용 정규화 (공백·구두점·대소문자 제거) */
+function normalizeTerm(s: string): string {
+  return s.toLowerCase().replace(/[\s\-·,()\[\].\/]/g, "");
+}
+
+/**
+ * 추출된 값이 기준명/유의어를 그대로 되풀이한 것인지 판별.
+ * 검색 쿼리가 "<제품명> <기준명>"처럼 포괄적일 때, LLM이 스니펫에 등장하는
+ * 기준명 자체를 "값"으로 착각해 반환하는 것을 기준(criterion)과 무관하게 범용적으로 차단한다.
+ */
+function isLiteralEcho(rawValue: string, criterion: string, synonyms: string[]): boolean {
+  const normVal = normalizeTerm(rawValue);
+  if (!normVal) return false;
+  const terms = [criterion, ...synonyms].map(normalizeTerm).filter(t => t.length >= 2);
+  return terms.some(t => t === normVal);
+}
+
+/**
+ * 스니펫 텍스트를 인용 가능한 짧은 단위(문장/스펙 나열 구절)로 쪼갠다.
+ * 다나와식 스펙은 완결된 문장이 아니라 "항목 / 항목 / 항목" 나열이 많아서,
+ * 마침표뿐 아니라 줄바꿈·"/"·"·" 도 구절 경계로 취급한다.
+ */
+function splitIntoSegments(text: string): string[] {
+  return text
+    .split(/[\n]+|(?<=[.!?])\s+|[/·]+/)
+    .map(s => s.trim())
+    .filter(s => s.length >= 4);
+}
+
 export async function judgeCell(
   productName: string,
   criterion: string,
   snippets: TavilyResult[],
   locale: string,
   criterionType: "boolean" | "value" = detectCriterionType(criterion),
-  synonyms: string[] = []
+  synonyms: string[] = [],
+  siblingExcludeTokens: string[] = []
 ): Promise<{ value: string; sourceUrl?: string; usedSnippet?: string }> {
   if (snippets.length === 0) return { value: "-" };
-  const productNameWords = productName.split(/\s+/).filter(w => w.length >= 2);
-  const keywords = [
-    criterion,
-    ...synonyms,
-    ...criterion.split(/\s+/),
-    productName,
-    ...productNameWords
-  ].filter(w => w.length >= 2);
-  const snippetText = snippets.slice(0, 3).map((r, i) => {
-    const window = extractKeywordWindow(r.content, keywords, 300);
-    return `[${i + 1}] (${r.url})\n${window}`;
-  }).join("\n\n");
 
+  // ── 1. 제품명 사전 필터: 해당 제품명이 등장하는 스니펫만 통과 ─────────────
+  // 다른 모델 정보가 포함된 페이지에서 교차 오염을 제거
+  const productTokens = productName.split(/\s+/).filter(w => w.length >= 2);
+  const validSnippets = snippets.filter(r => {
+    const hits = productTokens.filter(t => r.content.toLowerCase().includes(t.toLowerCase()));
+    return hits.length / Math.max(productTokens.length, 1) >= 0.5;
+  });
+  // 필터 후 유효한 스니펫이 없으면 원본 전체 사용 (fallback)
+  const usableSnippets = validSnippets.length > 0 ? validSnippets : snippets;
+
+  const keywords = [
+    criterion, ...synonyms, ...criterion.split(/\s+/), productName, ...productTokens,
+  ].filter(w => w.length >= 2);
+
+  // ── 2. 스니펫을 번호 매긴 구절 단위로 쪼갬 ─────────────────────────────────
+  // LLM이 인용문을 직접 타이핑하게 하는 대신 "몇 번 구절"인지만 고르게 해서,
+  // 근거 텍스트가 항상 원문 그대로가 되도록 한다 — 사후에 fuzzy 대조로 검증하는 게
+  // 아니라,애초에 LLM이 텍스트를 왜곡할 수 있는 경로 자체를 없앤다.
+  // 300자였던 창을 500자로 넓힘 — 스펙표에서 원하는 항목이 다른 키워드 없이 혼자
+  // 뚝 떨어져 있으면 좁은 창 밖으로 밀려나 판단 재료 자체가 없어지는 경우가 있었다.
+  const segments: { text: string; url: string }[] = [];
+  usableSnippets.slice(0, 8).forEach((r) => {
+    const window = extractKeywordWindow(r.content, keywords, 500);
+    splitIntoSegments(window).forEach((seg) => segments.push({ text: seg, url: r.url }));
+  });
+
+  if (segments.length === 0) return { value: "-" };
+
+  const snippetText = segments.map((s, i) => `[${i + 1}] ${s.text}`).join("\n");
+
+  // ── 3. Extractive QA 프롬프트 ─────────────────────────────────────────────
   const systemPrompt = criterionType === "value"
-    ? `You are a product spec extractor. Given search snippets, extract the specific value for the criterion.\nRespond with ONLY a JSON object: { "value": "<extracted value or '-'>", "sourceIndex": <1-based index or null> }\nIf a specific measurable value is found (e.g., "6.2kg", "최대 22kg", "75dB"), extract it verbatim (max 15 chars). If the value is a price, ALWAYS format it in Korean Won (KRW) like "000,000원". If not found, output "-".`
-    : `You are a product spec verifier. Given search snippets, determine if the product has the specified feature.\nRespond with ONLY a JSON object: { "value": "○" | "X" | "-", "sourceIndex": <1-based index or null> }\n"○" = confirmed present, "X" = confirmed absent, "-" = cannot determine.`;
+    ? `You are a product spec extractor using extractive QA.
+Given numbered text segments, find the value for the criterion ONLY if explicitly stated in one segment.
+Respond with ONLY a JSON object:
+{ "value": "<extracted value or null>", "segmentId": <1-based segment number that states this value, or null> }
+Rules:
+- value: specific measurable value (e.g., "75dB", "약 200분", "6,400mAh"). Max 15 chars. Prices in "000,000원" format.
+- segmentId: MUST be the number of the segment that explicitly states this value. Never invent a number.
+- If the segment is about a DIFFERENT model than the specified product, set all fields to null.
+- CRITICAL — sibling variant check: the exact product name above may share almost all of its name with a
+  DIFFERENT sibling model in the same product line (e.g. a "직배수"/direct-drain version, "Ultra", "Slim",
+  "Pro", or a different trailing model code). If the segment you would cite names such a variant/suffix that
+  is NOT part of the exact product name given above, that text is about the SIBLING model, not this one —
+  set all fields to null even if the rest of the segment looks relevant. Never carry a sibling model's spec
+  over to this product just because most of the name matches.
+- If the value is not explicitly stated in any segment, set all fields to null.`
+    : `You are a product spec verifier using extractive QA.
+Given numbered text segments, determine if the product explicitly has or lacks the specified feature/criterion, and extract concrete detail if named.
+Respond with ONLY a JSON object:
+{ "value": "<see rules>", "segmentId": <1-based segment number this is based on, or null> }
+Rules for "value":
+- If a segment names concrete, specific sub-features or technologies (e.g. proper nouns like "AI 장애물 회피", "원격제어", "홈캠", "LDS 라이다"), return them as a short comma-separated list, max 40 chars total. Only include items explicitly named in the text.
+- If a segment only confirms the feature/criterion exists in general terms, WITHOUT naming any specific sub-feature, return "○".
+- If a segment explicitly says the feature is absent, return "X".
+- NEVER return the criterion name itself, a generic category label, or a synonym of the criterion as the value — that adds no information. If that is all you can find, use "○" instead.
+- segmentId: MUST be the number of the segment that supports this "value". Never invent a number.
+- If no segment is about this product, or nothing relevant is stated, set all fields to null.
+- CRITICAL — sibling variant check: the exact product name above may share almost all of its name with a
+  DIFFERENT sibling model in the same product line (e.g. a "직배수"/direct-drain version, "Ultra", "Slim",
+  "Pro", or a different trailing model code). If the segment you would cite names such a variant/suffix that
+  is NOT part of the exact product name given above, that text is about the SIBLING model, not this one —
+  set all fields to null even if the rest of the segment looks relevant. Never carry a sibling model's
+  feature over to this product just because most of the name matches.`;
 
   const { text } = await generateText({
-    model: anthropic("claude-haiku-4-5"),
+    model: openai("gpt-4o"),
     system: systemPrompt,
-    prompt: `Product: ${productName}\nFeature/Criterion: ${criterion}\n\nSearch Snippets:\n${snippetText}`,
+    prompt: `Product: ${productName}\nCriterion: ${criterion} (Synonyms/Related terms: ${synonyms.join(", ")})\n\nText segments:\n${snippetText}`,
     temperature: 0,
   });
+
   try {
     const match = text.match(/\{[\s\S]*?\}/);
-    const result = match ? JSON.parse(match[0]) : { value: "-" };
-    const srcIdx: number | null = result.sourceIndex ?? null;
-    const usedSnippetObj = srcIdx != null ? snippets[srcIdx - 1] : null;
-    const usedSnippet = usedSnippetObj
-      ? extractKeywordWindow(usedSnippetObj.content, keywords, 120).replace(/\s+/g, " ")
-      : undefined;
-    return { value: result.value ?? "-", sourceUrl: usedSnippetObj?.url, usedSnippet };
+    const result = match ? JSON.parse(match[0]) : {};
+    const rawValue: string | null = result.value ?? null;
+    const segId: number | null = result.segmentId ?? null;
+
+    if (!rawValue) return { value: "-" };
+
+    // ── 4. Evidence Verification ───────────────────────────────────────────
+    // 예전엔 LLM이 다시 타이핑한 evidence_quote를 원문과 fuzzy 토큰 대조했는데,
+    // 이제 LLM은 번호만 고르므로 그 번호가 실존하는지만 확인하면 된다 — 확률적 대조가
+    // 아니라 "근거가 있다/없다"가 확정적으로 갈린다. 번호가 없거나 범위를 벗어나면
+    // 근거 없는 값으로 간주해 폐기한다(값은 있는데 근거를 못 대는 경우도 포함).
+    const evidenceSeg = (segId != null && segId >= 1 && segId <= segments.length)
+      ? segments[segId - 1]
+      : null;
+
+    if (!evidenceSeg) {
+      console.log(`\x1b[31m[EvidenceCheck] FAILED (근거 segmentId 없음/범위 밖) "${rawValue}" 폐기\x1b[0m`);
+      return { value: "-" };
+    }
+    console.log(`\x1b[32m[EvidenceCheck] PASSED (segment #${segId}): "${evidenceSeg.text.slice(0, 60)}"\x1b[0m`);
+
+    const evidenceQuote = evidenceSeg.text;
+
+    // ── 4.5 Sibling Guard ───────────────────────────────────────────────────
+    // 근거 구절이 이 제품명에는 없는 "형제 제품" 구분 토큰(예: "직배수", "Ultra")을
+    // 포함하면, 근거가 실존하는 원문이어도 그건 형제 제품 얘기다. 이제 근거 텍스트가
+    // 항상 진짜 원문이라(4번에서 보장), 이 체크의 신뢰도도 예전보다 높아졌다.
+    if (siblingExcludeTokens.length > 0) {
+      const quoteLower = evidenceQuote.toLowerCase();
+      const hitToken = siblingExcludeTokens.find((t) => quoteLower.includes(t.toLowerCase()));
+      if (hitToken) {
+        console.log(`\x1b[31m[SiblingGuard] 근거 구절에 형제 제품 토큰 "${hitToken}" 포함 → 폐기\x1b[0m`);
+        return { value: "-" };
+      }
+    }
+
+    // ── 5. Echo Guard ───────────────────────────────────────────────────────
+    // 추출된 값이 기준명/유의어를 그대로 되풀이한 것이면(예: 기준 "스마트 기능" → 값 "스마트 기능")
+    // 정보 가치가 없으므로 폐기한다. 어떤 기준명이 오든 동일하게 적용되는 범용 가드.
+    let finalValue = rawValue;
+    if (isLiteralEcho(rawValue, criterion, synonyms)) {
+      if (criterionType === "boolean") {
+        // 근거 텍스트는 있으나 구체 항목이 아님 → "존재 확인"으로 다운그레이드
+        console.log(`\x1b[33m[EchoGuard] "${rawValue}" == 기준/유의어 → "○"로 대체\x1b[0m`);
+        finalValue = "○";
+      } else {
+        console.log(`\x1b[31m[EchoGuard] "${rawValue}" == 기준/유의어 → 폐기\x1b[0m`);
+        return { value: "-" };
+      }
+    }
+
+    return { value: finalValue, sourceUrl: evidenceSeg.url, usedSnippet: evidenceQuote };
   } catch { return { value: "-" }; }
 }
 
@@ -842,40 +1014,34 @@ export async function judgeCell(
 export async function enrichCompTableCells(
   tableJson: CompTableJson,
   uiContext: string,
-  locale: string
+  locale: string,
+  prebuiltFullNameMap?: Map<string, string>
 ): Promise<void> {
   const columns = tableJson.props?.columns ?? [];
   const productCols = columns.filter(c => c.key !== "criterion");
   const allRows = tableJson.props?.rows ?? [];
 
-  // shortLabel → 전체 제품명 매핑 (uiContext의 "Name: ..." 파싱)
-  // find()는 첫 번째 매칭을 반환하므로 "EOS 6D"가 "EOS 6D Mark II"에 잘못 매핑되는 문제가 있었음.
-  // → 후보 전체를 수집하고 가장 짧은(= 가장 정확한) 이름을 선택하도록 수정.
-  const fullNameMap = new Map<string, string>();
-  {
+  // shortLabel → 전체 제품명 매핑
+  // prebuiltFullNameMap이 있으면 buildAndAssembleTable()에서 이미 정확히 만들었으므로 그대로 사용.
+  // 없으면 uiContext 파싱으로 복원 (하위 호환성 유지).
+  const fullNameMap = prebuiltFullNameMap ?? (() => {
+    const map = new Map<string, string>();
     const nameMatches = [...uiContext.matchAll(/Name:\s*(.+)/g)].map(m => m[1].trim());
     for (const col of productCols) {
       const labelWords = col.label.split(/\s+/).filter(w => w.length >= 2);
       if (labelWords.length === 0) continue;
-
-      // 레이블 단어를 모두 포함하는 후보 수집
       const candidates = nameMatches.filter(name => {
         const nameLower = name.toLowerCase();
         return labelWords.every(w => nameLower.includes(w.toLowerCase()));
       });
-
       if (candidates.length === 0) continue;
-
-      // 후보 중 가장 짧은 이름 선택 (불필요한 단어가 가장 적음 = 가장 정확한 매칭)
-      const matched = candidates.reduce((best, curr) =>
-        curr.length < best.length ? curr : best
-      );
-
-      fullNameMap.set(col.label, matched);
+      const matched = candidates.reduce((best, curr) => curr.length < best.length ? curr : best);
+      map.set(col.label, matched);
       const note = candidates.length > 1 ? ` (후보 ${candidates.length}개 중 최단 선택)` : "";
       console.log(`\x1b[90m[Data Agent] 제품명 매핑: "${col.label}" → "${matched}"${note}\x1b[0m`);
     }
-  }
+    return map;
+  })();
 
   // ── Pre-enrich 스니펫 캐시 ─────────────────────────────────────────────
   // enrichContextWithTavily가 uiContext에 주입한 WebSpecs를 파싱해
@@ -989,14 +1155,39 @@ export async function enrichCompTableCells(
   // spec-cache를 통한 공유 캐시 사용 (loadCellCache 대체)
   let cacheHits = 0;
 
-  // STEP 3: 유의어 생성 + Tavily 병렬 검색
+  // STEP 3: 정적 유의어 사전으로 synonymMap 구성 (LLM 호출 없음)
+  // spec-lookup.ts의 STATIC_SYNONYMS와 동일한 패턴을 data_agent 내부에서 인라인 적용
+  const STATIC_SYNONYMS_LOCAL: Record<string, string[]> = {
+    "소음":       ["소음 수준", "noise level", "작동음", "데시벨"],
+    "소음 수준":  ["소음 dB", "noise", "작동음", "데시벨"],
+    "흡입력":     ["흡입 파워", "파스칼", "suction power", "Pa"],
+    "배터리":     ["배터리 용량", "battery", "mAh", "충전 용량"],
+    "배터리 수명":["사용 시간", "작동 시간", "연속 사용", "최대 사용시간"],
+    "배터리용량": ["mAh", "배터리 크기", "battery capacity"],
+    "무게":       ["중량", "weight", "본체 무게"],
+    "충전시간":   ["충전 소요", "charge time", "완충"],
+    "사용시간":   ["배터리 지속", "runtime", "최대 사용"],
+    "물탱크":     ["물탱크 용량", "water tank", "탱크 용량"],
+    "먼지통":     ["집진통", "더스트빈", "dustbin", "집진 용량"],
+    "화소":       ["해상도", "megapixel", "MP"],
+    "손떨림보정": ["OIS", "이미지 안정화", "image stabilization"],
+    "방수":       ["생활방수", "IPX", "방진"],
+  };
+
+  function getStaticSynonymsLocal(criterion: string): string[] {
+    const clean = criterion.replace(/\s*\[[^\]]*\]/g, "").replace(/\s*\([^)]*\)/g, "").trim().toLowerCase();
+    for (const [key, syns] of Object.entries(STATIC_SYNONYMS_LOCAL)) {
+      if (clean.includes(key.toLowerCase()) || key.toLowerCase().includes(clean)) return syns;
+    }
+    return [];
+  }
+
   const uniqueCriteria = [...new Set(allCellsToVerify.map(c => c.rowCriterion))];
-  console.log(`\n\x1b[33m[Data Agent STEP 3-A] 유의어 생성: ${JSON.stringify(uniqueCriteria)}\x1b[0m`);
-  const s3a = Date.now();
-  const synonymMap = await expandCriterionSynonyms(uniqueCriteria);
-  console.log(`\x1b[33m[Data Agent STEP 3-A] 완료 (${Date.now() - s3a}ms)\x1b[0m`);
-  for (const [crit, syns] of Object.entries(synonymMap))
-    console.log(`         "${crit}" → [${(syns as string[]).join(", ")}]`);
+  const synonymMap: Record<string, string[]> = {};
+  for (const c of uniqueCriteria) {
+    synonymMap[c] = getStaticSynonymsLocal(c);
+  }
+  console.log(`\x1b[33m[Data Agent STEP 3-A] 정적 유의어 사전 적용 (LLM 없음):${uniqueCriteria.map(c => `\n         "${c}" → [${synonymMap[c].join(", ")}]`).join("")}\x1b[0m`);
 
   // Tavily 검색 전 캐시 + Pre-enrich 존재 여부 확인
   const rows = tableJson.props?.rows ?? [];
@@ -1042,13 +1233,20 @@ export async function enrichCompTableCells(
       needsTavily.map(async ({ rowCriterion, productLabel }) => {
         const key = `${productLabel}__${rowCriterion}`;
         if (searchResultMap.has(key)) return;
+        // 1차부터 유의어 + 사양표 키워드를 포함한 스마트 쿼리로 advanced 검색
+        // (STEP 4.5/4.7 재검색이 불필요해질 만큼 충분히 강한 쿼리를 처음부터 사용)
+        const cleanedCriterion = rowCriterion.replace(/\s*\[[^\]]*\]/g, "").replace(/\s*\([^)]*\)/g, "").trim();
         const synonyms = synonymMap[rowCriterion] ?? [];
-        const cleanCriterion = rowCriterion.replace(/\s*\([^)]*\)/g, "").trim();
-        const terms = [cleanCriterion, ...synonyms.slice(0, 2)].join(" ");
+        const terms = [cleanedCriterion, ...synonyms.slice(0, 2), "제원 사양표"].join(" ");
         const fullName = fullNameMap.get(productLabel) ?? productLabel;
-        const results = await tavilySearch(`${fullName} ${terms}`);
+        const results = await tavilySearch(`${fullName} ${terms}`, "advanced");
         searchResultMap.set(key, results);
-        console.log(`         🔍 "${fullName} × ${cleanCriterion}" → ${results.length}개 결과`);
+        // ── Tavily 원본 결과 상세 로그 ──────────────────────────────────
+        console.log(`         🔍 "${fullName} × ${cleanedCriterion}" → ${results.length}개 결과`);
+        results.forEach((r, idx) => {
+          console.log(`            [${idx + 1}] score=${r.score?.toFixed(2) ?? '?'} | ${r.url}`);
+          console.log(`                 ${r.content.replace(/\s+/g, ' ').slice(0, 150)}...`);
+        });
       })
     );
     console.log(`\x1b[33m[Data Agent STEP 3-B] 완료 (${Date.now() - s3b}ms)\x1b[0m`);
@@ -1081,6 +1279,16 @@ export async function enrichCompTableCells(
     await Promise.all(
       needsTavily.map(async ({ rowCriterion, colKey, productLabel }) => {
         const snippets = searchResultMap.get(`${productLabel}__${rowCriterion}`) ?? [];
+        // judgeCell에 실제로 넘어가는 키워드 창(300자)을 미리 표시
+        if (snippets.length > 0) {
+          const kws = [rowCriterion, ...(synonymMap[rowCriterion] ?? []), productLabel];
+          console.log(`\n         \x1b[90m[judgeCell 입력] "${productLabel}" × "${rowCriterion}"\x1b[0m`);
+          snippets.slice(0, 3).forEach((r, idx) => {
+            const window = extractKeywordWindow(r.content, kws, 300);
+            console.log(`            [${idx + 1}] ${r.url}`);
+            console.log(`                 ${window.replace(/\s+/g, ' ').slice(0, 200)}`);
+          });
+        }
         const { value, sourceUrl, usedSnippet } = await judgeCell(
           productLabel, rowCriterion, snippets, locale,
           rowTypeMap.get(rowCriterion) ?? detectCriterionType(rowCriterion),
@@ -1100,75 +1308,7 @@ export async function enrichCompTableCells(
     );
     console.log(`\x1b[33m[Data Agent STEP 4] 완료 (${Date.now() - s4}ms)\x1b[0m`);
 
-    // STEP 4.5: 재검색 (advanced + 역순 유의어)
-    const stillMissing = needsTavily.filter(({ rowCriterion, colKey }) => {
-      const targetRow = (tableJson.props?.rows ?? []).find(r => r["criterion"] === rowCriterion);
-      return !targetRow || String((targetRow as Record<string, string>)[colKey] ?? "-") === "-";
-    });
-    if (stillMissing.length > 0) {
-      console.log(`\n\x1b[33m[Data Agent STEP 4.5] 재검색 대상: ${stillMissing.length}개 셀...\x1b[0m`);
-      const s45 = Date.now();
-      await Promise.all(
-        stillMissing.map(async ({ rowCriterion, colKey, productLabel }) => {
-          const synonyms: string[] = synonymMap[rowCriterion] ?? [];
-          const cleanCriterion = rowCriterion.replace(/\s*\([^)]*\)/g, "").trim();
-          const altTerms = [...synonyms.slice(0, 2), cleanCriterion].join(" ");
-          const fullName = fullNameMap.get(productLabel) ?? productLabel;
-          const altResults = await tavilySearch(`${fullName} ${altTerms} 스펙`, "advanced");
-          console.log(`         🔄 재검색 "${fullName} × ${cleanCriterion}" → ${altResults.length}개 결과`);
-          const { value, sourceUrl, usedSnippet } = await judgeCell(
-            productLabel, rowCriterion, altResults, locale,
-            rowTypeMap.get(rowCriterion) ?? detectCriterionType(rowCriterion),
-            synonyms
-          );
-          if (value !== "-") {
-            const targetRow = (tableJson.props?.rows ?? []).find(r => r["criterion"] === rowCriterion);
-            if (targetRow) (targetRow as Record<string, string>)[colKey] = value;
-            setSpec(fullName, rowCriterion, value, "tavily", sourceUrl, usedSnippet);
-            console.log(`         ${value === "○" ? "\x1b[32m○\x1b[0m" : "\x1b[31mX\x1b[0m"} [재검색 성공] ${productLabel} × "${rowCriterion}"${sourceUrl ? ` ← ${sourceUrl.slice(0, 60)}` : ""}`);
-            if (usedSnippet) console.log(`            \x1b[90m📄 "${usedSnippet}"\x1b[0m`);
-          } else {
-            console.log(`         \x1b[90m- [재검색도 미확인] ${productLabel} × "${rowCriterion}"\x1b[0m`);
-          }
-        })
-      );
-      console.log(`\x1b[33m[Data Agent STEP 4.5] 완료 (${Date.now() - s45}ms)\x1b[0m`);
-    }
-
-    // STEP 4.7: 3샨 재검색 (full name + 기준명 단독 + "제원 사양표")
-    const stillMissing2 = needsTavily.filter(({ rowCriterion, colKey }) => {
-      const targetRow = (tableJson.props?.rows ?? []).find(r => r["criterion"] === rowCriterion);
-      return !targetRow || String((targetRow as Record<string, string>)[colKey] ?? "-") === "-";
-    });
-    if (stillMissing2.length > 0) {
-      console.log(`\n\x1b[33m[Data Agent STEP 4.7] 3샨 재검색 대상: ${stillMissing2.length}개 셀...\x1b[0m`);
-      const s47 = Date.now();
-      await Promise.all(
-        stillMissing2.map(async ({ rowCriterion, colKey, productLabel }) => {
-          const synonyms: string[] = synonymMap[rowCriterion] ?? [];
-          const cleanCriterion = rowCriterion.replace(/\s*\([^)]*\)/g, "").trim();
-          const fullName = fullNameMap.get(productLabel) ?? productLabel;
-          const altResults = await tavilySearch(`${fullName} ${cleanCriterion} 제원 사양표`, "advanced");
-          console.log(`         🔁 3샨 재검색 "${fullName} × ${cleanCriterion}" → ${altResults.length}개 결과`);
-          const { value, sourceUrl, usedSnippet } = await judgeCell(
-            productLabel, rowCriterion, altResults, locale,
-            rowTypeMap.get(rowCriterion) ?? detectCriterionType(rowCriterion),
-            synonyms
-          );
-          if (value !== "-") {
-            const targetRow = (tableJson.props?.rows ?? []).find(r => r["criterion"] === rowCriterion);
-            if (targetRow) (targetRow as Record<string, string>)[colKey] = value;
-            console.log(`         ${value === "○" ? "\x1b[32m○\x1b[0m" : "\x1b[31mX\x1b[0m"} [3차 성공] ${productLabel} × "${rowCriterion}"${sourceUrl ? ` ← ${sourceUrl.slice(0, 60)}` : ""}`);
-            if (usedSnippet) console.log(`            \x1b[90m📄 "${usedSnippet}"\x1b[0m`);
-          } else {
-            console.log(`         \x1b[90m- [3차도 미확인] ${productLabel} × "${rowCriterion}"\x1b[0m`);
-          }
-        })
-      );
-      console.log(`\x1b[33m[Data Agent STEP 4.7] 완료 (${Date.now() - s47}ms)\x1b[0m`);
-    }
-
-    // spec-cache는 setSpec 호출 시 자동 저장됨 (saveCellCache 불필요)
+    // spec-cache는 setSpec 호출 시 자동 저장됨
     console.log(`\x1b[36m[Cache] spec-cache 저장 완료\x1b[0m`);
   }
 }
@@ -1237,6 +1377,39 @@ export function findProductInLocalDB(productCategory: string, name: string): str
   }
 }
 
+/**
+ * 로컬 DB에서 productName과 이름이 70% 이상 겹치는 "형제 제품"(같은 라인업의 다른 변형,
+ * 예: "...Slim" vs "...Slim 직배수")을 찾아, 그 형제 제품에만 있는 구분 토큰을 반환한다.
+ * 브랜드/카테고리별 접미어("직배수", "Ultra" 등)를 하드코딩하지 않고 DB에 실제로 존재하는
+ * 이름 차이를 계산하므로 카테고리에 무관하게 동작한다.
+ */
+export function getSiblingExcludeTokens(productName: string, category: string): string[] {
+  const excludeTokens = new Set<string>();
+  const fileName = CATEGORY_FILE_MAP[category];
+  if (!fileName) return [];
+
+  try {
+    const filePath = path.join(process.cwd(), "data", fileName);
+    const allProducts: { name: string }[] = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    const targetTokens = new Set(productName.split(/\s+/).filter((w) => w.length >= 2));
+
+    for (const p of allProducts) {
+      if (!p.name || p.name === productName) continue;
+      const pTokens = p.name.split(/\s+/).filter((w) => w.length >= 2);
+      if (pTokens.length === 0) continue;
+      const overlap = pTokens.filter((t) => targetTokens.has(t)).length;
+      const overlapRatio = overlap / Math.max(pTokens.length, targetTokens.size);
+      if (overlapRatio >= 0.7) {
+        pTokens.filter((t) => !targetTokens.has(t)).forEach((t) => excludeTokens.add(t));
+      }
+    }
+  } catch (e) {
+    console.warn(`[getSiblingExcludeTokens] DB 읽기 실패:`, e);
+  }
+
+  return [...excludeTokens];
+}
+
 // ---------------------------------------------------------------------------
 // Tavily 단순 스니펫 검색 — render-to-comp-table.ts에서 이동
 // ---------------------------------------------------------------------------
@@ -1274,119 +1447,9 @@ export async function tavilySearchSnippet(
   }
 }
 
-// ---------------------------------------------------------------------------
-// 컨텍스트 사전 보강 — render-to-comp-table.ts에서 이동
-// Claude 호출 전에 미확인 기준을 Tavily 웹 검색으로 채움
-// ---------------------------------------------------------------------------
-
-export interface WebResultForContext {
-  criterion: string;
-  url: string;
-  snippet: string;
-}
-
-export interface ProductLogForContext {
-  name: string;
-  localSpecs: string[];
-  coveredCriteria: string[];
-  missingCriteria: string[];
-  webResults: WebResultForContext[];
-}
-
-export async function enrichContextWithTavily(
-  contextSummary: string,
-  decisionCriteria: string[]
-): Promise<{ enriched: string; productLogs: ProductLogForContext[] }> {
-  const productLogs: ProductLogForContext[] = [];
-
-  if (!contextSummary.trim() || decisionCriteria.length === 0) {
-    return { enriched: contextSummary, productLogs };
-  }
-
-  const parts = contextSummary.split(/(\[Product \d+\])/);
-  const blocks: Array<{ header: string; body: string }> = [];
-
-  for (let i = 0; i < parts.length; i++) {
-    if (/^\[Product \d+\]$/.test(parts[i].trim())) {
-      blocks.push({ header: parts[i], body: parts[i + 1] ?? "" });
-      i++;
-    }
-  }
-
-  if (blocks.length === 0) return { enriched: contextSummary, productLogs };
-
-  const enrichedBlocks = await Promise.all(
-    blocks.map(async ({ header, body }) => {
-      const nameMatch = body.match(/Name:\s*(.+)/);
-      if (!nameMatch) return header + body;
-      const productName = nameMatch[1].trim();
-
-      const specsMatch = body.match(/Specs:\s*(.+)/);
-      const localSpecs = specsMatch?.[1]?.split(" / ").map(s => s.trim()).filter(Boolean) ?? [];
-
-      // 스펙 키만 추출 ("손떨림보정: 5축광학식" → "손떨림보정")
-      const specKeys = localSpecs.map(s => s.split(":")[0].trim().toLowerCase());
-
-      // 기준명에서 [중요/보통/낮음]과 괄호 설명 제거 후 키워드 추출
-      function cleanCriterion(c: string): string {
-        return c.replace(/\s*\[.*?\]/g, "").replace(/\s*\(.*?\)/g, "").trim().toLowerCase();
-      }
-
-      // 스펙 키 기반 커버리지 판단:
-      // 기준 키워드가 스펙 키 중 하나라도 포함/역포함되면 covered
-      // (전체 스펙 텍스트가 아닌 키만 보므로 오탐 방지)
-      function isCoveredBySpecKey(criterion: string): boolean {
-        const clean = cleanCriterion(criterion);
-        const keywords = clean.split(/\s+/).filter(w => w.length >= 2);
-        return specKeys.some(key =>
-          keywords.some(kw => key.includes(kw) || kw.includes(key))
-        );
-      }
-
-      const coveredCriteria: string[] = [];
-      const missingCriteria: string[] = [];
-
-      decisionCriteria.forEach((criterion) => {
-        if (isCoveredBySpecKey(criterion)) coveredCriteria.push(criterion);
-        else missingCriteria.push(criterion);
-      });
-
-      console.log(`\n\x1b[36m[Spec Coverage] "${productName}"\x1b[0m`);
-      console.log(`  Danawa 스펙 (${localSpecs.length}개): ${localSpecs.slice(0, 5).join(" / ")}${localSpecs.length > 5 ? " ..." : ""}`);
-      coveredCriteria.forEach(c => console.log(`  ✅ "${c}" → DB에서 커버`));
-      missingCriteria.forEach(c => console.log(`  ❌ "${c}" → DB 미커버 (웹 검색 필요)`));
-
-      if (missingCriteria.length === 0) {
-        productLogs.push({ name: productName, localSpecs, coveredCriteria, missingCriteria, webResults: [] });
-        return header + body;
-      }
-
-      const webResultRaw = await Promise.all(
-        missingCriteria.slice(0, 5).map(async (criterion) => {
-          const query = `${productName} ${criterion}`;
-          const result = await tavilySearchSnippet(query);
-          if (result) {
-            console.log(`   🔍 "${query}" → ${result.snippet.slice(0, 60)}...`);
-            console.log(`       출처: ${result.url}`);
-            return { criterion, url: result.url, snippet: result.snippet };
-          }
-          console.log(`   🔍 "${query}" → 결과 없음`);
-          return null;
-        })
-      );
-
-      const webResults = webResultRaw.filter(Boolean) as WebResultForContext[];
-      productLogs.push({ name: productName, localSpecs, coveredCriteria, missingCriteria, webResults });
-
-      if (webResults.length === 0) return header + body;
-
-      const webSpecText = webResults.map(w => `${w.criterion}: ${w.snippet}`).join(" | ");
-      return header + body + `\nWebSpecs (from web search): ${webSpecText}`;
-    })
-  );
-
-  return { enriched: enrichedBlocks.join(""), productLogs };
-}
+// enrichContextWithTavily는 lib/backend/services/spec-lookup.ts로 이동했다 —
+// lookupProductSpec()을 재사용하도록 다시 짜면서, data_agent.ts에 두면
+// spec-lookup.ts(이 파일을 import함)와 순환 참조가 생기기 때문.
 
 // ---------------------------------------------------------------------------
 // AI Reranker — render-to-option-list.ts에서 이동
@@ -1421,7 +1484,7 @@ export async function reRankByAI(
     : `사용자 요청: ${userQuery}`;
 
   const { text } = await generateText({
-    model: anthropic("claude-haiku-4-5"),
+    model: openai("gpt-4o"),
     system: `You are a qualitative product ranker. You receive a list of pre-filtered products from a Korean price comparison site.
 All products have already passed hard filters (price, brand, numeric specs). Do NOT re-check or re-verify those conditions.
 Your ONLY job: select the best-matching products by qualitative fit (use case, lifestyle, feature presence).
@@ -1440,7 +1503,7 @@ ${productList}
 
 Output index array only:`,
     temperature: 0,
-    maxTokens: 128,  // 인덱스 배열만 반환 — 6개 기준 ~20토큰
+    maxOutputTokens: 128,  // 인덱스 배열만 반환 — 6개 기준 ~20토큰
   });
 
   // 인덱스 배열 파싱: [2, 0, 5] 또는 [-1]
@@ -1513,21 +1576,6 @@ function findCriterionWeight(rowLabel: string, criteriaList: string[]): number {
   return 0.3;
 }
 
-function extractNumericValue(val: string): number | null {
-  const m = val.replace(/,/g, "").match(/(\d+(?:\.\d+)?)/);
-  return m ? parseFloat(m[1]) : null;
-}
-
-function isLowerBetterCriterion(crit: string): boolean {
-  return /소음|무게|충전\s*시간|두께|noise|weight|dB/i.test(crit);
-}
-
-function scoreCellValue(val: string): number {
-  if (!val || val === "-") return 0.5;
-  if (val === "○") return 1.0;
-  if (val === "X") return 0.0;
-  return 0.6;
-}
 
 export async function computeRankingAndReasoning(
   tableJson: CompTableJson,
@@ -1535,65 +1583,19 @@ export async function computeRankingAndReasoning(
   locale: string
 ): Promise<{ reasoning: string }> {
   const finalRows = tableJson.props?.rows ?? [];
-  const rankRow = finalRows.find(r => r["criterion"] === "순위" || r["criterion"] === "Rank");
+  const hasRankRow = finalRows.some(r => r["criterion"] === "순위" || r["criterion"] === "Rank");
   const productCols = (tableJson.props?.columns ?? []).filter(c => c.key !== "criterion");
 
-  if (!rankRow || productCols.length === 0) return { reasoning: "" };
+  if (!hasRankRow || productCols.length === 0) return { reasoning: "" };
 
-  const wsmScores: Record<string, number> = {};
-  const weightSums: Record<string, number> = {};
-  for (const col of productCols) { wsmScores[col.key] = 0; weightSums[col.key] = 0; }
-
-  for (const row of finalRows) {
-    const criterion = row["criterion"] ?? "";
-    if (!criterion || criterion === "순위" || criterion === "Rank") continue;
-    const w = findCriterionWeight(criterion, decisionCriteria);
-
-    const nums: Record<string, number> = {};
-    for (const col of productCols) {
-      const n = extractNumericValue(String(row[col.key] ?? "-"));
-      if (n !== null) nums[col.key] = n;
-    }
-    const numVals = Object.values(nums);
-    const numMin = numVals.length ? Math.min(...numVals) : 0;
-    const numMax = numVals.length ? Math.max(...numVals) : 0;
-    const hasVariance = Object.keys(nums).length >= 2 && numMin !== numMax;
-    const lower = isLowerBetterCriterion(criterion);
-
-    for (const col of productCols) {
-      const cellVal = String(row[col.key] ?? "-");
-      let s: number;
-      if (hasVariance && col.key in nums) {
-        const norm = (nums[col.key] - numMin) / (numMax - numMin);
-        s = 0.2 + (lower ? 1 - norm : norm) * 0.8;
-      } else {
-        s = scoreCellValue(cellVal);
-      }
-      wsmScores[col.key] += s * w;
-      weightSums[col.key] += w;
-    }
-  }
-
-  for (const col of productCols) {
-    wsmScores[col.key] = weightSums[col.key] > 0
-      ? wsmScores[col.key] / weightSums[col.key] : 0;
-  }
-
-  const sorted = Object.entries(wsmScores).sort((a, b) => b[1] - a[1]);
-
-  // 공동 순위 처리
-  let rankIdx = 1;
-  let i = 0;
-  while (i < sorted.length) {
-    const currentScore = sorted[i][1];
-    let j = i;
-    while (j < sorted.length && sorted[j][1] === currentScore) j++;
-    const tiedCount = j - i;
-    const label = tiedCount > 1 ? `공동 ${rankIdx}위` : `${rankIdx}위`;
-    for (let k = i; k < j; k++) { rankRow[sorted[k][0]] = label; }
-    rankIdx += tiedCount;
-    i = j;
-  }
+  // WSM 가중합 순위 계산은 프론트(app/page.tsx의 즉시 재계산)와 로직이 갈라지지 않도록
+  // lib/shared/wsm-ranking.ts의 공용 함수를 쓴다. 가중치 소스만 여기(문자열 "[중요]" 태그
+  // 파싱)와 프론트(구조화된 criteria 배열)가 서로 달라 getWeight로 어댑터를 넘긴다.
+  const rankedRows = computeWsmRanking(finalRows, tableJson.props?.columns ?? [], (criterion) =>
+    findCriterionWeight(criterion, decisionCriteria)
+  );
+  tableJson.props!.rows = rankedRows; // 호출자들이 tableJson을 그대로 참조하므로 in-place로 반영
+  const rankRow = rankedRows.find(r => r["criterion"] === "순위" || r["criterion"] === "Rank")!;
 
   console.log(`\x1b[32m\n[STEP 5] WSM 순위 결정 (중요도 가중합):`);
   const actualRankLines = productCols.map(col => {
@@ -1617,7 +1619,7 @@ export async function computeRankingAndReasoning(
 
   try {
     const { text: reasoning } = await generateText({
-      model: anthropic("claude-haiku-4-5"),
+      model: openai("gpt-4o"),
       system: `You are a shopping advisor. Your ONLY job is to explain WHY one product ranked higher than another, using EXCLUSIVELY the data in the comparison table below.
 
 ABSOLUTE RULES:
@@ -1644,3 +1646,129 @@ Based solely on the table values above, explain why the top-ranked product score
     return { reasoning: "" };
   }
 }
+
+
+// ---------------------------------------------------------------------------
+// ComparisonTable Pipeline Orchestrator  (리팩토링: 9단계 → 3단계)
+//
+// STEP 1: buildAndAssembleTable()   — 코드로 구조 생성 + DB 값 즉시 주입 (LLM 없음, ~0ms)
+// STEP 2: enrichCompTableCells()    — DB 미커버 셀 → Tavily + LLM 판단 (~4-5s)
+// STEP 3: computeRankingAndReasoning() — WSM 순위 + 이유 (~1s)
+// ---------------------------------------------------------------------------
+
+import { currentLocale as _currentLocale } from "../tools/sidebar-store";
+
+/**
+ * 제품명을 열 헤더 표시용으로 정리한다 (접미사 제거만, 잘라내지 않음).
+ * 검색(Tavily)에는 사용하지 않음 — 검색은 항상 uiContext의 전체 이름을 사용.
+ */
+function shortenProductName(name: string): string {
+  const SUFFIX_STRIP = /\s*(직배수|직충전|업그레이드|에디션|한정판|특별판|리미티드|스페셜)\s*$/g;
+  return name.replace(SUFFIX_STRIP, "").trim();
+}
+
+/**
+ * uiContext를 파싱해서 CompTable JSON을 코드로 생성하고
+ * DB에서 확인 가능한 셀 값을 즉시 주입한다.
+ * 이전의 STEP 0 + STEP 1(LLM) + STEP 1 post + STEP 1.5를 단일 함수로 통합.
+ *
+ * @returns { tableJson, fullNameMap }
+ *   tableJson  — 완성된 구조 + DB 채워진 셀 (미확인 셀은 "-")
+ *   fullNameMap — short label → full name 매핑 (enrichCompTableCells에서 재사용)
+ */
+function buildAndAssembleTable(
+  uiContext: string,
+  decisionCriteria: string[],
+  locale: string
+): { tableJson: CompTableJson; fullNameMap: Map<string, string> } {
+  // 1. [Product N] 블록 파싱 —————————————————————————————————————————————
+  const blocks = uiContext.split(/\[Product \d+\]/).filter(b => b.trim());
+  const products = blocks.map((block, idx) => {
+    const name     = block.match(/Name:\s*(.+)/)?.[1].trim() ?? `Product ${idx + 1}`;
+    const imageUrl = block.match(/Image:\s*(\S+)/)?.[1]?.trim() ?? "";
+    const specs    = block.match(/Specs:\s*(.+)/)?.[1]?.split(" / ").map(s => s.trim()).filter(Boolean) ?? [];
+    return { key: `prod_${idx}`, name, imageUrl, specs };
+  });
+
+  // 2. short label → full name 매핑 (검색용) ——————————————————————————————
+  const fullNameMap = new Map<string, string>();
+  products.forEach(p => {
+    const label = shortenProductName(p.name);
+    fullNameMap.set(label, p.name);
+    console.log(`\x1b[90m[Build] 제품명 매핑: "${label}" → "${p.name}"\x1b[0m`);
+  });
+
+  // 3. columns 구성 ————————————————————————————————————————————————————————
+  const columns = [
+    { key: "criterion", label: locale === "ko" ? "비교 항목" : "Criteria" },
+    ...products.map(p => ({
+      key:      p.key,
+      label:    shortenProductName(p.name),
+      imageUrl: p.imageUrl,
+    })),
+  ];
+
+  // 4. rows 구성 — 순위 행 + criteria 행 (DB 값 즉시 주입) ——————————————————
+  const prodKeys = products.map(p => p.key);
+  const emptyRow = Object.fromEntries(prodKeys.map(k => [k, "-"]));
+
+  const rows: Array<Record<string, string>> = [
+    // 순위 행 (항상 "-", WSM 계산 후 STEP 3에서 채워짐)
+    { criterion: locale === "ko" ? "순위" : "Rank", ...emptyRow },
+    // criteria 행
+    ...decisionCriteria.map(criterion => {
+      const label = cleanLabel(criterion);   // 브라켓/괄호 제거
+      const cells = Object.fromEntries(
+        products.map((p, i) => [p.key, lookupCellValue(label, p.specs)])
+      );
+      return { criterion: label, ...cells };
+    }),
+  ];
+
+  // 5. DB 주입 결과 로깅 ——————————————————————————————————————————————————
+  console.log(`\x1b[33m[STEP 1] 구조 생성 + DB 값 주입 완료 (${decisionCriteria.length}개 기준 × ${products.length}개 제품):\x1b[0m`);
+  rows.filter(r => r.criterion !== "순위" && r.criterion !== "Rank").forEach(r => {
+    const vals = prodKeys.map(k => `${k}:${r[k]}`).join(" | ");
+    console.log(`         "${r.criterion}" → ${vals}`);
+  });
+
+  const tableJson: CompTableJson = {
+    type: "Table",
+    props: { _rankReasoning: "", columns, rows },
+  };
+
+  return { tableJson, fullNameMap };
+}
+
+export async function orchestrateCompTablePipeline(
+  uiContext: string,
+  decisionCriteria: string[],
+  savedItems: string[],
+  currentRows: string[] = []
+): Promise<string> {
+  const locale = _currentLocale;
+
+  const t0 = Date.now();
+  console.log("\n\x1b[35m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m");
+  console.log("\x1b[35m [CompTable Pipeline Start] (코드 구조 생성 + Tavily + WSM)\x1b[0m");
+  console.log("\x1b[35m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m\n");
+
+  // ── STEP 1: 코드로 구조 생성 + DB 값 즉시 주입 (LLM 없음) ───────────────
+  console.log("\x1b[33m[STEP 1] 코드로 테이블 구조 생성 + DB 값 즉시 주입...\x1b[0m");
+  const { tableJson, fullNameMap } = buildAndAssembleTable(uiContext, decisionCriteria, locale);
+
+  // ── STEP 2: DB 미커버 셀 → Tavily + LLM 판단 ────────────────────────────
+  await enrichCompTableCells(tableJson, uiContext, locale, fullNameMap);
+
+  // ── STEP 3: WSM 순위 결정 + 이유 생성 ────────────────────────────────────
+  {
+    const { reasoning } = await computeRankingAndReasoning(tableJson, decisionCriteria, locale);
+    if (tableJson.props && reasoning) {
+      (tableJson.props as any)._rankReasoning = reasoning;
+    }
+  }
+
+  console.log(`\n\x1b[32m━━ Pipeline complete (${Date.now() - t0}ms) ━━\x1b[0m\n`);
+  return JSON.stringify(tableJson);
+}
+

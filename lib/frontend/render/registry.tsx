@@ -65,7 +65,7 @@ function HeartButton({
 
 const SPEC_COLLAPSED_COUNT = 4;
 
-function SpecChips({ specs, highlightFirst = false }: { specs: string[], highlightFirst?: boolean }) {
+function SpecChips({ specs }: { specs: string[] }) {
   const [expanded, setExpanded] = useState(false);
   if (!Array.isArray(specs) || specs.length === 0) return null;
   const visible = expanded ? specs : specs.slice(0, SPEC_COLLAPSED_COUNT);
@@ -76,11 +76,7 @@ function SpecChips({ specs, highlightFirst = false }: { specs: string[], highlig
       {visible.map((spec: string, i: number) => (
         <span
           key={i}
-          className={`text-[9px] text-[#666666] bg-[#F5F5F5] px-1.5 py-0.5 rounded-full whitespace-nowrap ${
-            i === 0 && highlightFirst
-              ? "animate-in fade-in zoom-in-95 duration-700"
-              : ""
-          }`}
+          className="text-[9px] text-[#666666] bg-[#F5F5F5] px-1.5 py-0.5 rounded-full whitespace-nowrap"
         >
           {spec}
         </span>
@@ -110,7 +106,7 @@ export const manualRegistry: Record<string, any> = {
     const message: string = p.message || "요청하신 기준에 해당하는 제품 데이터가 현재 DB에 없습니다.";
     const skipped: string[] = p.skippedCriteria || [];
     return (
-      <div className="flex flex-col gap-3 w-full rounded-xl border border-slate-200 bg-white px-4 py-4">
+      <div className="flex flex-col gap-3 w-full rounded-xl border border-slate-200 bg-white px-4 py-4 animate-highlight-wrap">
         <div className="flex items-center gap-2">
           <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
           <span className="text-[13px] font-semibold text-slate-700">DB에서 찾을 수 없는 기준이에요</span>
@@ -156,7 +152,7 @@ export const manualRegistry: Record<string, any> = {
     );
 
     return (
-      <div className="flex flex-col gap-2 w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5">
+      <div className="flex flex-col gap-2 w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 animate-highlight-wrap">
         <div className="flex items-center gap-1.5">
           <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
           <span className="text-[11px] font-semibold text-slate-600">일부 기준이 반영되지 않았어요</span>
@@ -181,7 +177,7 @@ export const manualRegistry: Record<string, any> = {
     if (!whyText) return null;
 
     return (
-      <div className="flex flex-col border border-slate-200 rounded-xl overflow-hidden w-full bg-white px-3.5 pt-3 pb-3 gap-2">
+      <div className="flex flex-col border border-slate-200 rounded-xl overflow-hidden w-full bg-white px-3.5 pt-3 pb-3 gap-2 animate-highlight-wrap">
         {/* Title row */}
         <div className="flex items-center gap-2 min-w-0">
           <AlertTriangle className="w-3.5 h-3.5 text-slate-400 shrink-0" />
@@ -213,7 +209,7 @@ export const manualRegistry: Record<string, any> = {
     if (labels.length === 0) return null;
 
     return (
-      <div className={`flex flex-col gap-2 p-3 rounded-[10px] bg-white${skipAnimation ? '' : ' animate-in fade-in slide-in-from-top-2 duration-300'}`}>
+      <div className={`flex flex-col gap-2 p-3 rounded-[10px] bg-white${skipAnimation ? '' : ' animate-highlight-wrap'}`}>
         <div className="flex items-center gap-1.5 mb-1">
           <span className="text-[13.5px] font-semibold text-slate-800">아직 탐색하지 않은 영역</span>
         </div>
@@ -261,6 +257,10 @@ export const manualRegistry: Record<string, any> = {
       // Track which categories and chips are currently animating (brand new in the current turn)
       const [animatingKeys, setAnimatingKeys] = useState<Set<string>>(new Set());
 
+      // 카테고리 DOM 노드 ref (label 기준) — 새로 생긴 카테고리/항목이 화면 밖에 있어도
+      // 자동으로 스크롤해서 보여주기 위함
+      const categoryElRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
       // categories 배열은 매 렌더마다 새 참조가 생성되므로 JSON 직렬화로 실제 내용 변화만 감지
       const categoriesKey = JSON.stringify(categories);
 
@@ -272,15 +272,24 @@ export const manualRegistry: Record<string, any> = {
           return;
         }
 
+        // 맨 처음 카테고리들이 한꺼번에 채워지는 시점(globalSeenCats가 비어있었음)에는
+        // "새로 추가됨"으로 보지 않는다 — 그 경우 스크롤을 맨 밑으로 튀기는 게 아니라
+        // 패널을 처음 열었을 때처럼 맨 위에서 시작해야 한다.
+        const isFirstPopulation = globalSeenCats.size === 0;
+
         const newKeys = new Set<string>();
         let hasNew = false;
         const newImportantCatIndices = new Set<number>();
+        // 새로 생긴 카테고리/항목이 있으면 그 위치로 자동 스크롤한다 — 새 카테고리가 있으면
+        // 그걸 우선하고, 없으면(기존 카테고리에 항목만 추가된 경우) 그 항목이 속한 카테고리로.
+        let scrollTargetLabel: string | null = null;
 
         categories.forEach((c) => {
           if (!globalSeenCats.has(c.label)) {
             newKeys.add(`cat::${c.label}`);
             globalSeenCats.add(c.label);
             hasNew = true;
+            scrollTargetLabel = c.label;
           }
           (Array.isArray(c.items) ? c.items : []).forEach((i: any) => {
             const chipKey = `${c.label}::${i.name}`;
@@ -288,7 +297,8 @@ export const manualRegistry: Record<string, any> = {
               newKeys.add(`chip::${chipKey}`);
               globalSeenChips.add(chipKey);
               hasNew = true;
-              
+              if (!scrollTargetLabel) scrollTargetLabel = c.label;
+
               if (i.important) {
                 // Find index of this category in normalCategories to expand it
                 const normalCategoriesArr = categories.filter((cat: any) => cat.items && cat.items.length > 0);
@@ -316,6 +326,14 @@ export const manualRegistry: Record<string, any> = {
               next[idx] = false; // force open
             });
             return next;
+          });
+        }
+
+        if (!isFirstPopulation && scrollTargetLabel) {
+          const label = scrollTargetLabel;
+          // DOM에 새 카테고리/칩이 그려진 뒤에 스크롤해야 하므로 다음 프레임으로 미룬다
+          requestAnimationFrame(() => {
+            categoryElRefs.current[label]?.scrollIntoView({ behavior: "smooth", block: "nearest" });
           });
         }
       // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -374,10 +392,10 @@ export const manualRegistry: Record<string, any> = {
                   return (
                     <div
                       key={i}
-                      className={`flex items-center gap-1.5 rounded-full px-3 h-[32px] border border-dashed border-slate-300 bg-slate-50 hover:bg-slate-100 transition-colors cursor-pointer active:scale-[0.98]${isCatNew ? " animate-chip-in" : ""}`}
+                      className={`flex items-center gap-1.5 rounded-full px-3 h-[32px] border border-dashed border-slate-300 bg-slate-50 hover:bg-slate-100 transition-colors cursor-pointer active:scale-[0.98]${isCatNew ? " animate-highlight-wrap" : ""}`}
                       style={isCatNew ? { animationDelay: `${i * 0.05}s` } : undefined}
-                      onAnimationEnd={() => {
-                        if (isCatNew) {
+                      onAnimationEnd={(e) => {
+                        if (isCatNew && e.animationName === 'highlight-wrap') {
                           setAnimatingKeys(prev => {
                             const next = new Set(prev);
                             next.delete(`cat::${cat.label}`);
@@ -408,10 +426,10 @@ export const manualRegistry: Record<string, any> = {
             return (
               <div
                 key={ci}
-                className={`border border-slate-200 rounded-[8px]${isCatNew ? " animate-accordion-in" : ""}`}
+                className={`border border-slate-200 rounded-[8px]${isCatNew ? " animate-highlight-wrap" : ""}`}
                 style={isCatNew ? { animationDelay: `${ci * 0.07}s` } : undefined}
-                onAnimationEnd={() => {
-                  if (isCatNew) {
+                onAnimationEnd={(e) => {
+                  if (isCatNew && e.animationName === 'highlight-wrap') {
                     setAnimatingKeys(prev => {
                       const next = new Set(prev);
                       next.delete(`cat::${cat.label}`);
@@ -457,10 +475,10 @@ export const manualRegistry: Record<string, any> = {
                       return (
                         <div
                           key={`${ci}-${ii}-${item.name}`}
-                          className={`relative${isNew ? " animate-chip-in" : ""}`}
+                          className={`relative rounded-full${isNew ? " animate-highlight-wrap" : ""}`}
                           style={isNew ? { animationDelay: `${ii * 0.05}s` } : undefined}
-                          onAnimationEnd={() => {
-                            if (isNew) {
+                          onAnimationEnd={(e) => {
+                            if (isNew && e.animationName === 'highlight-wrap') {
                               setAnimatingKeys(prev => {
                                 const next = new Set(prev);
                                 next.delete(`chip::${chipKey}`);
@@ -527,13 +545,67 @@ export const manualRegistry: Record<string, any> = {
 
 
 
-  Table: (allProps: any) => {
+  Table: (() => {
+    // 모듈 스코프 seen-set — CriteriaMap과 동일한 패턴으로, 이미 본 기준(행)/제품(열)은
+    // 다시 애니메이션하지 않고 진짜 새로 추가된 것만 하이라이트한다.
+    const globalSeenRows = new Set<string>();
+    const globalSeenCols = new Set<string>();
+
+    return (allProps: any) => {
     const p = allProps?.props || allProps || {};
     const rawColumns: { key: string; label: string }[] = Array.isArray(p.columns) ? p.columns : [];
     const rows: Record<string, any>[] = Array.isArray(p.rows) ? p.rows : (Array.isArray(p.data) ? p.data : []);
 
     // ── TRANSPOSED TABLE (criteria = rows, products = columns) ──────────────
     const isTransposed = rawColumns[0]?.key === 'criterion';
+
+    const transposedDataRows = isTransposed ? rows.filter(r => r.criterion !== '순위' && r.criterion !== 'Rank') : [];
+    const transposedProductCols = isTransposed ? rawColumns.slice(1) : [];
+    const rowsColsKey = JSON.stringify({
+      rows: transposedDataRows.map(r => r.criterion),
+      cols: transposedProductCols.map(c => c.key),
+    });
+
+    // 새로 추가된 행/열만 구분해서 하이라이트하기 위한 상태 (CriteriaMap의 animatingKeys와 동일한 목적)
+    const [animatingRowKeys, setAnimatingRowKeys] = useState<Set<string>>(new Set());
+    const [animatingColKeys, setAnimatingColKeys] = useState<Set<string>>(new Set());
+    // 표 전체가 처음 생성되는 순간에만 켜지는 플래그 — 개별 행/열 대신 표 전체를 감싸서 하이라이트한다.
+    const [justCreated, setJustCreated] = useState(false);
+
+    useEffect(() => {
+      if (!isTransposed) return;
+      if (transposedDataRows.length === 0 && transposedProductCols.length === 0) {
+        globalSeenRows.clear();
+        globalSeenCols.clear();
+        setAnimatingRowKeys(new Set());
+        setAnimatingColKeys(new Set());
+        return;
+      }
+      // 표가 통째로 처음 채워지는 시점엔 "새로 추가됨"으로 보지 않는다(전부 애니메이션되는 것 방지).
+      // 대신 표 전체를 한 번만 감싸는 하이라이트를 보여준다.
+      const isFirstPopulation = globalSeenRows.size === 0 && globalSeenCols.size === 0;
+
+      const newRowKeys = new Set<string>();
+      for (const r of transposedDataRows) {
+        const key = String(r.criterion ?? '');
+        if (key && !globalSeenRows.has(key)) { newRowKeys.add(key); globalSeenRows.add(key); }
+      }
+      const newColKeys = new Set<string>();
+      for (const c of transposedProductCols) {
+        if (!globalSeenCols.has(c.key)) { newColKeys.add(c.key); globalSeenCols.add(c.key); }
+      }
+
+      if (isFirstPopulation) {
+        setJustCreated(true);
+        const t = setTimeout(() => setJustCreated(false), 2000);
+        return () => clearTimeout(t);
+      } else {
+        if (newRowKeys.size > 0) setAnimatingRowKeys(prev => new Set([...prev, ...newRowKeys]));
+        if (newColKeys.size > 0) setAnimatingColKeys(prev => new Set([...prev, ...newColKeys]));
+      }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [rowsColsKey, isTransposed]);
+
     if (isTransposed) {
       const productCols = rawColumns.slice(1); // prod_0, prod_1, ...
       const rankRow = rows.find(r => r.criterion === '순위' || r.criterion === 'Rank');
@@ -550,20 +622,34 @@ export const manualRegistry: Record<string, any> = {
         : productCols;
 
       return (
-        <div className="w-full animate-in fade-in zoom-in-98 duration-300">
+        <div className={`w-full${justCreated ? ' animate-highlight-wrap' : ''}`}>
           <div className="overflow-x-auto pb-2">
             <table className="w-full text-[13px] border-collapse">
               <thead>
                 <tr>
                   {/* 비교 항목 헤더 */}
-                  <th className="text-left px-3 py-2.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wide border-b border-slate-100 w-[120px]">
+                  <th className="align-top text-left px-3 py-2.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wide border-b border-slate-100 w-[120px]">
                     {rawColumns[0]?.label ?? '비교 항목'}
                   </th>
                   {sortedProductCols.map((col, ci) => {
                     const rank = rankRow ? String(rankRow[col.key] ?? '') : '';
                     const isFirst = rank === '1위';
+                    // 이름이 길면 여러 줄로 줄바꿈되면서 그 컬럼만 셀 높이가 커지고(테이블 기본
+                    // vertical-align: middle 때문에) 다른 컬럼의 순위 라벨이 아래로 밀려
+                    // "튀어나온" 것처럼 보인다. align-top(위에서 처리)으로 정렬을 고정하고,
+                    // 여기서는 긴 이름의 글자 크기를 줄여 애초에 줄바꿈 자체를 줄인다.
+                    const nameSizeClass = col.label.length > 14 ? 'text-[10px]' : col.label.length > 9 ? 'text-[11px]' : 'text-[12px]';
+                    const isColNew = animatingColKeys.has(col.key);
                     return (
-                      <th key={col.key} className={`px-3 py-2.5 border-b border-slate-100 text-center ${isFirst ? 'bg-white' : ''}`}>
+                      <th
+                        key={col.key}
+                        className={`align-top px-3 py-2.5 border-b border-slate-100 text-center ${isFirst ? 'bg-white' : ''}${isColNew ? ' animate-highlight-wrap' : ''}`}
+                        onAnimationEnd={(e) => {
+                          if (isColNew && e.animationName === 'highlight-wrap') {
+                            setAnimatingColKeys(prev => { const next = new Set(prev); next.delete(col.key); return next; });
+                          }
+                        }}
+                      >
                         {rank && <div className="text-[10px] text-slate-400 font-semibold mb-1">{rank}</div>}
                         {col.imageUrl && (
                           <div className="flex justify-center mb-3">
@@ -575,7 +661,11 @@ export const manualRegistry: Record<string, any> = {
                             />
                           </div>
                         )}
-                        <div className="text-[12px] font-semibold text-slate-700 leading-tight">
+                        <div
+                          className={`${nameSizeClass} font-semibold text-slate-700 leading-tight`}
+                          style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}
+                          title={col.label}
+                        >
                           {col.label}
                         </div>
                       </th>
@@ -584,8 +674,18 @@ export const manualRegistry: Record<string, any> = {
                 </tr>
               </thead>
               <tbody>
-                {dataRows.map((row, ri) => (
-                  <tr key={ri} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/50 transition-colors">
+                {dataRows.map((row, ri) => {
+                  const isRowNew = animatingRowKeys.has(String(row.criterion ?? ''));
+                  return (
+                  <tr
+                    key={row.criterion ?? ri}
+                    className={`border-b border-slate-50 last:border-0 hover:bg-slate-50/50 transition-colors${isRowNew ? ' animate-highlight-wrap' : ''}`}
+                    onAnimationEnd={(e) => {
+                      if (isRowNew && e.animationName === 'highlight-wrap') {
+                        setAnimatingRowKeys(prev => { const next = new Set(prev); next.delete(String(row.criterion ?? '')); return next; });
+                      }
+                    }}
+                  >
                     <td className="px-3 py-2.5 text-[12px] font-semibold text-slate-700">{row.criterion}</td>
                     {sortedProductCols.map((col, ci) => {
                       const val = String(row[col.key] ?? '-');
@@ -598,7 +698,8 @@ export const manualRegistry: Record<string, any> = {
                       );
                     })}
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -897,7 +998,7 @@ export const manualRegistry: Record<string, any> = {
     ];
 
     return (
-      <div className="w-full animate-in fade-in zoom-in-98 duration-300">
+      <div className="w-full animate-highlight-wrap">
         {/* Table header row */}
         <div className="flex items-center justify-between mb-2">
           <div />
@@ -986,7 +1087,7 @@ export const manualRegistry: Record<string, any> = {
         )}
 
         {p._rankReasoning && visibleRows.length > 0 && (
-          <div className="mt-4 p-4 rounded-[12px] bg-white border border-slate-100 animate-in fade-in slide-in-from-bottom-2">
+          <div className="mt-4 p-4 rounded-[12px] bg-white border border-slate-100 animate-highlight-wrap">
             <div className="flex items-center gap-1.5 mb-2">
               <Sparkles className="w-[14px] h-[14px] text-slate-400 shrink-0" />
               <span className="text-[12.5px] font-bold text-slate-800">이렇게 추천드린 이유예요</span>
@@ -1001,7 +1102,8 @@ export const manualRegistry: Record<string, any> = {
 
       </div>
     );
-  },
+    };
+  })(),
 
 
   ProductCard: (allProps: any) => {
@@ -1013,20 +1115,21 @@ export const manualRegistry: Record<string, any> = {
       ? p._unconfirmedCriteria
       : (p._unconfirmed ? ['미확인'] : []);
     const justUpdated = !!p._justUpdated;   // auto-enrich 업데이트 트리거
+    const justAdded = !!p._justAdded;       // mutateSurface(add)로 새로 추가된 카드인지 (ProductCardList가 판별)
 
-    // 하이라이트 애니메이션 상태 (업데이트 시 1.8초간 활성화)
+    // 하이라이트 애니메이션 상태 (업데이트 시 highlight-wrap 길이(2s)만큼 활성화)
     const [isHighlighted, setIsHighlighted] = useState(false);
     useEffect(() => {
       if (justUpdated) {
         setIsHighlighted(true);
-        const t = setTimeout(() => setIsHighlighted(false), 1800);
+        const t = setTimeout(() => setIsHighlighted(false), 2000);
         return () => clearTimeout(t);
       }
     }, [justUpdated]);
 
     return (
       <div
-        className={`group relative flex flex-col bg-white border rounded-[8px] overflow-hidden transition-all duration-500 hover:shadow-[0_2px_8px_rgba(0,0,0,0.06)] animate-in fade-in slide-in-from-bottom-3 zoom-in-98 duration-500 fill-mode-both w-full ${
+        className={`group relative flex flex-col bg-white border rounded-[8px] overflow-hidden transition-all duration-500 hover:shadow-[0_2px_8px_rgba(0,0,0,0.06)] w-full${(justAdded || isHighlighted) ? ' animate-highlight-wrap' : ''} ${
           isDimmed
             ? "border-[#E5E5E5] opacity-40 grayscale-[50%] hover:opacity-55"
             : "border-[#EBEBEB] hover:border-[#D0D0D0]"
@@ -1114,7 +1217,7 @@ export const manualRegistry: Record<string, any> = {
                 </span>
               ))}
               {Array.isArray(p.specs) && p.specs.length > 0 && (
-                <SpecChips specs={p.specs} highlightFirst={isHighlighted} />
+                <SpecChips specs={p.specs} />
               )}
             </div>
           )}
@@ -1128,21 +1231,70 @@ export const manualRegistry: Record<string, any> = {
   },
 
 
-  ProductCardList: (allProps: any) => {
+  ProductCardList: (() => {
+    // 모듈 스코프 seen-set — 이미 본 카드 이름은 다시 "새로 추가됨"으로 보지 않는다.
+    const globalSeenCardNames = new Set<string>();
 
-    const p = allProps?.props || allProps || {};
-    const cards = Array.isArray(p.cards) ? p.cards : [];
+    return (allProps: any) => {
+      const p = allProps?.props || allProps || {};
+      const cards = Array.isArray(p.cards) ? p.cards : [];
+      const cardNamesKey = cards.map((c: any) => c.name || c.id || '').join('|');
 
-    return (
-      <div className="grid grid-cols-2 gap-3 w-full min-w-0 px-6">
-        {cards.map((card: any, idx: number) => (
-          <div key={`${card.name || card.id || 'card'}-${idx}`}>
-            <manualRegistry.ProductCard {...allProps} props={{ ...card, _animationDelay: idx * 0.1 }} />
-          </div>
-        ))}
-      </div>
-    );
-  },
+      // key를 "이름-인덱스"에서 이름/ID만으로 바꾸면(아래 map), 정렬/필터로 순서만 바뀔 때는
+      // React가 같은 DOM 노드를 재사용해 진입 애니메이션이 재생되지 않고, 진짜 mutateSurface(add)로
+      // 새로 들어온 카드만 마운트되며 애니메이션이 재생된다. 여기 newCardNames는 그 새 카드들에게만
+      // highlight-wrap 글로우를 추가로 씌우기 위한 것 — 최초 목록이 통째로 채워질 때는 제외한다.
+      const [newCardNames, setNewCardNames] = useState<Set<string>>(new Set());
+      // 목록 전체가 처음 생성되는 순간에만 켜지는 플래그 — 개별 카드 대신 목록 전체를 감싸서 하이라이트한다.
+      const [justCreated, setJustCreated] = useState(false);
+
+      useEffect(() => {
+        if (cards.length === 0) {
+          globalSeenCardNames.clear();
+          setNewCardNames(new Set());
+          return;
+        }
+        const isFirstPopulation = globalSeenCardNames.size === 0;
+        const fresh: string[] = [];
+        for (const c of cards) {
+          const name = c.name || c.id;
+          if (name && !globalSeenCardNames.has(name)) { fresh.push(name); globalSeenCardNames.add(name); }
+        }
+        if (isFirstPopulation) {
+          setJustCreated(true);
+          const t = setTimeout(() => setJustCreated(false), 2000);
+          return () => clearTimeout(t);
+        } else if (fresh.length > 0) {
+          setNewCardNames(prev => new Set([...prev, ...fresh]));
+          const t = setTimeout(() => {
+            setNewCardNames(prev => {
+              const next = new Set(prev);
+              fresh.forEach(n => next.delete(n));
+              return next;
+            });
+          }, 2000); // highlight-wrap 애니메이션 길이(2s)와 맞춤
+          return () => clearTimeout(t);
+        }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [cardNamesKey]);
+
+      return (
+        <div className={`grid grid-cols-2 gap-3 w-full min-w-0 px-6${justCreated ? ' animate-highlight-wrap' : ''}`}>
+          {cards.map((card: any, idx: number) => {
+            const cardKey = card.name || card.id || `card-${idx}`;
+            return (
+              <div key={cardKey}>
+                <manualRegistry.ProductCard
+                  {...allProps}
+                  props={{ ...card, _animationDelay: idx * 0.1, _justAdded: newCardNames.has(cardKey) }}
+                />
+              </div>
+            );
+          })}
+        </div>
+      );
+    };
+  })(),
 
   ComparisonSelector: (allProps: any) => {
     const p = allProps?.props || allProps || {};
@@ -1152,10 +1304,13 @@ export const manualRegistry: Record<string, any> = {
     const [isExpanded, setIsExpanded] = useState(false);
     const [selected, setSelected] = useState<string[]>([]);
 
-    // Filter out items already in the current comparison
+    // Filter out items already in the current comparison and deduplicate
+    const seenNames = new Set<string>();
     const availableItems = savedItems.filter((item: any) => {
       const name = typeof item === 'string' ? item : item.name;
-      return !currentItems.includes(name);
+      if (currentItems.includes(name) || seenNames.has(name)) return false;
+      seenNames.add(name);
+      return true;
     });
 
     if (availableItems.length === 0 && !isExpanded) return null;
@@ -1176,7 +1331,7 @@ export const manualRegistry: Record<string, any> = {
     };
 
     return (
-      <div className="mt-4 flex flex-col gap-3 animate-in fade-in slide-in-from-top-2 duration-500">
+      <div className="mt-4 flex flex-col gap-3 animate-highlight-wrap">
         {!isExpanded ? (
           <div className="flex flex-col gap-2">
             {isFollowUp && (
@@ -1259,7 +1414,7 @@ manualRegistry.InformationCard = (allProps: any) => {
   const p = allProps?.props || allProps || {};
   const points: string[] = Array.isArray(p.points) ? p.points : [];
   return (
-    <div className="my-2 flex flex-col gap-2 w-full animate-in fade-in zoom-in-98 duration-300">
+    <div className="my-2 flex flex-col gap-2 w-full animate-highlight-wrap">
       <div className="flex flex-col gap-1 border border-slate-200 rounded-xl bg-white px-4 pt-3.5 pb-4">
         <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">개념 정리</span>
         <h3 className="text-[15px] font-black text-slate-900 tracking-tight leading-tight">{p.term}</h3>

@@ -703,5 +703,669 @@
     "sourceUrl": "https://www.youtube.com/watch?v=8iCndzsexlE",
     "usedSnippet": "온도가 추운 걸 감안했을 때 뭐 비슷한 수준이라고 생각된데 실제 스펙도 작년 올해 최대 75도로 동일하고 정수동은 4L통은 2.2L로 작년과 비슷한 수준이지만 먼지통 용량은 3L에서 2.5L로 살짝 줄었대. 그 대신",
     "cachedAt": "2026-07-30T12:09:02.263Z"
+  },
+  "로보락 S9 MaxV Ultra 직배수||배터리 수명": {
+    "value": "배터리용량: 6400mAh",
+    "source": "db",
+    "cachedAt": "2026-07-31T05:27:31.266Z"
+  },
+  "로보락 S10 MaxV Ultra||배터리 수명": {
+    "value": "배터리용량: 6400mAh",
+    "source": "db",
+    "cachedAt": "2026-07-31T05:27:31.273Z"
+  },
+  "로보락 S10 MaxV Slim||배터리 수명": {
+    "value": "배터리용량: 6400mAh",
+    "source": "db",
+    "cachedAt": "2026-07-31T05:27:31.276Z"
+  },
+  "로보락 S10 MaxV Ultra 직배수||배터리 수명": {
+    "value": "배터리용량: 6400mAh",
+    "source": "db",
+    "cachedAt": "2026-07-31T05:27:31.279Z"
+  },
+  "로보락 S10 MaxV Slim 직배수||배터리 수명": {
+    "value": "배터리용량: 6400mAh",
+    "source": "db",
+    "cachedAt": "2026-07-31T05:27:31.282Z"
+  },
+  "로보락 S9 MaxV Ultra 직배수||충전 시간": {
+    "value": "자동충전: ○",
+    "source": "db",
+    "cachedAt": "2026-07-31T05:27:54.513Z"
+  },
+  "드리미 X50s Pro Ultra||충전 시간": {
+    "value": "자동충전: ○",
+    "source": "db",
+    "cachedAt": "2026-07-31T05:27:54.517Z"
+  },
+  "로보락 S10 MaxV Ultra||충전 시간": {
+    "value": "자동충전: ○",
+    "source": "db",
+    "cachedAt": "2026-07-31T05:27:54.520Z"
+  },
+  "로보락 S10 MaxV Slim||충전 시간": {
+    "value": "자동충전: ○",
+    "source": "db",
+    "cachedAt": "2026-07-31T05:27:54.523Z"
+  },
+  "로보락 S10 MaxV Ultra 직배수||충전 시간": {
+    "value": "자동충전: ○",
+    "source": "db",
+    "cachedAt": "2026-07-31T05:27:54.526Z"
+  },
+  "로보락 S10 MaxV Slim 직배수||충전 시간": {
+    "value": "자동충전: ○",
+    "source": "db",
+    "cachedAt": "2026-07-31T05:27:54.530Z"
+  },
+  "드리미 L50s Pro Ultra||소음 수준": {
+    "value": "48dB",
+    "source": "tavily",
+    "sourceUrl": "https://blog.naver.com/PostView.naver?blogId=rotiggiluk&logNo=223980897561&redirect=Dlog",
+    "usedSnippet": "eame X50S Pro) | | 흡입력 | 25,000 Pa | | 배터리 용량 | 6,400 mAh | | 최대 사용 시간 | 약 200분 | | 충전 시간 | 약 4.5시간 | | 소음 수준 | 약 48dB (",
+    "cachedAt": "2026-07-31T09:07:00.801Z"
+  },
+  "드리미 X50 Master 직배수||소음 수준": {
+    "value": "60.7dB",
+    "source": "tavily",
+    "sourceUrl": "https://www.youtube.com/watch?v=495TSi6lkG0",
+    "usedSnippet": "에도 소음은 오히려 줄었다는게 놀라운 포인트인 거대 최근 만 파스칼 때 흡입력 청소 소들의 평균 소음이 67 데시벨 때라는 걸 생각해 보면 무려 7 데시벨이 나 낮은 업계 최고 수준의 저 소음을 보여 준대 가장 놀라",
+    "cachedAt": "2026-07-31T09:07:00.959Z"
+  },
+  "드리미 X50s Pro Ultra||소음 수준": {
+    "value": "48dB",
+    "source": "tavily",
+    "sourceUrl": "https://blog.naver.com/PostView.naver?blogId=rotiggiluk&logNo=223980897561&redirect=Dlog",
+    "usedSnippet": "eame X50S Pro) | | 흡입력 | 25,000 Pa | | 배터리 용량 | 6,400 mAh | | 최대 사용 시간 | 약 200분 | | 충전 시간 | 약 4.5시간 | | 소음 수준 | 약 48dB (",
+    "cachedAt": "2026-07-31T09:07:02.946Z"
+  },
+  "샤오미 미지아 5 Pro||소음 수준": {
+    "value": "64데시벨",
+    "source": "tavily",
+    "sourceUrl": "https://blog.naver.com/doitsso/220850324770?viewType=pc",
+    "usedSnippet": "회사별 공개한 소음치에요. --- LG전자 - 48데시벨(db) 아이클레보 - 55데시벨(db) 단후이 - 55데시벨(db) 삼성전자 - 68데시벨(db) --- 사용 중인 샤오미 로봇청소기는 딱! 처음",
+    "cachedAt": "2026-07-31T09:07:09.127Z"
+  },
+  "양방향 물분사 W15S||배터리": {
+    "value": "배터리용량: 500mAh",
+    "source": "db",
+    "cachedAt": "2026-07-31T16:43:50.274Z"
+  },
+  "모바 M1||배터리": {
+    "value": "배터리용량: 2600mAh",
+    "source": "db",
+    "cachedAt": "2026-07-31T16:43:50.278Z"
+  },
+  "르판트 M330 Pro||배터리": {
+    "value": "사용시간: 2시간(최대)",
+    "source": "db",
+    "cachedAt": "2026-07-31T16:43:50.282Z"
+  },
+  "샤오미 미지아 5 Pro||배터리": {
+    "value": "사용시간: 2시간20분(최대)",
+    "source": "db",
+    "cachedAt": "2026-07-31T16:43:50.285Z"
+  },
+  "샤오미 미지아 5C 직배수||배터리": {
+    "value": "5200mAh",
+    "source": "tavily",
+    "sourceUrl": "https://namu.wiki/w/%EC%83%A4%EC%98%A4%EB%AF%B8%20%EB%A1%9C%EB%B4%87%20%EC%B2%AD%EC%86%8C%EA%B8%B0",
+    "usedSnippet": "동, 물걸레, 물걸레 자동 세척 | [...] 샤오미 미지아 G1 보다 조금 더 상위 단계의 제품이다. 2400mAh의 배터리와 2500Pa의 흡입력을 갖추고 있으며 물걸레도 탑재되어 있다. 샤오미 미지",
+    "cachedAt": "2026-07-31T16:43:53.492Z"
+  },
+  "샤오미 미지아 5 Pro||필터 시스템": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "https://www.mi.com/kr/support/faq/details/KA-632393",
+    "usedSnippet": "Q4: Xiaomi 로봇청소기 5 Pro 의 깨끗한 물 탱크 필터의 기능은 무엇인가요? A: Xiaomi 로봇청소기 5 Pro 의 필터는 물에서 불순물을 제거합니다. 흰색 입자는 스케일 방지제입니다. 필터를 곧게",
+    "cachedAt": "2026-07-31T17:44:23.356Z"
+  },
+  "드리미 X50s Pro Ultra||필터 시스템": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "https://www.youtube.com/watch?v=OVfsUExME9U",
+    "usedSnippet": "은 필터에 먼지가 끼는 거를 1차적으로 걸러 줄 수 있기 때문에 더 오래 소모품을 교체하지 않고도 사용할 수 있겠죠. 이런 부분이 없기 때문에 드리미 X50S의 필터 수명은 다소 낮은 편이라고 보여집니다. 다음은 가",
+    "cachedAt": "2026-07-31T17:44:23.562Z"
+  },
+  "샤오미 미지아 5C 직배수||필터 시스템": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "https://ddunyangfam.tistory.com/127",
+    "usedSnippet": "시도해 봅니다. 누수가 없다면 성공 입니다! 이제 정수공급과 오수 배출이 알아서 자동으로 됩니다. 아주 가끔 오수통 안의 필터망만 빼서 비워주면 됩니다. > 마치며... [...] 3. 설치 준비",
+    "cachedAt": "2026-07-31T17:44:25.057Z"
+  },
+  "샤오미 미지아 5 Pro||배터리 수명": {
+    "value": "사용시간: 2시간20분(최대)",
+    "source": "db",
+    "cachedAt": "2026-07-31T17:46:14.040Z"
+  },
+  "드리미 L10s Ultra Gen3||배터리 수명": {
+    "value": "사용시간: 3시간51분(최대)",
+    "source": "db",
+    "cachedAt": "2026-07-31T18:12:35.106Z"
+  },
+  "드리미 L50s Pro Nano 직배수||배터리 수명": {
+    "value": "5200mAh",
+    "source": "tavily",
+    "sourceUrl": "https://namu.wiki/w/%EB%93%9C%EB%A6%AC%EB%AF%B8(%EA%B8%B0%EC%97%85)",
+    "usedSnippet": ", 그리고 경유 사이트를 통해 각종 할인을 받았을 때 가격도 무시하지 못하니 비교하면서 구매하는 것이 좋다. 무려 5200mAh의 배터리와 2500Pa의 흡입력을 갖추고 물걸레 를 탑재했으며, 소프트웨어",
+    "cachedAt": "2026-07-31T18:16:04.908Z"
+  },
+  "로보락 S8 MaxV Ultra||배터리 수명": {
+    "value": "배터리용량: 5200mAh",
+    "source": "db",
+    "cachedAt": "2026-07-31T19:38:06.975Z"
+  },
+  "로보락 S8 Pro Ultra||배터리 수명": {
+    "value": "5200mAh",
+    "source": "tavily",
+    "sourceUrl": "https://elecinsight.tistory.com/367",
+    "usedSnippet": "| 5200mAh | | 사용시간 | 180분 (저소음 모드) | 180분 (저소음 모드) | | 충전시간 | 6시간 | 4시간 | [...] 먼지 흡입의 왕으로 귀환한 로보락 S8 Pro Ultra 로",
+    "cachedAt": "2026-07-31T19:38:11.280Z"
+  },
+  "로보락 S8 Pro Ultra||소음 수준": {
+    "value": "63dB",
+    "source": "tavily",
+    "sourceUrl": "https://elecinsight.tistory.com/490",
+    "usedSnippet": "전시간: 4시간, 최저소음: 63dB은 공통 사양 진공 청소 끝판왕으로 돌아온 로보락 S8 MaxV Ultra 듀오 롤러 브러시 로보락 S8 Pro Ultra, S8 MaxV Ultra 모두",
+    "cachedAt": "2026-07-31T19:50:30.825Z"
+  },
+  "로보락 S8 MaxV Ultra||소음 수준": {
+    "value": "52dB(A)",
+    "source": "tavily",
+    "sourceUrl": "https://kr.roborock.com/pages/navigation-recommend-v2",
+    "usedSnippet": "삭제된 영역은 방 공간 분할에 영향을 주지 않습니다. \\\\\\ This is a image \\Roborock 내부 테스트 기준. 테스트 결과 조용한 걸레질 모드의 소음 수준은 52dB(A)입니다. 실제 결과는 사용",
+    "cachedAt": "2026-07-31T19:50:33.866Z"
+  },
+  "로보락 S10 MaxV Slim 직배수||소음 수준": {
+    "value": "68.3대",
+    "source": "tavily",
+    "sourceUrl": "https://www.youtube.com/watch?v=jiyIc-p6RTQ",
+    "usedSnippet": "지는 느껴지지는 않았지만 그래도 상위권 중 아래쪽이 정도 수준이라는 생각이 돼. 좋음 테스트. 중요도 비중은 좀 낮긴 하지만 그래도 소음 체크하며 섭파하자는. 가장 강한 흡입력 기준 1분 동안 평균 소음을 측정해 본",
+    "cachedAt": "2026-08-01T09:10:43.264Z"
+  },
+  "샤오미 미지아 5C 직배수||소음 수준": {
+    "value": "50dB",
+    "source": "tavily",
+    "sourceUrl": "https://www.vietnam.vn/ko/xiaomi-ra-mat-may-lau-san-khong-day-mijia-5c-luc-hut-18-000pa-va-say-nong-60c",
+    "usedSnippet": "선 바닥 청소기 5C | --- | | 중력 | 18,000 Pa (4C 생성 시 15,000 Pa 달성) | | 운영 시간 | 최대 45분 (약 341m² 면적) | | 작동 소음 수준 | 약 50dB | | 건",
+    "cachedAt": "2026-08-01T09:10:44.319Z"
+  },
+  "드리미 X50 Master 직배수||배터리 수명": {
+    "value": "3시간 40분",
+    "source": "tavily",
+    "sourceUrl": "https://mpangpang.tistory.com/164",
+    "usedSnippet": "럽개, 스스로 오염을 감지하며 청소가 가능한 제품이었단 점도 매력적이었습니다. 9. 최대 3시간 40분 사용 가능한 대용량 배터리 드리미 X50은 6400mAh 리튬 배터리를 탑재해 한 번 충전으로 최대 3시간",
+    "cachedAt": "2026-08-01T09:11:16.842Z"
+  },
+  "샤오미 미지아 5C 직배수||배터리 수명": {
+    "value": "최대 45분",
+    "source": "tavily",
+    "sourceUrl": "https://www.vietnam.vn/ko/xiaomi-ra-mat-may-hut-bui-lau-nha-mijia-wireless-floor-cleaner-5c-voi-luc-hut-18-000pa",
+    "usedSnippet": "향상된 작동 효율에도 불구하고, 이 장치는 약 50dB의 이상적인 소음 수준을 유지하여 이전 세대보다 더욱 조용하게 작동합니다. 배터리 수명 측면에서, 포함된 배터리는 최대 45분 동안 연속 작동이 가능하며, 한 번",
+    "cachedAt": "2026-08-01T14:12:47.022Z"
+  },
+  "드리미 X50s Pro Ultra||배터리 수명": {
+    "value": "3시간 40분",
+    "source": "tavily",
+    "sourceUrl": "https://mpangpang.tistory.com/164",
+    "usedSnippet": "럽개, 스스로 오염을 감지하며 청소가 가능한 제품이었단 점도 매력적이었습니다. 9. 최대 3시간 40분 사용 가능한 대용량 배터리 드리미 X50은 6400mAh 리튬 배터리를 탑재해 한 번 충전으로 최대 3시간",
+    "cachedAt": "2026-08-01T14:25:21.088Z"
+  },
+  "캐논 EOS R6 Mark III 바디||배터리 수명": {
+    "value": "배터리: LP-E6P(2130mAh)",
+    "source": "db",
+    "cachedAt": "2026-08-01T15:19:59.563Z"
+  },
+  "파나소닉 루믹스 DC-S5 IIx 바디||배터리 수명": {
+    "value": "배터리: DMW-BLK22(2200mAh)",
+    "source": "db",
+    "cachedAt": "2026-08-01T15:19:59.566Z"
+  },
+  "파나소닉 루믹스 DC-S5 바디||배터리 수명": {
+    "value": "배터리: DMW-BLK22(2200mAh)",
+    "source": "db",
+    "cachedAt": "2026-08-01T15:19:59.569Z"
+  },
+  "SONY 알파 A7 III 바디||배터리 수명": {
+    "value": "배터리: NP-FZ100(2280mAh)",
+    "source": "db",
+    "cachedAt": "2026-08-01T15:19:59.574Z"
+  },
+  "SONY 알파 A6700 바디||배터리 수명": {
+    "value": "배터리: NP-FZ100(2280mAh)",
+    "source": "db",
+    "cachedAt": "2026-08-01T15:19:59.577Z"
+  },
+  "캐논 EOS R6 Mark III 바디||렌즈 교환 가능 여부": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "https://community.usa.canon.com/t5/EF-RF-Lenses/If-I-upgrade-to-a-Canon-R6-what-mounts-will-I-require-for-my-EF/td-p/362252",
+    "usedSnippet": "Canon makes three different mount adapters for R Series bodies that allow the use of EF Mount lenses. New firmware updat",
+    "cachedAt": "2026-08-01T15:36:58.619Z"
+  },
+  "파나소닉 루믹스 DC-S9 바디||렌즈 교환 가능 여부": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "https://namu.wiki/w/%EB%A3%A8%EB%AF%B9%EC%8A%A4%20S%20%EC%8B%9C%EB%A6%AC%EC%A6%88",
+    "usedSnippet": "바다의 장단점은 아니지만, S9처럼 컴팩트한 바디를 위한 렌즈가 없다는 점도 지적되고 있다. S9 발표와 함께 공개된 18-40mm 렌즈는 동년 가을에 출시되어 텀이 길고, 20-60mm 렌즈나 F1.8 단렌즈들은",
+    "cachedAt": "2026-08-01T15:36:58.848Z"
+  },
+  "SONY 알파 A6700 바디||렌즈 교환 가능 여부": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "https://www.reddit.com/r/SonyAlpha/comments/1pqrf76/looking_to_upgrade_from_sony_a6700?tl=ko",
+    "usedSnippet": "옵션 A: \"천천히 전환\" a6700을 6개월 정도 더 사용하면서 고품질 풀 프레임 단렌즈(Sigma Art 또는 Sony GM)를 지금부터 사 모으는 거예요. A7 IV 또는",
+    "cachedAt": "2026-08-01T15:36:58.871Z"
+  },
+  "SONY 알파 A7 III 바디||렌즈 교환 가능 여부": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "https://namu.wiki/w/E%20%EB%A7%88%EC%9A%B4%ED%8A%B8/%EB%B0%94%EB%94%94/%ED%92%80%ED%94%84%EB%A0%88%EC%9E%84",
+    "usedSnippet": "이다. 가격은 바디 킷 $1,798 (미국) / 2,199,000원, FE 28-60 렌즈 킷 $2,098 (미국) / 2,599,000원이다. α7S III의 비싼 국내 출시가를 고려하면 적절한 가격이 책정되었다.",
+    "cachedAt": "2026-08-01T15:36:59.662Z"
+  },
+  "파나소닉 루믹스 DC-S5 바디||렌즈 교환 가능 여부": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "https://m.blog.naver.com/laizenti/222078829939",
+    "usedSnippet": "모드 사람들이 특히 좋아하지 않은 것은 다음과 같습니다. - 크기 / 무게 - 자동 초점 성능 - 가격 - 렌즈 라인업 이러한 많은 문제를 해결하기 위해 파나소닉은 S5를 만들기 위해 설계를 시작했습니다.",
+    "cachedAt": "2026-08-01T15:37:06.904Z"
+  },
+  "드리미 X50s Pro Ultra||스마트 기능": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "https://m.blog.naver.com/ckwldud1/223935557756",
+    "usedSnippet": "드리미 X50s Pro Ultra는 최대 6cm까지 도약이 가능한 Pro-Leap™ 덕분에 일반 문턱뿐만 아니라 이중 구조의 문턱 단차도 가뿐히 넘을 수 있도록 설계되었어요. ​ 그래서 심지어 낮은 소파나 가구",
+    "cachedAt": "2026-08-01T15:52:33.693Z"
+  },
+  "로보락 S9 MaxV Ultra 직배수||스마트 기능": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "https://blog.naver.com/yjg01212/223978166898?viewType=pc",
+    "usedSnippet": "..] | IT 잇슈。 로보락 S9 MaxV Ultra 직배수 추천 포인트는? 프로파일 아이보리 ・ 2025. 8. 21. 13:00 URL 복사 이웃추가 본문 기타 기능 공유하기 신고하기 로보락 S",
+    "cachedAt": "2026-08-01T15:52:34.387Z"
+  },
+  "로보락 S10 MaxV Ultra 직배수||스마트 기능": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "https://blog.naver.com/PostView.naver?blogId=marodaing&logNo=224197487469&redirect=Dlog",
+    "usedSnippet": "​ 모든 상황에 스마트하게 반응하는 리프팅 브러시 및 물걸레를 가지고 있어서 세부 기능 설정이 가능하다는 것이 큰 특징이에요. ​ ​ ​ ​ 로보락 S10 MaxV Ultra는 전에 없던 등반,",
+    "cachedAt": "2026-08-01T15:52:35.051Z"
+  },
+  "모바 V50 Ultra||스마트 기능": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "https://www.instagram.com/p/DXnXxFpE_2f",
+    "usedSnippet": "V50 Ultra 핵심 스펙 TOP 5 🌪️ 24,000Pa 초강력 흡입 … 스마트 가이드 기능을 갖추고 있습니다. 문의: ☎ 02-772-3808",
+    "cachedAt": "2026-08-01T15:52:35.924Z"
+  },
+  "로보락 S10 MaxV Slim 직배수||스마트 기능": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "https://blog.naver.com/PostView.naver?blogId=nightd&logNo=224261284722",
+    "usedSnippet": "​ 참고로 런칭 이벤트의 경우 조기 종료될 수 있으니 알아둬야 한다. 특히 앞서 언급했듯이 로보락 S10 MaxV Slim 직배수 모델 사용자를 위해 새롭게 도입된 직배수 전용 출장 AS 서비스 지원으로 설치에 대",
+    "cachedAt": "2026-08-01T15:52:36.421Z"
+  },
+  "로보락 S10 MaxV Ultra||스마트 기능": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "https://plan.danawa.com/info?nPlanSeq=12155",
+    "usedSnippet": ")하세요. 레이어 닫기 로보락 S10 MaxV Ultra 로봇청소기 신제품 이미지, 자동 세척 도크와 블랙·화이트 모델이 함께 배치된 프리미엄 청소기 메인 비주얼 로보락 S10 시리즈 기능 및 S시리즈 로봇청소",
+    "cachedAt": "2026-08-01T15:52:41.929Z"
+  },
+  "드리미 L10s Ultra Gen3||소음 수준": {
+    "value": "약 45~55dB",
+    "source": "tavily",
+    "sourceUrl": "https://foodrecent6657.tistory.com/135",
+    "usedSnippet": "저소음 모드 (약 45~55dB): 조용한 사무실이나 도서관 수준입니다. 나르왈 Flow 4세대나 드리미 L10s Ultra Gen3 같은 제품들은 \"소름 돋게 조용하다\"는 평이 있을 정도로 야간 사용에 특화되어 있",
+    "cachedAt": "2026-08-01T18:02:03.784Z"
+  },
+  "샤오미 미지아 5 Pro||크기": {
+    "value": "353 × 353 × 96mm",
+    "source": "tavily",
+    "sourceUrl": "https://namu.wiki/w/%EC%83%A4%EC%98%A4%EB%AF%B8%20%EB%A1%9C%EB%B4%87%20%EC%B2%AD%EC%86%8C%EA%B8%B0",
+    "usedSnippet": "器人Pro | | 출시일 | 2021년 3월 | | 생산자 | 샤오미 (Xiaomi Communications Co., Ltd. / 小米通讯技术有限公司) | | 크기 | 353 × 353 × 96mm | | 배터리",
+    "cachedAt": "2026-08-01T18:06:51.219Z"
+  },
+  "드리미 X50 Master 직배수||크기": {
+    "value": "24.9cm",
+    "source": "tavily",
+    "sourceUrl": "https://www.youtube.com/watch?v=CNHXVdcKxPs",
+    "usedSnippet": "# 로보락 직배수 경쟁자 등장!!👀 도크 크기가 미쳤어요. 드리미 X50 마스터 이제 서랍에는 다 설치 됩니다. ## 위캔픽스 6580 subscribers 72 likes ### Description 19061",
+    "cachedAt": "2026-08-01T18:06:51.278Z"
+  },
+  "드리미 X50s Pro Ultra||크기": {
+    "value": "350 x 350 x 89.5 mm",
+    "source": "tavily",
+    "sourceUrl": "https://blog.naver.com/PostView.naver?blogId=rotiggiluk&logNo=223980897561&redirect=Dlog",
+    "usedSnippet": "분류 | 항목 | 상세 내용 | | 기본 사양 | 제품명 | 드리미 X50S Pro (Dreame X50S Pro) | | 흡입력 | 25,000 Pa | | 배터리 용량 | 6,400 mAh | | 최대 사용 시간",
+    "cachedAt": "2026-08-01T18:06:53.198Z"
+  },
+  "드리미 L50s Pro Nano 직배수||크기": {
+    "value": "청소기 350x103.8x350mm",
+    "source": "tavily",
+    "sourceUrl": "https://prod.danawa.com/info?pcode=122663063",
+    "usedSnippet": "로딩중 ### 드리미 L50s Pro Nano 직배수 상품비교 더 강력해진 드리미 L시리즈 로봇청소기 상세 스펙 : 로봇청소기 / 흡입+물걸레 / 센서: 카메라 , 3D인식 , LDS / 흡입력: 30,00",
+    "cachedAt": "2026-08-01T18:06:58.773Z"
+  },
+  "드리미 L50s Pro Nano 직배수||스마트 기능": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "https://www.newspim.com/news/view/20260515000174",
+    "usedSnippet": "no를 국내 최초로 선보인다고 15일 밝혔다. 드리미 'L50s Pro Nano' 이미지. [사진=드리미] L50s Pro Nano는 직배수 기반의 자동 관리 기능을 강화해 물 보충과 오수 처리 부담을 없앤 것이",
+    "cachedAt": "2026-08-01T18:13:31.958Z"
+  },
+  "드리미 L50s Pro Ultra||스마트 기능": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "https://blog.naver.com/jeo1999/224267946593?viewType=pc",
+    "usedSnippet": "다 느껴지더라구요 가격대비 정말 괴물스펙!이다 싶었어요 ​ ​ 로봇청소기 고민 중이라면 한 번 비교 리스트에 넣어보시길 추천드려요! ​ [[런칭 특가] 드리미 L50s Pro Ultra 로봇청소기 사",
+    "cachedAt": "2026-08-01T18:13:32.161Z"
+  },
+  "드리미 L10s Ultra Gen3||스마트 기능": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "https://blog.naver.com/dleoqk/224141589952?viewType=pc",
+    "usedSnippet": "딱 저에게 필요한 실속 기능만 갖춘 제품을 찾기까지 고민이 참 많았는데요. 오늘은 제 삶의 질을 수직 상승시킨 드리미 L10s Ultra Gen3의 찐 후기를 공유해 보려고 합니다! ​ ​ ​ ​ ​ ​",
+    "cachedAt": "2026-08-01T18:13:32.170Z"
+  },
+  "샤오미 미지아 5 Pro||스마트 기능": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "https://blog.naver.com/ryung0212/224064295884?viewType=pc",
+    "usedSnippet": "47가지의 오염물도 감지할 정도로 스마트한 Xiaomi 로봇청소기 5 Pro~ 이물질의 유형을 지능적으로 식별하고 적절하게 적용하여 움직여요. 예를 들어 고체 쓰레기가 감지되면 물. 걸. 레 패드를 들어 올",
+    "cachedAt": "2026-08-01T18:13:32.995Z"
+  },
+  "드리미 X50 Master 직배수||스마트 기능": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "https://lim-z.tistory.com/64",
+    "usedSnippet": "직배수 설치모습 그래도 이렇게 써보니 장점이 더 많네요 ㅎㅎ 가족분 중에 반려동물 키우시는 분이 있는데 저희 집에 강아지를 데리고 오면 털이 꽤 빠지거든요 그래도 드리미 X50 마스터가 강력한 흡입력",
+    "cachedAt": "2026-08-01T18:13:34.339Z"
+  },
+  "삼성전자 비스포크 AI 스팀 울트라 직배수 VR90F01SAG||흡입력": {
+    "value": "용도: 흡입+물걸레",
+    "source": "db",
+    "cachedAt": "2026-08-01T18:42:52.179Z"
+  },
+  "드리미 L50s Pro Ultra||배터리 수명": {
+    "value": "5200",
+    "source": "tavily",
+    "sourceUrl": "https://nosearch.com/product/living/robotic_vacuum_cleaner/detail/L50s%20Pro%20Ultra",
+    "usedSnippet": "0s Pro UltraproductComparisonTable_product_L50s Pro Ultra 지금보는 제품 드리미 L50s Pro Ultra 882,570원 | productComparisonTable_p",
+    "cachedAt": "2026-08-01T19:25:36.633Z"
+  },
+  "로보락 S8 MaxV Ultra||흡입력": {
+    "value": "흡입력: 10,000Pa",
+    "source": "db",
+    "cachedAt": "2026-08-01T19:29:40.534Z"
+  },
+  "로보락 S8 MaxV Ultra||소음": {
+    "value": "67dB",
+    "source": "tavily",
+    "sourceUrl": "https://elecinsight.tistory.com/490",
+    "usedSnippet": "오히려 1.5dB 낮아진 67dB이며, 저소음 모드이기는 하나 사용시간, 청소면적 모두 각각 3시간, 90평으로 동일하다. 요약하자면 로보락 S8 MaxV Ultra는 S8 Pro Ultra와 비교하여 훨씬 강력한",
+    "cachedAt": "2026-08-01T19:29:44.094Z"
+  },
+  "샤오미 미지아 5 Pro||먼지통 용량": {
+    "value": "2.5L",
+    "source": "tavily",
+    "sourceUrl": "https://blog.naver.com/teatree725/224065137071?viewType=pc",
+    "usedSnippet": "할 곳’과 ‘피해야 할 곳’을 구분하니까 바닥 손상이나 오염 확산 없이 훨씬 깨끗하게 관리할 수 있답니다! 유지보수까지 편하게 샤오미 Xiaomi 로봇청소기 5 Pro는 청소력뿐 아니라 관리도 편해요.",
+    "cachedAt": "2026-08-01T19:29:46.129Z"
+  },
+  "드리미 L50s Pro Ultra||무게": {
+    "value": "4.04kg",
+    "source": "tavily",
+    "sourceUrl": "https://in.dreametech.com/products/l50s-pro-ultra",
+    "usedSnippet": "Product Name Dreame L50s Pro Ultra Robot Vacuum Dimensions 350 x 350 x 103.8mm Base Station Dimensions 457 x 340 x 590",
+    "cachedAt": "2026-08-01T19:29:57.034Z"
+  },
+  "로보락 S8 MaxV Ultra||최대 비행 고도": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "https://kr.roborock.com/blogs/roborock-kr/roborock-s8-maxv-ultra-goes-into-space",
+    "usedSnippet": "이번 우주 항해 미션을 위해 로보락 엔지니어들은 전자 제어 시스템을 비행 컴퓨터와 통합하는 작업을 진행했습니다. 덕분에 로보락 S8 MaxV Ultra의 사이드 브러시, 듀오 롤러 브러시 시스템 및 “Hello Ro",
+    "cachedAt": "2026-08-01T19:29:59.928Z"
+  },
+  "로보락 S8 MaxV Ultra||드리미 스펙": {
+    "value": "X",
+    "source": "tavily",
+    "sourceUrl": "https://www.youtube.com/watch?v=bWMP1OpJm_c",
+    "usedSnippet": "놓았으니 끝까지 시청해 주시기 바라겠고요 마지막으로 가격입니다 로보락 S8 맥스 V 울트라의 경우 올인원이 약 145만 원 직배 수가 194만 원이고 S9 맥스 V 울트라의 오린 원는 159만 원 직배 수는 방문 설",
+    "cachedAt": "2026-08-01T19:30:02.244Z"
+  },
+  "로보락 S9 MaxV Ultra||배터리 수명": {
+    "value": "배터리용량: 6400mAh",
+    "source": "db",
+    "cachedAt": "2026-08-02T08:58:31.827Z"
+  },
+  "샤오미 미지아 5C 직배수||스마트 기능": {
+    "value": "음성인식",
+    "source": "tavily",
+    "sourceUrl": "https://search.danawa.com/dsearch.php?query=%EC%83%A4%EC%98%A4%EB%AF%B8%EB%A1%9C%EB%B4%87%EC%B2%AD%EC%86%8C%EA%B8%B0",
+    "usedSnippet": "심 상품분류 : 청소기 > 로봇청소기 + 45몰 139,000원 5C 직배수 이미지보기 샤오미 미지아 5C 직배수 로봇청소기/ 흡입+물걸레/센서: LDS/ 흡입력: 15,00",
+    "cachedAt": "2026-08-02T15:24:09.780Z"
+  },
+  "LG전자 오브제컬렉션 코드제로 R9 RO971GA||스마트 기능": {
+    "value": "클로바, LG 씽큐 앱, 스마트 페어링",
+    "source": "tavily",
+    "sourceUrl": "https://live.lge.co.kr/lg-code-zero-r9",
+    "usedSnippet": "hinQ) 앱의 ‘UP가전 센터’를 통해 새로운 기능을 업그레이드로 추가할 수 있는 LG UP가전 라인업이다. LG전자는 향후 추가될 신기능 중 기존 코드제로 오브제컬렉션 R9에도 업그레이드가 가능한 기능은 추가할",
+    "cachedAt": "2026-08-02T15:24:10.068Z"
+  },
+  "LG전자 오브제컬렉션 코드제로 로보킹 AI 올인원 직배수 B95AWBTH||스마트 기능": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "https://prod.danawa.com/info?pcode=63268895",
+    "usedSnippet": "# LG전자 오브제컬렉션 코드제로 로보킹 AI 올인원 직배수 B95AWBTH : 다나와 가격비교 다나와 가격비교 CI 다나와 APP 다나와 장터 PC견적 자동차 빈 이미지 #### HOT #### 영상/음향가전",
+    "cachedAt": "2026-08-02T15:24:10.315Z"
+  },
+  "LG전자 W71RVL||스마트 기능": {
+    "value": "원격 제어",
+    "source": "tavily",
+    "sourceUrl": "https://biz.chosun.com/it-science/ict/2023/12/20/WUP3LVHVSRH27HJSJSKGR2QIGE?outputType=amp",
+    "usedSnippet": "LG전자는 W71RVL는 원격 제어 기능을 강화해 여러 대를 동시에 운영해야 하는 상황에서도 적합하다고 소개했다. 전용 앱(LG Robot Cleaner)에 제품을 등록하면 ▲실시간 원격제어 ▲실시간 청소 진행 상황",
+    "cachedAt": "2026-08-02T15:24:10.367Z"
+  },
+  "LG전자 코드제로 R9 R965IB||스마트 기능": {
+    "value": "LG ThinQ, 스마트 페어링",
+    "source": "tavily",
+    "sourceUrl": "https://www.aitimes.kr/news/articleView.html?idxno=26160",
+    "usedSnippet": "해 스마트 페어링 기능을 활용할 수 있다. 코드제로 오브제컬렉션 R9이 진공 청소를 끝낸 후 코드제로 오브제컬렉션 M9이 알아서 물걸레 청소를 진행해 편리하다. [...] LG전자가 신개념 청소기거치대 ‘올인원타워’",
+    "cachedAt": "2026-08-02T15:24:10.615Z"
+  },
+  "LG전자 오브제컬렉션 코드제로 로보킹 AI 올인원 B94AHB||스마트 기능": {
+    "value": "스마트폰제어",
+    "source": "tavily",
+    "sourceUrl": "https://search.danawa.com/dsearch.php?query=LG%EB%A1%9C%EB%B3%B4%ED%82%B9AI%EC%98%AC%EC%9D%B8%EC%9B%90",
+    "usedSnippet": "2몰 1,690,000원 코드제로 로보킹 AI 올인원 B94AHB 이미지보기 LG전자 오브제컬렉션 코드제로 로보킹 AI 올인원 B94AHB 청소부터 물걸레까지 올인원으로 관리하는 프리스탠딩 모",
+    "cachedAt": "2026-08-02T15:24:18.038Z"
+  },
+  "로보락 S10 MaxV Slim 직배수||직배수": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "https://m.bombomrental.com/model/compare.php?model_idx=59243&ca_id=001",
+    "usedSnippet": "접수중입니다. 잠시만 기다려주세요. ### 어떤 상품을 찾으시나요? 빠른 렌탈상담 ### 1877-5456 연중무휴 저신용 가전렌탈 ## [로보락] [현장] S10 MaxV Slim 직배수 로봇청소기",
+    "cachedAt": "2026-08-02T16:48:16.865Z"
+  },
+  "로보락 S10 MaxV Slim||자동급수": {
+    "value": "자동 급배수 시스템",
+    "source": "tavily",
+    "sourceUrl": "https://kr.roborock.com/pages/roborock-s10-maxv-slim",
+    "usedSnippet": "a image This is a image This is a image This is a image This is a image This is a image 주요 사양 S10 MaxV Slim S10 MaxV",
+    "cachedAt": "2026-08-02T16:48:18.531Z"
+  },
+  "LG전자 코드제로 R9 R965IB||먼지비움": {
+    "value": "먼지비움: ○",
+    "source": "db",
+    "cachedAt": "2026-08-02T16:48:18.532Z"
+  },
+  "LG전자 오브제컬렉션 코드제로 R9 RO971GA||먼지비움": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "https://www.lg.co.kr/media/release/25385",
+    "usedSnippet": "G ThinQ) 앱의 ‘UP가전 센터’를 통해 새로운 기능을 업그레이드로 추가할 수 있는 LG UP가전 라인업이다. LG전자는 향후 추가될 신기능 중 기존 코드제로 오브제컬렉션 R9에도 업그레이드가 가능한 기능은 추",
+    "cachedAt": "2026-08-02T16:48:19.681Z"
+  },
+  "모바 V50 Ultra||흡입력": {
+    "value": "흡입력: 24,000Pa",
+    "source": "db",
+    "cachedAt": "2026-08-02T16:59:42.216Z"
+  },
+  "모바 모비우스 60||흡입력": {
+    "value": "흡입력: 30,000Pa",
+    "source": "db",
+    "cachedAt": "2026-08-02T16:59:42.220Z"
+  },
+  "모바 V50 Ultra||브러시 유형": {
+    "value": "dual brush system",
+    "source": "tavily",
+    "sourceUrl": "",
+    "usedSnippet": "The MOVA V50 Ultra features a dual brush system for effective cleaning. It has a 5G Snapdragon 855 processor and a 4,000",
+    "cachedAt": "2026-08-02T17:00:00.091Z"
+  },
+  "모바 모비우스 60||브러시 유형": {
+    "value": "TroboWave DuoBrush",
+    "source": "tavily",
+    "sourceUrl": "",
+    "usedSnippet": "The Mova Mobius 60 features a TroboWave DuoBrush for cleaning and a retractable LiDAR for navigation. It has a maximum s",
+    "cachedAt": "2026-08-02T17:00:02.416Z"
+  },
+  "모바 V50 Ultra||필터 성능": {
+    "value": "HEPA filter",
+    "source": "tavily",
+    "sourceUrl": "",
+    "usedSnippet": "The MOVA V50 Ultra features a self-cleaning HEPA filter, a powerful 24,000Pa suction, and can climb obstacles up to 6cm",
+    "cachedAt": "2026-08-02T17:17:53.404Z"
+  },
+  "파나소닉 루믹스 DC-S5 IIx 바디||무게와 크기": {
+    "value": "무게: 740g",
+    "source": "db",
+    "cachedAt": "2026-08-03T05:04:05.988Z"
+  },
+  "파나소닉 루믹스 DC-S5 바디||무게와 크기": {
+    "value": "무게: 714g",
+    "source": "db",
+    "cachedAt": "2026-08-03T05:04:05.994Z"
+  },
+  "파나소닉 루믹스 DC-S5 바디||사용 편의성": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "",
+    "usedSnippet": "The Panasonic Lumix DC-S5 features a high-speed AF engine and 180K pixel RGB sensor for excellent autofocus performance",
+    "cachedAt": "2026-08-03T05:17:44.604Z"
+  },
+  "파나소닉 루믹스 DC-S5 바디||센서 크기": {
+    "value": "35.6 x",
+    "source": "tavily",
+    "sourceUrl": "https://www.매뉴얼.한국/panasonic/lumix-dc-s5/%EB%A7%A4%EB%89%B4%EC%96%BC",
+    "usedSnippet": "Panasonic Lumix DC-S5의 제품 사양과 설명서 사양을 찾을 수 있습니다. 루믹스 DC-S5는 장시간 촬영이 가능한 강력한 배터리 수명을 갖추고 있습니다. 파나소닉 루믹스 DC-S5는 다양한 사진 작업을",
+    "cachedAt": "2026-08-03T05:33:26.827Z"
+  },
+  "SONY 알파 A6000 바디||배터리 수명": {
+    "value": "배터리: NP-FW50(1020mAh)",
+    "source": "db",
+    "cachedAt": "2026-08-03T09:33:39.452Z"
+  },
+  "SONY 알파 A6000 바디||센서 크기": {
+    "value": "23.5 x",
+    "source": "tavily",
+    "sourceUrl": "https://apotelyt.com/camera-specs/sony-a6000-sensor-crop",
+    "usedSnippet": "| Sensor Size |  | 23.5 x",
+    "cachedAt": "2026-08-03T10:27:14.923Z"
+  },
+  "SONY 알파 A6700 바디||센서 크기": {
+    "value": "23.5 x 15.7 mm",
+    "source": "tavily",
+    "sourceUrl": "",
+    "usedSnippet": "The sensor size of the Sony Alpha A6700 body is 23.5 x 15.7 mm.",
+    "cachedAt": "2026-08-03T10:27:14.453Z"
+  },
+  "파나소닉 루믹스 DC-S5 IIx 바디||무게": {
+    "value": "740g",
+    "source": "db",
+    "cachedAt": "2026-08-03T11:08:21.847Z"
+  },
+  "SONY 알파 A7 III 바디||무게": {
+    "value": "650g",
+    "source": "db",
+    "cachedAt": "2026-08-03T11:08:21.851Z"
+  },
+  "SONY 알파 A6700 바디||무게": {
+    "value": "493g",
+    "source": "db",
+    "cachedAt": "2026-08-03T11:08:21.854Z"
+  },
+  "파나소닉 루믹스 DC-S5 바디||무게": {
+    "value": "714g",
+    "source": "db",
+    "cachedAt": "2026-08-03T11:08:21.859Z"
+  },
+  "SONY 알파 A6400 바디||무게": {
+    "value": "403g",
+    "source": "db",
+    "cachedAt": "2026-08-03T11:08:21.872Z"
+  },
+  "파나소닉 루믹스 DC-S5 바디||렌즈 교환 가능": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "http://tech.kobeta.com/%ED%8C%8C%EB%82%98%EC%86%8C%EB%8B%89%EC%BD%94%EB%A6%AC%EC%95%84-%ED%92%80%ED%94%84%EB%A0%88%EC%9E%84-%EC%8B%9C%EB%84%A4%EB%A7%88-%EB%AF%B8%EB%9F%AC%EB%A6%AC%EC%8A%A4-%EC%B9%B4%EB%A9%94%EB%9D%BC",
+    "usedSnippet": "파나소닉코리아가 새로운 하이브리드 풀프레임 미러리스 카메라 ‘루믹스(LUMIX) S5’를 출시했다.",
+    "cachedAt": "2026-08-03T11:09:19.228Z"
+  },
+  "SONY 알파 A6400 바디||렌즈 교환 가능": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "",
+    "usedSnippet": "The Sony Alpha A6400 is a mirrorless camera with a 24.2MP APS-C sensor, interchangeable lenses, and a body size of 120 x 67 x 60mm.",
+    "cachedAt": "2026-08-03T11:09:19.821Z"
+  },
+  "SONY 알파 A6700 바디||렌즈 교환 가능": {
+    "value": "Sony E mount",
+    "source": "tavily",
+    "sourceUrl": "",
+    "usedSnippet": "The Sony Alpha A6700 is a mirrorless camera with a 26-megapixel APS-C sensor and a Sony E mount.",
+    "cachedAt": "2026-08-03T11:09:19.879Z"
+  },
+  "파나소닉 루믹스 DC-S5 IIx 바디||렌즈 교환 가능": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "",
+    "usedSnippet": "렌즈와 뷰파인더에 불소 코팅이 적용되어 있습니다.",
+    "cachedAt": "2026-08-03T11:09:19.891Z"
+  },
+  "SONY 알파 A7 III 바디||렌즈 교환 가능": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "",
+    "usedSnippet": "It is interchangeable lens compatible.",
+    "cachedAt": "2026-08-03T11:09:20.058Z"
+  },
+  "SONY 알파 A6000 바디||렌즈 교환 가능": {
+    "value": "○",
+    "source": "tavily",
+    "sourceUrl": "",
+    "usedSnippet": "The Sony Alpha A6000 is a mirrorless digital camera with an APS-C sensor, supports interchangeable lenses, and features fast hybrid autofocus.",
+    "cachedAt": "2026-08-03T11:09:20.595Z"
+  },
+  "SONY 알파 A6000 바디||미러리스": {
+    "value": "미러리스",
+    "source": "db",
+    "cachedAt": "2026-08-03T11:10:20.260Z"
+  },
+  "파나소닉 루믹스 DC-S5 IIx 바디||미러리스": {
+    "value": "미러리스",
+    "source": "db",
+    "cachedAt": "2026-08-03T11:10:20.275Z"
+  },
+  "SONY 알파 A6000 바디||무게": {
+    "value": "12.16 ounces",
+    "source": "tavily",
+    "sourceUrl": "https://www.amazon.com/Sony-Mirrorless-Digitial-3-0-Inch-16-50mm/dp/B00I8BICB2",
+    "usedSnippet": "| Item Weight | 12.16 ounces |",
+    "cachedAt": "2026-08-03T11:10:30.575Z"
   }
 }

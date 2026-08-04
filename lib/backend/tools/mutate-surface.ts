@@ -1,12 +1,9 @@
-import { tool, generateText } from "ai";
+import { tool } from "ai";
 import { z } from "zod";
-import * as fs from "fs";
-import * as path from "path";
-import { anthropic } from "@ai-sdk/anthropic";
 import { currentRequestId, currentProductCategory, pushMutateSurfaceResult } from "./sidebar-store";
 import { ragSearch } from "../rag/search";
-import { tavilySearchSnippet } from "../agents/data_agent";
 import { generateUISpec } from "../agents/ui_agent";
+import { lookupProductSpec, buildSpecPhrase } from "../services/spec-lookup";
 
 /**
  * mutateSurface — 이미 화면에 표시된 Option List를 자연어 명령으로 수정
@@ -42,217 +39,6 @@ async function tavilySearchInline(query: string): Promise<TavilyResult[]> {
   } catch (err) {
     console.warn("[mutateSurface/Tavily] 요청 실패:", err);
     return [];
-  }
-}
-
-/**
- * Tavily 검색 결과에서 field_key에 해당하는 스펙 문구를 추출한다.
- * 필드 타입별 허용 단위를 지정하여 오탐을 방지한다.
- * - 무게→kg/g, 소음→dB, 흡입력→Pa, 배터리→mAh/분/시간 etc.
- */
-
-// 필드타입별 허용 단위 맵 (key 에 포함되는 패턴 일치 시 해당 단위만 허용)
-const FIELD_TYPE_UNITS: [RegExp, string[]][] = [
-  [/무게|중량|weight/i,           ["kg", "g"]],
-  [/소음|noise|db/i,              ["dB"]],
-  [/흡입\s*력|흡입|suction/i,      ["Pa", "kPa"]],
-  [/배터리|battery/i,             ["mAh"]],
-  [/충전\s*시간|충전|charge/i,     ["분", "시간", "h", "min"]],
-  [/사용\s*시간|runtime/i,          ["분", "시간", "h", "min"]],
-  [/먼지\s*통|집진\s*통|통\s*용량|dustbin|dust.bin/i, ["ml", "mL", "L", "l", "ℓ", "cc"]],
-  [/물\s*탱|water/i,                ["ml", "mL", "L", "l", "ℓ"]],
-  [/rpm/i,                        ["rpm"]],
-];
-
-function getFieldUnits(fieldKey: string): string[] {
-  for (const [pattern, units] of FIELD_TYPE_UNITS) {
-    if (pattern.test(fieldKey)) return units;
-  }
-  // fallback: 범용 단위기호 (field이 알려지지 않은 경우)
-  return ["dB", "Pa", "mAh", "분", "시간", "kg", "g", "ml", "L", "W", "V", "rpm"];
-}
-
-function extractSpecFromTavily(results: TavilyResult[], fieldKey: string): string | null {
-  if (results.length === 0) return null;
-  const combined = results.map(r => r.content).join("\n");
-
-  // 동의어 키 목록 구성: 원본 키 + FIELD_SYNONYMS 확장
-  const synonymKeys: string[] = [fieldKey];
-  for (const [pattern, syns] of FIELD_SYNONYMS) {
-    if (pattern.test(fieldKey)) {
-      for (const s of syns) { if (!synonymKeys.includes(s)) synonymKeys.push(s); }
-      break;
-    }
-  }
-
-  const units = getFieldUnits(fieldKey);
-  const unitPattern = units.map(u => u.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
-
-  for (const key of synonymKeys) {
-    const keyEsc = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-    // P1: "key: 값단위" 직접 매칭
-    const p1 = new RegExp(
-      `${keyEsc}[^\\n:：]{0,20}[:\\s：]+([\\d.]+\\s*(?:${unitPattern})[/\\w]*)`,
-      "i"
-    );
-    const m1 = combined.match(p1);
-    if (m1) {
-      console.log(`[Tavily extract] P1 match (key="${key}"): "${m1[0].slice(0, 60)}"`);
-      return `${fieldKey} ${m1[1].trim()}`;
-    }
-
-    // P2: key 이후 비숫자 30자 이내에 값+단위
-    const p2 = new RegExp(
-      `${keyEsc}[^\\d]{0,30}([\\d.]+\\s*(?:${unitPattern}))`,
-      "i"
-    );
-    const m2 = combined.match(p2);
-    if (m2) {
-      console.log(`[Tavily extract] P2 match (key="${key}"): "${m2[0].slice(0, 60)}"`);
-      return `${fieldKey} ${m2[1].trim()}`;
-    }
-
-    // P3: 값+단위 이후 비숫자 30자 이내에 key (역방향)
-    const p3 = new RegExp(
-      `([\\d.]+\\s*(?:${unitPattern}))[^\\d]{0,30}${keyEsc}`,
-      "i"
-    );
-    const m3 = combined.match(p3);
-    if (m3) {
-      console.log(`[Tavily extract] P3 match (key="${key}"): "${m3[0].slice(0, 60)}"`);
-      return `${fieldKey} ${m3[1].trim()}`;
-    }
-  }
-
-  // 실패 시 디버그: Tavily 스니펫 일부 출력 (원인 파악용)
-  console.log(`[Tavily extract] ❌ 모든 패턴 실패 (keys=${synonymKeys.join(",")}). 스니펫 샘플:`);
-  console.log(combined.slice(0, 300).replace(/\n/g, " | "));
-  return null;
-}
-
-// ---------------------------------------------------------------------------
-// 직접 DB 조회 — 이름 매칭으로 products-*.json에서 제품 스펙 찾기
-// ragSearch(임베딩 API)를 쓰지 않고 파일을 직접 읽어 이름으로 비교
-// ---------------------------------------------------------------------------
-
-// 필드키 동의어 확장 — "무게" 검색 시 "중량"도 함께 찾기
-const FIELD_SYNONYMS: [RegExp, string[]][] = [
-  [/무게|weight/i,                    ["무게", "중량"]],
-  [/배터리|battery/i,                 ["배터리", "배터리용량", "사용시간"]],
-  [/충전\s*시간|charge/i,            ["충전시간", "충전"]],
-  [/소음|noise/i,                     ["소음"]],
-  [/흡입\s*력|suction/i,             ["흡입력", "흡입"]],
-  [/담한\s*면적|area/i,              ["담한면적", "사용고도지 면적"]],
-  [/먼지통|집진통|dust.*bin|bin/i,  ["먼지통", "집진통", "먼지통 용량"]],
-  [/물통|water.*tank|tank/i,         ["물통", "물탱크"]],
-  [/사용\s*시간|run.*time/i,         ["사용시간", "배터리"]],
-];
-
-function expandFieldKeySynonyms(fieldKey: string): string[] {
-  for (const [pattern, synonyms] of FIELD_SYNONYMS) {
-    if (pattern.test(fieldKey)) return synonyms;
-  }
-  return [fieldKey];
-}
-
-export function findProductSpecInDB(productName: string, fieldKey: string, category: string): string | null {
-  try {
-    const filePath = path.join(process.cwd(), "data", `products-${category}.json`);
-    if (!fs.existsSync(filePath)) {
-      console.warn(`[DB lookup] 파일 없음: products-${category}.json`);
-      return null;
-    }
-    const products = JSON.parse(fs.readFileSync(filePath, "utf8")) as { name: string; specs: string[] }[];
-    const qLower = productName.toLowerCase();
-    const matched = products.find(p => {
-      const pLower = p.name.toLowerCase();
-      return pLower === qLower || pLower.includes(qLower) || qLower.includes(pLower);
-    });
-    if (!matched) {
-      console.log(`[DB lookup] ❌ "${productName}" — DB에 제품 없음`);
-      return null;
-    }
-    // 매핑된 DB 제품명이 검색어와 다르면 명시
-    const nameMatched = matched.name === productName ? "" : ` (DB명: "${matched.name}")`;
-    // 동의어 확장 후 모든 키로 검색
-    const synonyms = expandFieldKeySynonyms(fieldKey);
-    for (const key of synonyms) {
-      const keyLower = key.toLowerCase();
-      const matchedSpec = matched.specs.find(s => s.toLowerCase().includes(keyLower));
-      if (matchedSpec) {
-        console.log(`[DB lookup] ✅ "${productName}"${nameMatched} (key="${key}") → "${matchedSpec}"`);
-        return matchedSpec;
-      }
-    }
-    // 스펙 없음 — DB에 있는 스펙 키 목록 일부 출력
-    const specKeys = matched.specs.slice(0, 8).map(s => s.split(/[:\s]/)[0]).join(", ");
-    console.log(`[DB lookup] ⚠️  "${productName}"${nameMatched} — [${synonyms.join(", ")}] 스펙 없음 | DB 보유 스펙(최대8): ${specKeys}`);
-    return null;
-  } catch (err) {
-    console.warn(`[DB lookup] 오류:`, err);
-    return null;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// CompTable식 스펙 추출 — Claude Haiku로 스니펫에서 배치 필드 추출
-// enrichContextWithTavily (renderToCompTable)와 동일한 방식
-// ---------------------------------------------------------------------------
-
-export async function extractSpecsWithClaude(
-  items: { product_name: string; snippet: string }[],
-  field_key: string
-): Promise<Map<string, string>> {
-  if (items.length === 0) return new Map();
-
-  const itemsText = items
-    .map((it, i) => `[${i + 1}] ${it.product_name}\n${it.snippet}`)
-    .join('\n\n');
-
-  const prompt = `다음 각 제품의 검색 결과 스니펫에서 "${field_key}" 관련 수치를 추출해주세요.
-각 줄에 정확히 "제품명 | 값(단위)" 형식으로만 답하세요.
-- 정확한 수치가 있으면 그대로 사용
-- 수치가 간접적으로 언급되면 (예: "0.3리터짜리 먼지통") 변환해서 사용
-- 범위가 있으면 중간값 사용 (예: 0.3L~0.5L → 0.4L)
-- 정말 정보가 전혀 없는 경우에만 생략
-다른 텍스트는 절대 출력하지 마세요.
-예시: 로보락 S10 MaxV | 4.5kg
-
-${itemsText}`.trim();
-
-  try {
-    const { text } = await generateText({
-      model: anthropic('claude-haiku-4-5'),
-      prompt,
-      temperature: 0,
-    });
-
-    console.log(`\n\x1b[35m[Claude extract] 🤖 원본 응답:\n${text}\x1b[0m\n`);
-
-    const resultMap = new Map<string, string>();
-    for (const line of text.split('\n')) {
-      const match = line.match(/^(.+?)\s*\|\s*(.+)$/);
-      if (!match) continue;
-      const namePart = match[1].trim();
-      const value = match[2].trim();
-      if (!value || value === 'null' || value === '-' || value === 'N/A') continue;
-
-      // 제품명 퍼지 매칭 (LLM이 일부만 사용할 수 있음)
-      const matched = items.find(it =>
-        it.product_name === namePart ||
-        it.product_name.includes(namePart) ||
-        namePart.includes(it.product_name)
-      );
-      if (matched) {
-        resultMap.set(matched.product_name, `${field_key} ${value}`);
-        console.log(`[Claude extract] ✅ "${matched.product_name}" → "${field_key} ${value}"`);
-      }
-    }
-    return resultMap;
-  } catch (err) {
-    console.warn('[Claude extract] 오류:', err);
-    return new Map();
   }
 }
 
@@ -305,8 +91,17 @@ Only use when [CURRENT_OPTION_LIST] is present. For new product searches, use re
     op_summary: z.string().describe(
       "Brief Korean description of the action, e.g. '가격 낮은 순으로 정렬했어요'"
     ),
+
+    // sort: 정렬 기준 (프론트엔드 클라이언트 사이드 정렬에 사용)
+    sort_by: z.string().optional().nullable().describe(
+      "For sort op: field to sort by in Korean, e.g. '가격', '무게', '소음', '흡입력'"
+    ),
+    sort_order: z.enum(["asc", "desc"]).optional().nullable().describe(
+      "For sort op: 'asc' = 낮은순, 'desc' = 높은순"
+    ),
   }),
   execute: async (args) => {
+    const capturedRequestId = currentRequestId; // capture before any async work
     console.log(`[mutateSurface] op=${args.op} | ${args.op_summary}`);
 
     let result: any = {
@@ -316,7 +111,12 @@ Only use when [CURRENT_OPTION_LIST] is present. For new product searches, use re
     };
 
     if (args.op === "filter" || args.op === "sort") {
-      result.result_card_names = args.result_card_names ?? [];
+      result.result_card_names = (args as any).result_card_names ?? [];
+      // sort op: sort_by/sort_order는 프론트엔드가 클라이언트 사이드 정렬에 사용
+      if (args.op === "sort") {
+        result.sort_by   = (args as any).sort_by   ?? null;
+        result.sort_order = (args as any).sort_order ?? "asc";
+      }
 
     } else if (args.op === "add") {
       // 로컬 RAG DB에서 제품 검색
@@ -401,59 +201,77 @@ Only use when [CURRENT_OPTION_LIST] is present. For new product searches, use re
         }
       }
 
-      toAdd.filter((_: string, i: number) => searchResults[i].length === 0).forEach((name: string) => {
-        console.warn(`[mutateSurface/add] Not found in DB: "${name}"`);
-      });
+      // Tavily fallback: RAG에 없는 제품은 웹 검색으로 최소 카드 생성
+      const notFoundNames = toAdd.filter((_: string, i: number) => searchResults[i].length === 0);
+      if (notFoundNames.length > 0) {
+        console.log(`[mutateSurface/add] RAG 미발견 ${notFoundNames.length}개 → Tavily 웹검색 시도`);
+        await Promise.all(notFoundNames.map(async (name: string) => {
+          const category = currentProductCategory ?? '제품';
+          const query = `${name} ${category} 가격 스펙`;
+          const results = await tavilySearchInline(query);
+          if (results.length === 0) {
+            console.warn(`[mutateSurface/add] Tavily도 미발견: "${name}"`);
+            return;
+          }
+          const combined = results.slice(0, 3).map(r => r.content).join(' ');
+          // 가격 추출: "572,390원" 또는 "572390원"
+          const priceMatch = combined.match(/(\d{3,3},?\d{3})\s*원/);
+          const price = priceMatch ? `${priceMatch[1]}원` : '';
+          // 스펙 후보 추출: "흡입력 15,000Pa", "소음 65dB" 등
+          const specPatterns = [
+            /흡입\s*력\s*[\d,]+\s*Pa/gi,
+            /소음\s*[\d]+\s*dB/gi,
+            /배터리\s*[\d,]+\s*(?:mAh|분|시간)/gi,
+            /무게\s*[\d.]+\s*kg/gi,
+          ];
+          const specs: string[] = [];
+          for (const pat of specPatterns) {
+            const m = combined.match(pat);
+            if (m) specs.push(m[0].trim());
+          }
+          newCards.push({
+            name,
+            price,
+            imageUrl: '',
+            link: results[0]?.url ?? '',
+            brand: name.split(/\s+/)[0],
+            specs: specs.slice(0, 4),
+            description: `웹 검색 결과로 추가됨 (DB 미수록 제품)`,
+          });
+          console.log(`[mutateSurface/add] Tavily 카드 생성: "${name}" (가격: ${price}, 스펙: ${specs.length}개)`);
+        }));
+      }
 
       result.new_cards = newCards;
 
       // ── field_updates 처리 (add op에 통합) ───────────────────────────────
+      // lookupProductSpec(캐시→DB→Tavily 3단계+judgeCell 검증+SiblingGuard)을 제품마다
+      // 개별 호출한다. 예전엔 DB에 없는 제품들을 모아 스니펫 하나씩만 가져온 뒤 Claude
+      // 배치 호출 1번으로 값을 뽑았는데(검증 없음), 이제는 auto-enrich/fetch-spec/
+      // ComparisonTable과 동일한 검증된 파이프라인을 쓴다 — 그만큼 제품 수만큼 호출이
+      //늘어나지만(병렬 처리), 형제 SKU 오염 방지 등 다른 경로와 동일한 안전장치를 받는다.
       const fieldUpdatesRaw = args.field_updates ?? [];
       if (fieldUpdatesRaw.length > 0) {
-        // Step 1: DB 직접 조회
-        const specMap = new Map<string, string>();
-        const needsWeb: { product_name: string; field_key: string }[] = [];
+        const results = await Promise.all(
+          fieldUpdatesRaw.map(async (u) => {
+            const lookup = await lookupProductSpec(u.product_name, u.field_key, currentProductCategory);
+            return { ...u, lookup };
+          })
+        );
 
-        for (const u of fieldUpdatesRaw) {
-          const dbSpec = findProductSpecInDB(u.product_name, u.field_key, currentProductCategory);
-          if (dbSpec) {
-            specMap.set(u.product_name, dbSpec);
-          } else {
-            needsWeb.push(u);
+        const resolvedUpdates = results
+          .filter(({ lookup }) => lookup.value !== "-" && !lookup.uncertain)
+          .map(({ product_name, field_key, lookup }) => ({
+            product_name,
+            field_key,
+            spec_phrase: buildSpecPhrase(field_key, lookup.value),
+          }));
+
+        for (const { product_name, field_key, lookup } of results) {
+          if (lookup.value === "-" || lookup.uncertain) {
+            console.warn(`[mutateSurface/add] ❌ "${product_name}" × "${field_key}" 해결 실패${lookup.uncertain ? " (불확실)" : ""}`);
           }
         }
-
-        // Step 2: DB에 없는 제품들 → Tavily 스니펫 병렬 수집
-        if (needsWeb.length > 0) {
-          const fieldKey = needsWeb[0].field_key;
-          console.log(`[mutateSurface/add] Tavily 병렬 검색 시작 (${needsWeb.length}개 제품, 필드: ${fieldKey})`);
-
-          const snippetResults = await Promise.all(
-            needsWeb.map(async u => {
-              const query = `${u.product_name} ${u.field_key}`;
-              console.log(`[mutateSurface/add] Tavily 검색: "${query}"`);
-              const res = await tavilySearchSnippet(query);
-              return { product_name: u.product_name, snippet: res?.snippet ?? null };
-            })
-          );
-
-          const withSnippet = snippetResults.filter(r => r.snippet !== null) as { product_name: string; snippet: string }[];
-          if (withSnippet.length > 0) {
-            console.log(`[mutateSurface/add] Claude Haiku 배치 추출 (${withSnippet.length}개 스니펫)...`);
-            const extracted = await extractSpecsWithClaude(withSnippet, fieldKey);
-            for (const [name, spec] of extracted) {
-              specMap.set(name, spec);
-            }
-          }
-
-          for (const r of snippetResults.filter(r => r.snippet === null)) {
-            console.warn(`[mutateSurface/add] ❌ Tavily 스니펫 없음: "${r.product_name}"`);
-          }
-        }
-
-        const resolvedUpdates = fieldUpdatesRaw
-          .filter(u => specMap.has(u.product_name))
-          .map(u => ({ product_name: u.product_name, field_key: u.field_key, spec_phrase: specMap.get(u.product_name)! }));
 
         result.field_updates = resolvedUpdates;
         console.log(`[mutateSurface/add] field_updates 완료: ${resolvedUpdates.length}/${fieldUpdatesRaw.length}개 해결`);
@@ -461,7 +279,7 @@ Only use when [CURRENT_OPTION_LIST] is present. For new product searches, use re
 
     } // end else if add
 
-    if (currentRequestId) pushMutateSurfaceResult(currentRequestId, result);
+    if (capturedRequestId) pushMutateSurfaceResult(capturedRequestId, result);
     return result;
   },
 });

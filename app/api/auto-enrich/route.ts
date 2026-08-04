@@ -6,40 +6,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { lookupProductSpec } from "@/lib/backend/services/spec-lookup";
-
-// ---------------------------------------------------------------------------
-// 스펙 문구 생성 — 기준 유형에 맞는 자연스러운 한국어 표현
-// ---------------------------------------------------------------------------
-
-/** Tavily/LLM이 반환하는 마케팅 수식어를 앞뒤에서 제거하고 핵심 값만 남긴다. */
-const MARKETING_PREFIX = /^(?:최고\s*성능\s*|최고\s*사양\s*|최강\s*|업계\s*(?:최고|최강|최대)\s*|강력한\s*|탁월한\s*|우수한\s*|놀라운\s*|압도적인\s*|혁신적인\s*|뛰어난\s*)/;
-const MARKETING_SUFFIX = /\s*(?:급\s*)?(?:강력한\s*)?(?:흡입력|성능|기능|처리\s*속도|의\s*힘)$/;
-
-function cleanValue(raw: string): string {
-  // 레이블 있는 값("배터리용량: 6400mAh")은 건드리지 않음
-  if (raw.includes(":")) return raw;
-  const cleaned = raw.replace(MARKETING_PREFIX, "").replace(MARKETING_SUFFIX, "").trim();
-  return cleaned || raw; // 모두 지워진 경우 원본 반환
-}
-
-function buildSpecPhrase(fieldKey: string, value: string): string {
-  const v = cleanValue(value); // 마케팅 수식어 제거
-  if (v === "○") {
-    if (/연동|호환|연결/.test(fieldKey)) return `${fieldKey} 가능`;
-    if (/기능/.test(fieldKey)) return `${fieldKey} 지원`;
-    if (/방식|타입|type/.test(fieldKey)) return `${fieldKey} 적용`;
-    return `${fieldKey} 지원`;
-  }
-  if (v === "X") {
-    if (/연동|호환|연결/.test(fieldKey)) return `${fieldKey} 불가`;
-    return `${fieldKey} 없음`;
-  }
-  // value 타입 — 콜론 있으면 기준명 반복 방지
-  if (v.includes(":")) return v;
-  if (/\d/.test(v)) return `${fieldKey}: ${v}`;
-  return `${fieldKey} ${v}`;
-}
+import { lookupProductSpec, buildSpecPhrase } from "@/lib/backend/services/spec-lookup";
 
 // ---------------------------------------------------------------------------
 // 임계값 비교
@@ -131,11 +98,15 @@ export async function POST(req: NextRequest) {
         continue;
       }
 
-      // 불확실 값 → 업데이트는 하되 unconfirmed에 기록
+      // 불확실 값 → "~" 접두사를 붙여 업데이트 (값을 버리지 않음)
+      // unconfirmed에 기록해 UI가 스타일을 다르게 처리할 수 있게 함
+      const displayPhrase = uncertain
+        ? (specPhrase.startsWith("~") ? specPhrase : `~${specPhrase}`)
+        : specPhrase;
+
       if (uncertain) {
-        console.log(`[auto-enrich] ⚠️  "${card.name}" — 불확실 값 (${specPhrase}), 수동 검수 권장`);
+        console.log(`[auto-enrich] ⚠️  "${card.name}" — 불확실 값 (${specPhrase}), "~" 표시 후 표시`);
         unconfirmed.push(card.name);
-        continue;
       }
 
       // 스펙 추가 (가격/브랜드 중복 방지)
@@ -143,8 +114,8 @@ export async function POST(req: NextRequest) {
         fieldKey.toLowerCase().includes(kw)
       );
       if (!isNativeField) {
-        updates.push({ product_name: card.name, field_key: fieldKey, spec_phrase: specPhrase });
-        console.log(`[auto-enrich] 스펙 추가: "${card.name}" — ${specPhrase}`);
+        updates.push({ product_name: card.name, field_key: fieldKey, spec_phrase: displayPhrase });
+        console.log(`[auto-enrich] 스펙 추가: "${card.name}" — ${displayPhrase}`);
       }
 
       // 임계값 판정

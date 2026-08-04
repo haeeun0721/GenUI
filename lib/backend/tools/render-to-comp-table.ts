@@ -1,7 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { generateUISpec } from "../agents/ui_agent";
-import { enrichContextWithTavily } from "../agents/data_agent";
+import { enrichContextWithTavily } from "../services/spec-lookup";
 import { writeCompTableLog } from "../logger";
 import {
   currentRequestId,
@@ -10,6 +10,7 @@ import {
   currentSavedItems,
   currentDecisionCriteria,
   currentMyItemsContextSummary,
+  currentProductCategory,
 } from "./sidebar-store";
 
 
@@ -27,9 +28,13 @@ export const renderToCompTable = tool({
     ui_intent_category: z
       .string()
       .nullable()
-      .describe("Always '2' for Comparative Evaluation."),
+      .describe("Always 'ComparisonTable' for Comparative Evaluation."),
   }),
   execute: async ({ intent_summary, ui_intent_category }) => {
+    // ⚠️ currentRequestId는 전역 변수 — execute 시작 시점에 캡처해야
+    // 다른 요청이 동시에 시작해 전역을 덮어쓰더라도 올바른 requestId를 사용
+    const capturedRequestId = currentRequestId;
+
     console.log(
       [
         "[Tool: renderToCompTable] OUTPUT FORMAT",
@@ -47,7 +52,8 @@ export const renderToCompTable = tool({
     console.log("\n[Pre-enrich] Local DB 스펙 vs. Decision Criteria 커버리지 점검 시작...");
     const { enriched: enrichedContext, productLogs } = await enrichContextWithTavily(
       rawContext,
-      currentDecisionCriteria
+      currentDecisionCriteria,
+      currentProductCategory
     );
     const wasEnriched = enrichedContext !== rawContext;
     console.log(
@@ -87,7 +93,7 @@ export const renderToCompTable = tool({
           if (lastBrace !== -1) {
             const jsonPart = uiSpecString.substring(firstBrace, lastBrace + 1);
             const uiSpec = JSON.parse(jsonPart);
-            if (currentRequestId) pushCompTableResult(currentRequestId, uiSpec);
+            if (capturedRequestId) pushCompTableResult(capturedRequestId, uiSpec);
             return uiSpec;
           }
         }
@@ -97,7 +103,7 @@ export const renderToCompTable = tool({
           .replace(/\n?```\s*$/, "")
           .trim();
         const uiSpec = JSON.parse(cleanStr);
-        if (currentRequestId) pushCompTableResult(currentRequestId, uiSpec);
+        if (capturedRequestId) pushCompTableResult(capturedRequestId, uiSpec);
         return uiSpec;
       }
 

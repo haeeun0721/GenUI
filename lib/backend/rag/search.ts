@@ -59,7 +59,16 @@ function loadData(category: string): { products: StoredProduct[]; embeddings: Em
 const EMBED_API_KEY = process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? "";
 const EMBED_MODEL = "gemini-embedding-001";
 
+// ── In-memory 캐시 (프로세스 수명 동안 유지, 최대 200개) ───────────────────────
+const embedCache = new Map<string, number[]>();
+const EMBED_CACHE_MAX = 200;
+
 export async function embedQuery(text: string): Promise<number[]> {
+  if (embedCache.has(text)) {
+    console.log(`[embedQuery] 캐시 히트: "${text.slice(0, 40)}"`);
+    return embedCache.get(text)!;
+  }
+
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBED_MODEL}:embedContent?key=${EMBED_API_KEY}`;
   const body = {
     model: `models/${EMBED_MODEL}`,
@@ -77,6 +86,12 @@ export async function embedQuery(text: string): Promise<number[]> {
     throw new Error(`[embedQuery] Google API ${res.status}: ${err.slice(0, 200)}`);
   }
   const data = await res.json() as { embedding: { values: number[] } };
+
+  // 캐시 최대치 초과 시 가장 오래된 항목 삭제 (FIFO)
+  if (embedCache.size >= EMBED_CACHE_MAX) {
+    embedCache.delete(embedCache.keys().next().value!);
+  }
+  embedCache.set(text, data.embedding.values);
   return data.embedding.values;
 }
 
@@ -341,13 +356,24 @@ export interface CoverageResult {
  */
 export function checkDbCoverage(criteria: string[], category: string): CoverageResult[] {
   const data = loadData(category);
-  if (!data) return criteria.map(c => ({ criterion: c, matchedKeys: [], productCount: 0, covered: false }));
+  // DB 데이터 없음 → 커버리지 판단 불가. 빈 배열 반환 (false 판정 금지)
+  if (!data) {
+    console.warn(`[Coverage] "${category}" DB 없음 → 커버리지 체크 스킵`);
+    return [];
+  }
 
   const allSpecKeys = new Set<string>();
   for (const p of data.products) {
     for (const spec of p.specs) {
-      const key = spec.split(":")[0].trim();
-      allSpecKeys.add(key);
+      let key = "";
+      const colonIdx = spec.indexOf(":");
+      if (colonIdx !== -1) {
+        key = spec.substring(0, colonIdx).trim();
+      } else {
+        // 콜론이 없는 경우 ("흡입력 20,000Pa" 등) -> 공백 이전의 첫 단어를 키로 추출
+        key = spec.trim().split(/\s+/)[0];
+      }
+      if (key) allSpecKeys.add(key);
     }
   }
 
@@ -380,7 +406,13 @@ export function checkDbCoverage(criteria: string[], category: string): CoverageR
 
     const count = data.products.filter(p =>
       p.specs.some(spec => {
-        const key = spec.split(":")[0].trim();
+        let key = "";
+        const colonIdx = spec.indexOf(":");
+        if (colonIdx !== -1) {
+          key = spec.substring(0, colonIdx).trim();
+        } else {
+          key = spec.trim().split(/\s+/)[0];
+        }
         return candidateKeys.includes(key);
       })
     ).length;

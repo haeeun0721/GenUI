@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Toaster } from "sonner";
 import { ThemeProvider } from "@/components/theme-provider";
 import PanelTour from "@/components/PanelTour";
+import SuppressKnownErrors from "@/components/SuppressKnownErrors";
 import "streamdown/styles.css";
 import "./globals.css";
 
@@ -29,6 +30,7 @@ export default function RootLayout({
       </head>
       <body className="antialiased">
         <ThemeProvider>
+          <SuppressKnownErrors />
           {children}
           <Toaster />
           <PanelTour />

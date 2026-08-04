@@ -1,112 +1,116 @@
 # 📊 비교표 생성 로그
 
-> 생성 시각: 2026. 7. 30. 오후 9:16:49
+> 생성 시각: 2026. 8. 3. 오후 8:10:29
 
 ---
 
 ## ✅ Decision Criteria (3개)
 
-- 흡입력 [중요]
-- 배터리 용량과 사용 시간 [낮음]
-- 스마트폰 앱 연동 [낮음]
+- 미러리스 [중요]
+- 무게 [중요]
+- 렌즈 교환 가능 [중요]
 
 ---
 
 ## 📦 제품별 스펙 커버리지
 
-### 드리미 L50s Pro Ultra
+### 파나소닉 루믹스 DC-S5 IIx 바디
 
-**Danawa DB 스펙 (27개)**
+**Danawa DB 스펙 (33개)**
 
-- `흡입력: 30,000Pa`
-- `LDS: ○`
-- `카메라: ○`
-- `AI사물인식: ○`
-- `문턱등반: ○`
-- `오염도감지: ○`
-- `먼지비움: ○`
-- `걸레건조(온풍): ○`
-- `스테이션청소: ○`
-- `리프팅: 1.05cm`
-- `통과높이: 10.3cm`
-- `반복: ○`
-- `메인2개: ○`
-- `엉킴방지재질: ○`
-- `먼지통: 0.25L`
-- `카펫부스트: ○`
-- `예약청소: ○`
-- `물걸레리프팅: ○`
-- `물걸레: 회전형`
-- `물걸레 회전수: 230RPM`
-- `물탱크: 정수4.5L+오수4L`
-- `음성인식: ○`
-- `홈캠: ○`
-- `먼지엉킴방지: ○`
-- `펫케어: ○`
-- `자체앱: ○`
-- `색상: 화이트`
-
-**기준별 커버리지**
-
-| 기준 | DB 스펙 커버 | 웹 보강 |
-|------|:-----------:|:------:|
-| 흡입력 [중요] | ✅ | - |
-| 배터리 용량과 사용 시간 [낮음] | ❌ | 🔍 |
-| 스마트폰 앱 연동 [낮음] | ❌ | 🔍 |
-
-**웹 검색 보강 내용**
-
-- **기준**: `배터리 용량과 사용 시간 [낮음]`
-  - 🔗 출처: [https://blog.naver.com/PostView.naver?blogId=rotiggiluk&logNo=223980897561&redirect=Dlog](https://blog.naver.com/PostView.naver?blogId=rotiggiluk&logNo=223980897561&redirect=Dlog)
-  - 📝 근거 문구: "The Dreame L50s Pro Ultra has a 6,400 mAh battery with a maximum usage time of about 200 minutes on low setting. The battery charges in about 4.5 hours. This model offers long-term cleaning capabiliti"
-- **기준**: `스마트폰 앱 연동 [낮음]`
-  - 🔗 출처: [https://blog.naver.com/PostView.naver?blogId=rotiggiluk&logNo=223980897561&redirect=Dlog](https://blog.naver.com/PostView.naver?blogId=rotiggiluk&logNo=223980897561&redirect=Dlog)
-  - 📝 근거 문구: "The Dreame L50s Pro Ultra smartphone app allows remote control and settings via the Dreamehome app. Key features include AI-driven cleaning modes and voice control integration. The app enhances conven"
-
-### 로보락 S10 MaxV Ultra 직배수
-
-**Danawa DB 스펙 (26개)**
-
-- `흡입력: 36,000Pa`
-- `LDS: ○`
-- `카메라: ○`
-- `AI사물인식: ○`
-- `문턱등반: ○`
-- `먼지비움: ○`
-- `걸레건조(온풍): ○`
-- `세제투입: ○`
-- `스테이션청소: ○`
-- `자동충전: ○`
-- `문턱넘기: 4.5cm(8.8cm)`
-- `모서리: ○`
-- `메인2개: ○`
-- `먼지통: 0.228L`
-- `사용시간: 3시간10분(최대)`
-- `배터리용량: 6400mAh`
-- `구역지정: ○`
-- `흡입력조절: ○`
-- `물걸레: 음파진동형`
-- `분당진동수: 4000회`
-- `먼지봉투: 2.7L`
-- `음성인식: ○`
-- `홈캠: ○`
-- `실시간영상: ○`
-- `자체앱: ○`
-- `색상: 화이트`
+- `디카 분류: 미러리스`
+- `센서종류: CMOS`
+- `손떨림보정: 5축광학식`
+- `이미지프로세서: 프로세서:VENUS엔진`
+- `화면크기: 3인치`
+- `화면형태: 회전형`
+- `뷰파인더 픽셀수: 368만도트`
+- `동영상 해상도: 6K`
+- `동영상 연속촬영: 시간무제한`
+- `동영상 크로마 서브 샘플링: 영상:4:2:2`
+- `초점영역: 779개`
+- `최고 감도: 최고ISO51200`
+- `최고 셔터스피드: 셔터스피드:1/8000초`
+- `HDR촬영: ○`
+- `AF트래킹: ○`
+- `필름룩: ○`
+- `동영상 다이내믹 레인지: DR:14스톱 이상`
+- `Log촬영: ○`
+- `아나모픽모드: ○`
+- `탈리램프: ○`
+- `RAW: ○`
+- `Wi-Fi: ○`
+- `색보정: 파나소닉 루믹스Lab`
+- `듀얼슬롯: ○`
+- `HDMI: ○`
+- `헤드폰: ○`
+- `SDXC: ○`
+- `플래시여부: 플래시없음`
+- `무게: 740g`
+- `방진,방적: ○`
+- `먼지제거: ○`
+- `USB 라이브스트리밍: ○`
+- `배터리: DMW-BLK22(2200mAh)`
 
 **기준별 커버리지**
 
 | 기준 | DB 스펙 커버 | 웹 보강 |
 |------|:-----------:|:------:|
-| 흡입력 [중요] | ✅ | - |
-| 배터리 용량과 사용 시간 [낮음] | ✅ | - |
-| 스마트폰 앱 연동 [낮음] | ❌ | 🔍 |
+| 미러리스 [중요] | ❌ | 🔍 |
+| 무게 [중요] | ✅ | - |
+| 렌즈 교환 가능 [중요] | ❌ | 🔍 |
 
 **웹 검색 보강 내용**
 
-- **기준**: `스마트폰 앱 연동 [낮음]`
-  - 🔗 출처: [https://plan.danawa.com/info?nPlanSeq=12155](https://plan.danawa.com/info?nPlanSeq=12155)
-  - 📝 근거 문구: "The Roborock S10 MaxV Ultra is a high-end robot vacuum with smart app connectivity for scheduling and obstacle avoidance. It features advanced cleaning modes and a powerful suction. It's priced compet"
+- **기준**: `미러리스 [중요]`
+  - 🔗 출처: []()
+  - 📝 근거 문구: "미러리스"
+- **기준**: `렌즈 교환 가능 [중요]`
+  - 🔗 출처: []()
+  - 📝 근거 문구: "○"
+
+### SONY 알파 A6000 바디
+
+**Danawa DB 스펙 (21개)**
+
+- `디카 분류: 미러리스`
+- `센서종류: CMOS`
+- `이미지프로세서: 프로세서:Bionz X`
+- `화면크기: 3인치`
+- `화면형태: 틸트형`
+- `뷰파인더 시야율: 약100%`
+- `동영상 프레임: 60p`
+- `초점방식: 하이브리드AF`
+- `최저 감도: 최저ISO200`
+- `확장 감도: 확장ISO100~51200`
+- `최고 연사: 연사:초당11매`
+- `HDR촬영: ○`
+- `AF트래킹: ○`
+- `Wi-Fi: ○`
+- `NFC: ○`
+- `USB충전: ○`
+- `핫슈: ○`
+- `SDXC: ○`
+- `플래시여부: 팝업플래시`
+- `먼지제거: ○`
+- `배터리: NP-FW50(1020mAh)`
+
+**기준별 커버리지**
+
+| 기준 | DB 스펙 커버 | 웹 보강 |
+|------|:-----------:|:------:|
+| 미러리스 [중요] | ❌ | 🔍 |
+| 무게 [중요] | ❌ | - |
+| 렌즈 교환 가능 [중요] | ❌ | 🔍 |
+
+**웹 검색 보강 내용**
+
+- **기준**: `미러리스 [중요]`
+  - 🔗 출처: []()
+  - 📝 근거 문구: "미러리스"
+- **기준**: `렌즈 교환 가능 [중요]`
+  - 🔗 출처: []()
+  - 📝 근거 문구: "○"
 
 ---
 
@@ -114,19 +118,22 @@
 
 | 제품 | DB 커버 기준 | 미커버 기준 | 웹 보강 |
 |------|:-----------:|:-----------:|:------:|
-| 드리미 L50s Pro Ultra | 1/3 | 배터리 용량과 사용 시간 [낮음], 스마트폰 앱 연동 [낮음] | 2개 |
-| 로보락 S10 MaxV Ultra 직배수 | 2/3 | 스마트폰 앱 연동 [낮음] | 1개 |
+| 파나소닉 루믹스 DC-S5 IIx 바디 | 1/3 | 미러리스 [중요], 렌즈 교환 가능 [중요] | 2개 |
+| SONY 알파 A6000 바디 | 0/3 | 미러리스 [중요], 무게 [중요], 렌즈 교환 가능 [중요] | 2개 |
 
 ---
 
 ## 🔗 웹 검색 출처 전체 목록
 
-- **드리미 L50s Pro Ultra** / `배터리 용량과 사용 시간 [낮음]`
-  - [https://blog.naver.com/PostView.naver?blogId=rotiggiluk&logNo=223980897561&redirect=Dlog](https://blog.naver.com/PostView.naver?blogId=rotiggiluk&logNo=223980897561&redirect=Dlog)
-  - > The Dreame L50s Pro Ultra has a 6,400 mAh battery with a maximum usage time of about 200 minutes on low setting. The battery charges in about 4.5 hour
-- **드리미 L50s Pro Ultra** / `스마트폰 앱 연동 [낮음]`
-  - [https://blog.naver.com/PostView.naver?blogId=rotiggiluk&logNo=223980897561&redirect=Dlog](https://blog.naver.com/PostView.naver?blogId=rotiggiluk&logNo=223980897561&redirect=Dlog)
-  - > The Dreame L50s Pro Ultra smartphone app allows remote control and settings via the Dreamehome app. Key features include AI-driven cleaning modes and 
-- **로보락 S10 MaxV Ultra 직** / `스마트폰 앱 연동 [낮음]`
-  - [https://plan.danawa.com/info?nPlanSeq=12155](https://plan.danawa.com/info?nPlanSeq=12155)
-  - > The Roborock S10 MaxV Ultra is a high-end robot vacuum with smart app connectivity for scheduling and obstacle avoidance. It features advanced cleanin
+- **파나소닉 루믹스 DC-S5 IIx 바** / `미러리스 [중요]`
+  - []()
+  - > 미러리스
+- **파나소닉 루믹스 DC-S5 IIx 바** / `렌즈 교환 가능 [중요]`
+  - []()
+  - > ○
+- **SONY 알파 A6000 바디** / `미러리스 [중요]`
+  - []()
+  - > 미러리스
+- **SONY 알파 A6000 바디** / `렌즈 교환 가능 [중요]`
+  - []()
+  - > ○

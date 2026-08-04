@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo, memo, useRef, useEffect } from "react";
+import { useState, useCallback, useMemo, memo, useRef, useEffect, startTransition } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import {
@@ -11,6 +11,7 @@ import {
 import { useJsonRenderMessage } from "@json-render/react";
 import { ExplorerRenderer } from "@/lib/frontend/render/renderer";
 import { manualRegistry } from "@/lib/frontend/render/registry";
+import { computeWsmRanking, importanceLevelToWeight } from "@/lib/shared/wsm-ranking";
 import { ThemeToggle } from "@/components/theme-toggle";
 import {
   ArrowDown,
@@ -125,6 +126,21 @@ function getEunNeun(word: string): string {
     return (code - 0xAC00) % 28 === 0 ? "는" : "은";
   }
   return "는";
+}
+
+// mutate 이력 배지 라벨 — Option List(filter/sort/add)와 ComparisonTable(add_criteria/remove_criteria/
+// add_product/remove_product) mutate 이력 배너에서 공통으로 사용한다.
+function mutateOpLabel(op: string): string {
+  switch (op) {
+    case 'filter': return '필터';
+    case 'sort': return '정렬';
+    case 'add': return '추가';
+    case 'add_criteria': return '기준 추가';
+    case 'remove_criteria': return '기준 삭제';
+    case 'add_product': return '제품 추가';
+    case 'remove_product': return '제품 삭제';
+    default: return op;
+  }
 }
 
 function extractSpecsFromText(text: string): Array<{ kind: 'text' | 'spec', content: any }> {
@@ -488,19 +504,22 @@ const MessageBubble = memo(({
 const globalSeenTerms = new Set<string>();
 
 const InformationCardItem = memo(({ card, index }: { card: any, index: number }) => {
-  const [isInitialRender, setIsInitialRender] = useState(true);
+  // isNew는 마운트 시점 한 번만 판정(지연 초기화)하고, 애니메이션이 실제로 끝날 때(onAnimationEnd)
+  // 까지 true로 유지한다 — effect의 setState로 바로 꺼버리면 브라우저가 다시 그리기 전에 클래스가
+  // 빠져서 2초짜리 highlight-wrap 글로우가 시작하자마자 잘려버린다(CriteriaMap과 동일한 패턴).
+  const [isNew, setIsNew] = useState(() => !globalSeenTerms.has(card.term));
 
   useEffect(() => {
-    setIsInitialRender(false);
     globalSeenTerms.add(card.term);
   }, [card.term]);
 
-  const isNew = isInitialRender && !globalSeenTerms.has(card.term);
-
   return (
     <div
-      className={`border border-slate-200 rounded-[8px] p-4 bg-white${isNew ? " animate-chip-in" : ""}`}
+      className={`border border-slate-200 rounded-[8px] p-4 bg-white${isNew ? " animate-highlight-wrap" : ""}`}
       style={isNew ? { animationDelay: `${index * 0.08}s` } : undefined}
+      onAnimationEnd={(e) => {
+        if (isNew && e.animationName === 'highlight-wrap') setIsNew(false);
+      }}
     >
       <div className="flex items-start justify-between gap-2 mb-2">
         <span className="text-[13px] font-bold text-slate-900">{card.term}</span>
@@ -564,16 +583,16 @@ export default function ChatPage() {
     assignedItem: locale === 'en' ? 'ASSIGNED ITEM' : '배정받은 아이템',
     purchaseContext: locale === 'en' ? 'PURCHASE CONTEXT' : '구매 목적 및 상황',
     contextPlaceholder: locale === 'en'
-      ? (assignedItem === 'B' 
-          ? 'e.g. I have a cat and need strong suction and mopping.' 
-          : assignedItem === 'C'
-            ? 'e.g. I want to take beautiful landscape and portrait photos while traveling. I will also shoot vlogs.'
-            : 'e.g. I go out often alone. Lightweight and portable is important.')
-      : (assignedItem === 'B' 
-          ? '저 고양이를 키우고 있어서 흡입력이 강하고 물걸레 기능도 있는 제품이 필요해요.' 
-          : assignedItem === 'C'
-            ? '여행 다니면서 풍경이나 인물 사진을 예쁘게 찍고 싶어요. 브이로그 촬영도 할 거예요.'
-            : '외출이 잦아서 혼자 쓰기에 가볍고 휴대성이 좋은 게 중요해요.'),
+      ? (assignedItem === 'B'
+        ? 'e.g. I have a cat and need strong suction and mopping.'
+        : assignedItem === 'C'
+          ? 'e.g. I want to take beautiful landscape and portrait photos while traveling. I will also shoot vlogs.'
+          : 'e.g. I go out often alone. Lightweight and portable is important.')
+      : (assignedItem === 'B'
+        ? '저 고양이를 키우고 있어서 흡입력이 강하고 물걸레 기능도 있는 제품이 필요해요.'
+        : assignedItem === 'C'
+          ? '여행 다니면서 풍경이나 인물 사진을 예쁘게 찍고 싶어요. 브이로그 촬영도 할 거예요.'
+          : '외출이 잦아서 혼자 쓰기에 가볍고 휴대성이 좋은 게 중요해요.'),
     getStarted: locale === 'en' ? 'Get Started' : '시작하기',
     criteriaEmpty: locale === 'en' ? 'Click criteria chips\nto pin them here' : '기준 칩을 클릭해\n여기에 고정해두세요',
     optionsEmpty: locale === 'en' ? 'Press ♡ on products\nto save them here' : '관심 제품의 ♡를 눌러\n여기에 저장해보세요',
@@ -642,6 +661,7 @@ export default function ChatPage() {
   // Reactive Option List ??droppedCriteria 변??감????
   const prevDroppedCriteriaRef = useRef<{ name: string; min?: string; importanceLevel?: string }[]>([]);
   const productCardListSpecRef = useRef<any>(null); // ??테????로?? 방????최신 spec ref
+  const criteriaMapRef = useRef<any>(null); // sidebarSpec.CriteriaMap??최신 값 ??조??(??일????선 밖)
   const [criteriaResetConfirm, setCriteriaResetConfirm] = useState(false);
   const [isAutoEnriching, setIsAutoEnriching] = useState(false);
   // Panel resize state
@@ -663,10 +683,40 @@ export default function ChatPage() {
   const [compTableSpec, setCompTableSpec] = useState<any>(null);
   const compTableSpecRef = useRef<any>(null);
   const [isUpdatingTable, setIsUpdatingTable] = useState(false);
+  // updateComparisonTable 요청의 순번. 응답이 도착했을 때 더 최신 요청이 이미 나갔다면
+  // (겹치는 기준 변경 등으로) 낡은 응답이 최신 테이블 상태를 덮어써 행이 사라지는 것을 방지.
+  const updateTableSeqRef = useRef(0);
   // Query history ??검????스??리 (??비게이??용)
-  type QHEntry = { id: string; query: string; criteria: string[]; timestamp: Date; spec: any; };
+  // mutateLog: ??페이지??대??mutate(filter/sort/add) ??력??"꼬리 질문"??형태로 ??여주기 ??한 기록
+  type MutateLogEntry = { summary: string; op: string; timestamp: Date; userQuery?: string };
+  type QHEntry = { id: string; query: string; criteria: string[]; timestamp: Date; spec: any; mutateLog?: MutateLogEntry[]; };
   const [queryHistory, setQueryHistory] = useState<QHEntry[]>([]);
   const [activeHistoryIndex, setActiveHistoryIndex] = useState<number>(-1);
+  const [mutateLogExpanded, setMutateLogExpanded] = useState(false);
+  useEffect(() => { setMutateLogExpanded(false); }, [activeHistoryIndex]);
+  // Comparison Table 이력 배너 — Option List의 queryHistory/mutateLog와 같은 목적이지만,
+  // ComparisonTable은 "페이지"가 아니라 하나의 표가 계속 갱신되는 구조라 별도 페이지 배열 없이
+  // "현재 표를 만든 질문" + "그 뒤로 이어진 mutate 꼬리 질문" 두 가지만 추적한다.
+  type CompTableMutateLogEntry = { id: string; summary: string; op: string; userQuery?: string };
+  const [compTableQuery, setCompTableQuery] = useState<string>('');
+  const [compTableMutateLog, setCompTableMutateLog] = useState<CompTableMutateLogEntry[]>([]);
+  const [compTableMutateLogExpanded, setCompTableMutateLogExpanded] = useState(false);
+  useEffect(() => { setCompTableMutateLogExpanded(false); }, [compTableQuery]);
+  // productCardListSpec은 "Option List 패널: turn별로 분리된 카드 추적" effect가 매 메시지마다
+  // data-option-list-spec 파트만으로 무조건 다시 계산해서 덮어쓰기 때문에, mutateSurface(add/filter/
+  // sort)로 반영된 변경사항이 다음 턴이 오면 사라질 수 있다(그 effect는 mutateSurface 결과를 모름).
+  // 반면 queryHistory[activeHistoryIndex].spec은 같은 effect 안에서 "카드가 겹치면 기존 값 보존"
+  // 로직으로 mutateSurface 변경분을 지킨다. 그래서 백엔드로 보낼 "현재 목록"은 productCardListSpec이
+  // 아니라 이 보호된 값을 우선 사용해야 한다 — 화면에 보이는 것(specToShow도 동일 우선순위)과 백엔드로
+  // 보내는 것을 일치시킨다.
+  const activeOptionListCardsRef = useRef<any[] | null>(null);
+  useEffect(() => {
+    const active = queryHistory[activeHistoryIndex];
+    activeOptionListCardsRef.current = active?.spec?.props?.cards ?? productCardListSpec?.props?.cards ?? null;
+  }, [queryHistory, activeHistoryIndex, productCardListSpec]);
+  // 스트리밍 중 messages 참조가 계속 바뀌면서 mutateSurface effect가 반복 실행되는 것을 막기 위한
+  // "이미 처리한 메시지 id" 기록 (중복 mutateLog 방지)
+  const processedMutateMsgIdRef = useRef<string | null>(null);
   const [showSummaryModal, setShowSummaryModal] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [selectedItemName, setSelectedItemName] = useState<string | null>(null);
@@ -774,8 +824,8 @@ export default function ChatPage() {
 
   const lastMessage = messages[messages.length - 1];
   const isAgentGenerating = status === 'submitted' || status === 'streaming';
-  const activeToolName = isAgentGenerating && lastMessage?.role === 'assistant' 
-    ? (lastMessage as any).toolInvocations?.slice(-1)[0]?.toolName 
+  const activeToolName = isAgentGenerating && lastMessage?.role === 'assistant'
+    ? (lastMessage as any).toolInvocations?.slice(-1)[0]?.toolName
     : null;
 
   const resetSession = useCallback(() => {
@@ -799,6 +849,8 @@ export default function ChatPage() {
     setDismissedUncharted(new Set());
     setQueryHistory([]);
     setActiveHistoryIndex(-1);
+    setCompTableQuery('');
+    setCompTableMutateLog([]);
     prevConditionsRef.current = false;
     pendingFetchRef.current = false;
   }, [setMessages]);
@@ -838,13 +890,10 @@ export default function ChatPage() {
           unconfirmed: string[];
         };
 
-        // ??데??트????정 결과????으??건너??
-        if ((!updates || updates.length === 0) && (!dimmed || dimmed.length === 0) && (!unconfirmed || unconfirmed.length === 0)) continue;
-
         const dimmedMap = new Map((dimmed ?? []).map(d => [d.name, d.reason]));
         const unconfirmedSet = new Set(unconfirmed ?? []);
 
-        // ??면????시??는 카드 ??데??트 ??수
+        // 화면에 표시되는 카드 업데이트 함수
         const applyCardUpdates = (cardList: any[]) =>
           cardList.map((card: any) => {
             const update = updates?.find((u) => u.product_name === card.name);
@@ -890,7 +939,10 @@ export default function ChatPage() {
               };
             }
 
-            return { ...card, _justUpdated: false };
+            if (card._justUpdated) {
+              return { ...card, _justUpdated: false };
+            }
+            return card;
           });
 
         const sortByDimmed = (cards: any[]) =>
@@ -923,23 +975,24 @@ export default function ChatPage() {
     }
   };
 
-  const updateComparisonTable = async (criteria: Criteria[]) => {
+  const updateComparisonTable = async (criteria: Criteria[], removedCriteriaNames: string[] = []) => {
     const compTable = compTableSpecRef.current;
     if (!compTable?.props?.columns || compTable.props.columns.length <= 1) return;
-    
+
     // columns[1]부터 제품명(label)
     const savedItems = compTable.props.columns.slice(1).map((col: any) => col.label);
     const criteriaStrings = criteria.map(c => {
       const levelLabel = (c as any).importanceLevel === 'high' ? '[중요]'
-                       : (c as any).importanceLevel === 'low'  ? '[낮음]'
-                       : '[보통]';
+        : (c as any).importanceLevel === 'low' ? '[낮음]'
+          : '[보통]';
       return `${c.name} ${levelLabel}`;
     });
-    
+
     console.log(`[update-table] 기준 변경 감지. 테이블 갱신 시작: ${savedItems.length}개 제품, ${criteriaStrings.length}개 기준 | ${criteriaStrings.join(', ')}`);
 
+    const mySeq = ++updateTableSeqRef.current;
     setIsUpdatingTable(true);
-    
+
     try {
       const res = await fetch("/api/update-table", {
         method: "POST",
@@ -948,17 +1001,26 @@ export default function ChatPage() {
           savedItems,
           criteria: criteriaStrings,
           currentCards: productCardListSpecRef.current?.props?.cards ?? [],
+          currentTableData: compTable,           // ← 기존 테이블 JSON 전송 (증분 업데이트용)
+          currentRows: [], // do not lock to old rows; let LLM generate rows based on new criteria
+          // 행 삭제는 오직 이 목록에 있는 기준에 대해서만 수행 (사용자가 실제로 제거한 기준).
+          // criteria 문자열 재구성으로 유추하지 않음 — 서버 측 오탐 삭제 방지.
+          removedCriteriaNames,
           category: assignedItem === "A" ? "유모차" : assignedItem === "B" ? "로봇 청소기" : "카메라",
           locale: locale
         }),
       });
-      
+
       if (!res.ok) {
         console.error("[update-table] API ??러:", await res.text());
         return;
       }
-      
+
       const newSpec = await res.json();
+      if (mySeq !== updateTableSeqRef.current) {
+        console.log("[update-table] 낡은 응답 무시 (더 최신 요청이 이미 진행 중)");
+        return;
+      }
       if (newSpec && newSpec.props) {
         // 기존 ??이블의 ????지 URL 보존 (??션 리스??에????라????품????진 증발 방??)
         if (newSpec.props.columns && compTable?.props?.columns) {
@@ -971,7 +1033,7 @@ export default function ChatPage() {
             }
           });
         }
-        
+
         setCompTableSpec(newSpec);
         compTableSpecRef.current = newSpec;
         console.log("[update-table] 갱신 ??료");
@@ -983,63 +1045,15 @@ export default function ChatPage() {
     }
   };
 
-  // \ud074\ub77c\uc774\uc5b8\ud2b8 \uc0ac\uc774\ub4dc WSM \uc21c\uc704 \uc7ac\uacc4\uc0b0 (\uc11c\ubc84 \ud638\uc6c0 \uc5c6\uc774 \uc989\uc2dc \uc801\uc6a9)
+  // \ud074\ub77c\uc774\uc5b8\ud2b8 \uc0ac\uc774\ub4dc WSM \uc21c\uc704 \uc7ac\uacc4\uc0b0 (\uc11c\ubc84 \ud638\ucd9c \uc5c6\uc774 \uc989\uc2dc \uc801\uc6a9) \u2014 \ucc44\uc810/\uc21c\uc704 \ub85c\uc9c1 \uc790\uccb4\ub294
+  // lib/shared/wsm-ranking.ts\ub97c \ubc31\uc5d4\ub4dc(computeRankingAndReasoning)\uc640 \uacf5\uc720\ud55c\ub2e4. \uae30\uc900\ubcc4
+  // \uac00\uc911\uce58\ub9cc \uc774\ucabd \ub370\uc774\ud130 \ud615\ud0dc(\uad6c\uc870\ud654\ub41c droppedCriteria \ubc30\uc5f4)\uc5d0 \ub9de\uac8c \uc5ec\uae30\uc11c \uc870\ud68c\ud55c\ub2e4.
   const recalcTableRanking = (rows: any[], columns: any[], criteria: typeof droppedCriteria): any[] => {
-    const productCols = columns.filter((c: any) => c.key !== 'criterion');
-    if (productCols.length === 0) return rows;
-    const scores: Record<string, number> = {};
-    const weightSums: Record<string, number> = {};
-    for (const col of productCols) { scores[col.key] = 0; weightSums[col.key] = 0; }
     const getWeight = (criterionName: string) => {
       const c = criteria.find(c => c.name.toLowerCase().includes(criterionName.toLowerCase()) || criterionName.toLowerCase().includes(c.name.toLowerCase()));
-      const lv = (c as any)?.importanceLevel ?? 'medium';
-      return lv === 'high' ? 0.5 : lv === 'low' ? 0.2 : 0.3;
+      return importanceLevelToWeight((c as any)?.importanceLevel);
     };
-    const isLowerBetter = (crit: string) => /\uc18c\uc74c|\ubb34\uac8c|\uc911\ub7c9|\uac00\uaca9|noise|weight|db/i.test(crit);
-    const scoreCell = (val: string) => {
-      const v = (val ?? '-').toLowerCase();
-      if (['\uc788\uc74c', '\u25cb', '\uc9c0\uc6d0', 'yes'].some(k => v.includes(k))) return 1.0;
-      if (['\uc5c6\uc74c', 'x', '\ubbf8\uc9c0\uc6d0', 'no'].some(k => v.includes(k))) return 0.0;
-      return 0.5;
-    };
-    for (const row of rows) {
-      const criterion = row.criterion ?? '';
-      if (!criterion || criterion === '\uc21c\uc704' || criterion === 'Rank') continue;
-      const w = getWeight(criterion);
-      const nums: Record<string, number> = {};
-      for (const col of productCols) {
-        const m = String(row[col.key] ?? '').match(/[\d,]+\.?\d*/);
-        if (m) { const n = parseFloat(m[0].replace(/,/g, '')); if (!isNaN(n)) nums[col.key] = n; }
-      }
-      const vals = Object.values(nums);
-      const mn = vals.length ? Math.min(...vals) : 0;
-      const mx = vals.length ? Math.max(...vals) : 0;
-      const hasVar = Object.keys(nums).length >= 2 && mn !== mx;
-      const lower = isLowerBetter(criterion);
-      for (const col of productCols) {
-        const s = hasVar && col.key in nums
-          ? 0.2 + (lower ? 1 - (nums[col.key] - mn) / (mx - mn) : (nums[col.key] - mn) / (mx - mn)) * 0.8
-          : scoreCell(String(row[col.key] ?? '-'));
-        scores[col.key] += s * w;
-        weightSums[col.key] += w;
-      }
-    }
-    for (const col of productCols) {
-      if (weightSums[col.key] > 0) scores[col.key] /= weightSums[col.key];
-    }
-    const sorted = Object.entries(scores).sort((a, b) => b[1] - a[1]);
-    return rows.map(row => {
-      if (row.criterion !== '\uc21c\uc704' && row.criterion !== 'Rank') return row;
-      const updated = { ...row };
-      let rank = 1, i = 0;
-      while (i < sorted.length) {
-        const score = sorted[i][1]; let j = i;
-        while (j < sorted.length && sorted[j][1] === score) j++;
-        for (let k = i; k < j; k++) updated[sorted[k][0]] = `${rank}\uc704`;
-        rank += (j - i); i = j;
-      }
-      return updated;
-    });
+    return computeWsmRanking(rows, columns, getWeight);
   };
 
   useEffect(() => {
@@ -1161,9 +1175,9 @@ export default function ChatPage() {
 
     // 테이블 전체 재빌드 (새 기준 추가 / 제거 / 중요도 변경 시 — reasoning 포함 전체 동기화)
     if (newCriteria.length > 0 || removedCriteria.length > 0 || importanceChanged || curr.length === 0) {
-      updateComparisonTable(curr);
+      updateComparisonTable(curr, removedNames);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [droppedCriteria]);
 
 
@@ -1437,18 +1451,37 @@ export default function ChatPage() {
         ? `\n\n[ASSIGNED ITEM: ${assignedItem}]`
         : "";
 
-      // ??재 Option List 카드 목록 주입 ??mutateSurface ??단????해 ??요 (가????함)
-      const currentCards = productCardListSpec?.props?.cards;
+      // 현재 Option List 카드 목록 주입 — mutateSurface 판단에 필요 (가격/스펙 파싱은 route.ts 정규식과 일치해야 함)
+      // productCardListSpec을 직접 쓰면 mutateSurface(add/filter/sort) 변경분이 다음 턴에서 사라질 수
+      // 있어서(위 activeOptionListCardsRef 주석 참고), 보호된 ref를 우선 사용한다.
+      const currentCards = activeOptionListCardsRef.current ?? productCardListSpec?.props?.cards;
       const currentOptionListTag = Array.isArray(currentCards) && currentCards.length > 0
-        ? `\n\n[CURRENT_OPTION_LIST]\n??재 Option List????음 ??품????시??어 ??습??다:\n${currentCards.map((c: any) => {
-            const specsStr = c.specs && c.specs.length > 0 ? ` (??펙: ${c.specs.join(', ')})` : '';
-            return `- ${c.name}${c.price ? ` [가?? ${c.price}]` : ''}${specsStr}`;
-          }).join('\n')}`
+        ? `\n\n[CURRENT_OPTION_LIST]\n현재 Option List에 다음 상품이 표시되어 있습니다:\n${currentCards.map((c: any) => {
+          const specsStr = c.specs && c.specs.length > 0 ? ` (스펙: ${c.specs.join(', ')})` : '';
+          return `- ${c.name}${c.price ? ` [가격 ${c.price}]` : ''}${specsStr}`;
+        }).join('\n')}`
+        : "";
+
+      // ??재 ComparisonTable??전체 spec(columns+rows) 주입 ??Edit Agent가 어떤 기준??있는지 판단?????
+      // executor(mutateComparisonTable)가 기존 셀 값을 보존??채 행을 추가/삭제??????있게 ??체 spec????송??다.
+      // CURRENT_CRITERIA_MAP??항상 마지막에 붙는 태그이므로(끝까지 캡처하는 정규식), 그보다 먼저 삽입한다.
+      const currentTable = compTableSpecRef.current;
+      const currentComparisonTableTag = currentTable?.props?.rows?.length > 0
+        ? `\n\n[CURRENT_COMPARISON_TABLE]\n${JSON.stringify({ type: currentTable.type ?? "Table", props: currentTable.props })}`
+        : "";
+
+      // ??재 CriteriaMap??라벨/칩 ??입 ??Agent가 ??전 Turn??서 만????벨/칩????억??서 중복 ??성????피??도??
+      const existingCategories = criteriaMapRef.current?.props?.categories;
+      const currentCriteriaMapTag = Array.isArray(existingCategories) && existingCategories.length > 0
+        ? `\n\n[CURRENT_CRITERIA_MAP]\n${JSON.stringify(existingCategories.map((c: any) => ({
+          label: c.label,
+          items: (c.items ?? []).map((i: any) => ({ name: i.name })),
+        })))}`
         : "";
 
       setSearchCriteria([]);
       setMentionChips([]);
-      await sendMessage({ text: visibleCriteria + mentionPrefix + message.trim() + criteriaContext + savedCriteriaContext + cartContext + userContextTag + assignedItemTag + currentOptionListTag });
+      await sendMessage({ text: visibleCriteria + mentionPrefix + message.trim() + criteriaContext + savedCriteriaContext + cartContext + userContextTag + assignedItemTag + currentOptionListTag + currentComparisonTableTag + currentCriteriaMapTag });
     },
     [input, isStreaming, sendMessage, droppedItems, droppedCriteria, searchCriteria, mentionChips, userContext, productCardListSpec],
   );
@@ -1664,6 +1697,24 @@ export default function ChatPage() {
             props: { categories: merged }
           };
         }
+
+        // CriteriaMapRemoval: mutateCriteriaMap(remove_item)이 내보내는 삭제 지시.
+        // 위 CriteriaMap 병합 분기와 달리 누적된 categories에서 항목을 걸러낸다.
+        // 항목이 하나도 안 남으면 카테고리 자체를 제거한다(빈 카테고리가 "미탐색" 칩으로 오인되는 것 방지).
+      } else if (effectiveSpec.type === "CriteriaMapRemoval") {
+        const categoryLabel: string = effectiveSpec.props?.category_label ?? "";
+        const itemNamesToRemove: string[] = Array.isArray(effectiveSpec.props?.item_names) ? effectiveSpec.props.item_names : [];
+        const merged: any[] = latestCriteriaMapSpec?.props?.categories ?? [];
+        const catIdx = merged.findIndex((c: any) => c.label === categoryLabel);
+        if (catIdx > -1 && itemNamesToRemove.length > 0) {
+          const remaining = (merged[catIdx].items ?? []).filter((i: any) => !itemNamesToRemove.includes(i.name));
+          if (remaining.length > 0) {
+            merged[catIdx] = { ...merged[catIdx], items: remaining };
+          } else {
+            merged.splice(catIdx, 1);
+          }
+          latestCriteriaMapSpec = { type: "CriteriaMap", props: { categories: merged } };
+        }
       } else {
         latestOtherSpec = spec;
       }
@@ -1671,11 +1722,13 @@ export default function ChatPage() {
 
     return { CriteriaMap: latestCriteriaMapSpec, conceptCards };
   }, [allSpecs]);
+  // ??다??ref ??기??매 렌더마다 최신값 ??지 (useEffect보다 ??전, dependency 불필??
+  criteriaMapRef.current = sidebarSpec.CriteriaMap;
 
   // ??시????신????기??(Decision Criteria ??널)
   useEffect(() => {
     if (!sidebarSpec.CriteriaMap || !sidebarSpec.CriteriaMap.props?.categories) return;
-    
+
     // AI 최신 CriteriaMap??서 { 기???? ??신??} ??구축
     const latestConfidenceMap = new Map<string, string>();
     sidebarSpec.CriteriaMap.props.categories.forEach((cat: any) => {
@@ -1811,12 +1864,14 @@ export default function ChatPage() {
         if (res.ok) {
           const data = await res.json();
           if (data.labels && data.labels.length > 0) {
-            setUnchartedSpec(prev => {
-              if (!prev) return { labels: data.labels };
-              // 기존 labels????labels????적 (중복 ??거)
-              const existingSet = new Set(prev.labels);
-              const merged = [...prev.labels, ...data.labels.filter((l: string) => !existingSet.has(l))];
-              return { labels: merged };
+            startTransition(() => {
+              setUnchartedSpec(prev => {
+                if (!prev) return { labels: data.labels };
+                // 기존 labels에 새 labels 병합 (중복 제거)
+                const existingSet = new Set(prev.labels);
+                const merged = [...prev.labels, ...data.labels.filter((l: string) => !existingSet.has(l))];
+                return { labels: merged };
+              });
             });
           }
           // Empty 반환 ??????칩을 만들지 ??음. 기존 칩?? 그????????.
@@ -1990,17 +2045,101 @@ export default function ChatPage() {
   // Comparison Table ??널: data-comp-table-spec ??트????트??서 최신 spec 추출
   useEffect(() => {
     let latestSpec: any = null;
+    // 이력 배너(질문 + mutate 꼬리 질문)를 구성하기 위해 등장 순서대로도 함께 모아둔다.
+    const compTableOccurrences: { msgId: string; data: any }[] = [];
     for (const msg of messages) {
       if (msg.role !== 'assistant') continue;
       for (const part of (msg.parts ?? []) as any[]) {
         if ((part as any).type === 'data-comp-table-spec' && (part as any).data) {
           latestSpec = (part as any).data;
+          compTableOccurrences.push({ msgId: msg.id, data: latestSpec });
         }
       }
     }
+
+    // renderToCompTable(채팅 도구)는 매번 처음부터 테이블을 새로 빌드하기 때문에,
+    // 그 턴에 백엔드가 파싱한 기준 목록이 (분류 오류 등으로) 불완전하면 여전히
+    // 활성 상태인 기준의 행이 통째로 사라질 수 있다. 여기서 되돌아오는 스펙을
+    // 무조건 덮어쓰지 않고, "현재도 Decision Criteria 칩에 남아있는데 새 스펙에는
+    // 없는 행"을 이전 테이블에서 복구해 병합한다 — 행 삭제는 칩을 실제로 뺐을 때만 일어나야 함.
+    // mutateComparisonTable 결과는 이미 정확히 패치된 최종 상태이므로(예: remove_criteria로
+    // 의도적으로 지운 행), 아래 "활성 기준 행 복구" 안전장치를 적용하면 안 된다 — 그건
+    // renderToCompTable의 재생성이 실수로 행을 누락시켰을 때만을 위한 것이다.
+    const prevSpec = compTableSpecRef.current;
+    if (!latestSpec?.props?._isMutateResult && latestSpec?.props?.rows && prevSpec?.props?.rows) {
+      const norm = (s: string) => String(s ?? '').replace(/\s+/g, '').toLowerCase();
+      const activeCriteriaNorm = droppedCriteria.map(c => norm(c.name)).filter(Boolean);
+      const newRows: any[] = latestSpec.props.rows;
+      const newRowCriteriaNorm = new Set(newRows.map(r => norm(r.criterion)));
+
+      const missingActiveRows = (prevSpec.props.rows as any[]).filter((r) => {
+        if (r.criterion === '순위' || r.criterion === 'Rank') return false;
+        const rn = norm(r.criterion);
+        if (!rn || newRowCriteriaNorm.has(rn)) return false; // 새 스펙에 이미 있음
+        return activeCriteriaNorm.some((cn) => rn === cn || rn.includes(cn) || cn.includes(rn));
+      });
+
+      if (missingActiveRows.length > 0) {
+        console.warn('[comp-table] 새 스펙에서 누락된 활성 기준 행 복구:', missingActiveRows.map((r: any) => r.criterion));
+        const rankIdx = newRows.findIndex((r) => r.criterion === '순위' || r.criterion === 'Rank');
+        const mergedRows = [...newRows];
+        mergedRows.splice(rankIdx === -1 ? mergedRows.length : rankIdx + 1, 0, ...missingActiveRows);
+        latestSpec = { ...latestSpec, props: { ...latestSpec.props, rows: mergedRows } };
+      }
+    }
+
     setCompTableSpec(latestSpec);
     compTableSpecRef.current = latestSpec;
-  }, [messages]);
+
+    // 이력 배너: 가장 최근 "새 생성"(renderToCompTable, non-mutate) 지점을 찾아 그 직전 사용자
+    // 질문을 표 제목으로 쓰고, 그 뒤로 이어진 mutateComparisonTable 호출들을 꼬리 질문으로 기록한다.
+    const extractUserQueryBefore = (msgId: string): string => {
+      const idx = messages.findIndex(m => m.id === msgId);
+      if (idx === -1) return '';
+      for (let i = idx - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m.role !== 'user') continue;
+        const rawText = ((m.parts ?? []) as any[])
+          .filter((p: any) => p.type === 'text')
+          .map((p: any) => p.text as string)
+          .join('');
+        return rawText
+          .replace(/\|https?:\/\/[^\s,\]]+/g, '')
+          .replace(/^\[Decision Criteria\s*:([^\]]*)\]\s*/i, '"$1" ')
+          .replace(/^\[My items\s*:([^\]]*)\]\s*/i, '"$1" ')
+          .split(/\n{1,2}\[CONTEXT:/i)[0]
+          .split(/\n{1,2}\[DECISION CRITERIA:/i)[0]
+          .split(/\n{1,2}\[USER CONTEXT:/i)[0]
+          .split(/\n{1,2}\[ASSIGNED ITEM:/i)[0]
+          .trim();
+      }
+      return '';
+    };
+
+    if (compTableOccurrences.length === 0) {
+      setCompTableQuery('');
+      setCompTableMutateLog([]);
+    } else {
+      let lastFreshIdx = -1;
+      for (let i = compTableOccurrences.length - 1; i >= 0; i--) {
+        if (!compTableOccurrences[i].data?.props?._isMutateResult) { lastFreshIdx = i; break; }
+      }
+      if (lastFreshIdx !== -1) {
+        setCompTableQuery(extractUserQueryBefore(compTableOccurrences[lastFreshIdx].msgId));
+        setCompTableMutateLog(
+          compTableOccurrences
+            .slice(lastFreshIdx + 1)
+            .filter(o => o.data?.props?._isMutateResult && o.data?.props?._lastMutateOpSummary)
+            .map(o => ({
+              id: o.msgId,
+              summary: o.data.props._lastMutateOpSummary,
+              op: o.data.props._lastMutateOp ?? '',
+              userQuery: extractUserQueryBefore(o.msgId) || undefined,
+            }))
+        );
+      }
+    }
+  }, [messages, droppedCriteria]);
 
   // Option List ??널: turn별로 분리??카드 추적 (??스??리 ??비게이??용)
   useEffect(() => {
@@ -2012,6 +2151,10 @@ export default function ChatPage() {
     type TurnData = { userQuery: string; specBase: any; cards: any[]; };
     const turns: TurnData[] = [];
     let pendingUserQuery = '';
+    // [Decision Criteria : ...] 태그는 검색창에 기준 칩을 직접 끌어다 놓았을 때만 붙는다
+    // (사이드패널에 저장된 기준 목록 태그 [DECISION CRITERIA: ...]와는 별개) — 이 명시적
+    // 제스처일 때만 새 페이지를 만들고, 그 외(예: mutate로 이어진 요청)는 현재 페이지를 갱신한다.
+    let pendingIsExplicitSearch = false;
 
     for (const msg of messages) {
       if (msg.role === 'user') {
@@ -2029,6 +2172,7 @@ export default function ChatPage() {
           .split(/\n{1,2}\[ASSIGNED ITEM:/i)[0]
           .trim();
         pendingUserQuery = q || '검색';
+        pendingIsExplicitSearch = /^\[Decision Criteria\s*:/i.test(rawText);
         continue;
       }
       if (msg.role !== 'assistant') continue;
@@ -2107,7 +2251,16 @@ export default function ChatPage() {
       }
 
       if (turnSpecBase && turnCards.length > 0) {
-        turns.push({ userQuery: pendingUserQuery, specBase: turnSpecBase, cards: [...turnCards] });
+        // 기준 칩을 검색창에 직접 끌어왔을 때(명시적 새 검색)만 새 페이지를 만든다.
+        // 첫 페이지는 예외적으로 항상 새로 만든다(끌어올 칩이 없어도 최초 결과는 보여줘야 함).
+        if (pendingIsExplicitSearch || turns.length === 0) {
+          turns.push({ userQuery: pendingUserQuery, specBase: turnSpecBase, cards: [...turnCards] });
+        } else {
+          // 명시적 검색이 아닌 결과(예: mutate로 이어진 요청)는 새 페이지 대신 마지막 페이지를 갱신
+          const last = turns[turns.length - 1];
+          last.specBase = turnSpecBase;
+          last.cards = [...turnCards];
+        }
       }
     }
 
@@ -2116,8 +2269,18 @@ export default function ChatPage() {
     if (latestRagNotFound) {
       setProductCardListSpec(latestRagNotFound);
     } else if (latestSpecBase) {
-      // ??역 productCardListSpec?? ??적 (번역 ????환)
-      setProductCardListSpec({ ...latestSpecBase, props: { ...latestSpecBase.props, cards: accumulatedCards } });
+      // productCardListSpec 갱신 — 이 effect는 [messages] 전체에 keyed되어 mutate 전용 턴에도 재실행되지만,
+      // accumulatedCards는 오직 renderToOptionList(data-option-list-spec)만 반영해 mutateSurface(add/filter/sort)
+      // 변경분을 모른다. 그대로 덮어쓰면 이전 mutate 결과가 매 턴마다 원본 목록으로 리셋된다.
+      // queryHistory에 이미 있는 "isSameBaseTurn" 보존 로직과 동일하게, 현재 카드 목록이 이번에 다시
+      // 계산한 원본 카드와 이름이 겹치면(=같은 검색을 이어가는 mutate) 기존(=mutate 반영된) 상태를 유지한다.
+      setProductCardListSpec((prevSpec: any) => {
+        const prevCards: any[] = prevSpec?.props?.cards ?? [];
+        const freshCardNames = new Set(accumulatedCards.map((c: any) => c.name));
+        const isSameBaseList = prevCards.length > 0 && prevCards.some((c: any) => freshCardNames.has(c.name));
+        if (isSameBaseList) return prevSpec;
+        return { ...latestSpecBase, props: { ...latestSpecBase.props, cards: accumulatedCards } };
+      });
 
       // queryHistory: turn????냅??으????구??
       if (turns.length > 0) {
@@ -2170,6 +2333,7 @@ export default function ChatPage() {
   // mutateSurface tool 결과 처리 — data-mutate-surface-spec 파트 감지 (route.ts에서 주입)
   useEffect(() => {
     let mutationResult: any = null;
+    let mutationMsgId: string | null = null;
 
     // data-mutate-surface-spec 파트를 가장 최근 assistant 메시지에서 찾기
     for (const msg of [...messages].reverse()) {
@@ -2179,6 +2343,7 @@ export default function ChatPage() {
       for (const part of (msg.parts ?? []) as any[]) {
         if ((part as any).type === 'data-mutate-surface-spec' && (part as any).data) {
           mutationResult = (part as any).data;
+          mutationMsgId = msg.id;
           break;
         }
       }
@@ -2186,6 +2351,34 @@ export default function ChatPage() {
     }
     if (!mutationResult) return;
     if (mutationResult.surface !== 'optionList') return;
+    // 스트리밍 중 messages 배열이 델타마다 새 참조로 갱신되면서 이 effect가 반복 실행되는데,
+    // 같은 메시지의 mutate 결과를 이미 처리했다면 다시 적용/기록하지 않는다
+    // (그렇지 않으면 mutateLog에 같은 요약이 여러 번 쌓이는 등 중복 처리가 발생한다).
+    if (mutationMsgId && processedMutateMsgIdRef.current === mutationMsgId) return;
+    if (mutationMsgId) processedMutateMsgIdRef.current = mutationMsgId;
+    // mutate를 유발한 사용자의 실제 질문 텍스트 — 태그를 걷어내고 꼬리 로그에 함께 남긴다
+    const userQueryForLog = (() => {
+      const idx = mutationMsgId ? messages.findIndex(m => m.id === mutationMsgId) : -1;
+      if (idx === -1) return '';
+      for (let i = idx - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m.role !== 'user') continue;
+        const rawText = ((m.parts ?? []) as any[])
+          .filter((p: any) => p.type === 'text')
+          .map((p: any) => p.text as string)
+          .join('');
+        return rawText
+          .replace(/\|https?:\/\/[^\s,\]]+/g, '')
+          .replace(/^\[Decision Criteria\s*:([^\]]*)\]\s*/i, '"$1" ')
+          .replace(/^\[My items\s*:([^\]]*)\]\s*/i, '"$1" ')
+          .split(/\n{1,2}\[CONTEXT:/i)[0]
+          .split(/\n{1,2}\[DECISION CRITERIA:/i)[0]
+          .split(/\n{1,2}\[USER CONTEXT:/i)[0]
+          .split(/\n{1,2}\[ASSIGNED ITEM:/i)[0]
+          .trim();
+      }
+      return '';
+    })();
     const { op } = mutationResult;
     console.log('[mutateSurface] op:', op, JSON.stringify(mutationResult, null, 2));
     const currentCardNames = productCardListSpec?.props?.cards?.map((c: any) => c.name) ?? [];
@@ -2213,20 +2406,89 @@ export default function ChatPage() {
       });
     };
 
-    // ── filter / sort: result_card_names 순서대로 카드 재구성 ──────────────────
-    if (op === 'filter' || op === 'sort') {
+    // mutate 이력을 현재(마지막) 페이지에 "꼬리 질문"으로 기록 — 페이지는 그대로, 무슨 변경이 있었는지만 남긴다
+    if (mutationResult.op_summary) {
+      setQueryHistory(prev => {
+        if (prev.length === 0) return prev;
+        const lastIdx = prev.length - 1;
+        const last = prev[lastIdx];
+        const updated = [...prev];
+        updated[lastIdx] = {
+          ...last,
+          mutateLog: [...(last.mutateLog ?? []), { summary: mutationResult.op_summary, op: mutationResult.op, timestamp: new Date(), userQuery: userQueryForLog || undefined }],
+        };
+        return updated;
+      });
+    }
+
+    // ── filter: result_card_names 순서대로 카드 재구성 ────────────────────────
+    if (op === 'filter') {
       const resultNames: string[] = mutationResult.result_card_names ?? [];
       if (resultNames.length === 0) return;
 
       const reorder = (cards: any[]) =>
-        resultNames.map(name => findCard(cards, name)).filter(Boolean);
+        resultNames.map((name: string) => findCard(cards, name)).filter(Boolean);
 
       setProductCardListSpec((prev: any) => applyToSpec(prev, reorder));
       applyToHistory(reorder);
-    }
 
-    // ???? add ??????????????????????????????????????????????????????????????????????????????????????????????????????????????
-    else if (op === 'add') {
+    // ── sort: sort_by 기준으로 클라이언트 사이드 정렬 ─────────────────────────
+    } else if (op === 'sort') {
+      const resultNames: string[] = mutationResult.result_card_names ?? [];
+      const sortBy: string = (mutationResult.sort_by ?? '').toLowerCase();
+      const sortOrder: string = mutationResult.sort_order ?? 'asc';
+      console.log('[mutateSurface/sort] sort_by:', sortBy, '| sort_order:', sortOrder, '| result_card_names:', resultNames);
+
+      if (resultNames.length > 0) {
+        // LLM이 카드 순서를 알고 있는 경우 (드문 경우)
+        const reorder = (cards: any[]) =>
+          resultNames.map((name: string) => findCard(cards, name)).filter(Boolean);
+        setProductCardListSpec((prev: any) => applyToSpec(prev, reorder));
+        applyToHistory(reorder);
+
+      } else if (sortBy) {
+        // 클라이언트 사이드 정렬 — 카드의 price 또는 specs에서 수치 추출
+        const extractSortValue = (card: any): number => {
+          // 가격 기준 정렬
+          if (/가격|price/.test(sortBy)) {
+            const priceStr = (card.price ?? '').replace(/[^0-9]/g, '');
+            return priceStr ? parseInt(priceStr) : Infinity;
+          }
+          // specs 배열 + description에서 sortBy 키워드 포함 항목 찾아 수치 추출
+          // 부분 일치도 허용: "흡입" → "흡입력 15,000Pa" 매칭
+          const searchTexts: string[] = [
+            ...(card.specs ?? []),
+            ...(card.description ? [card.description] : []),
+          ];
+          for (const text of searchTexts) {
+            const lower = text.toLowerCase();
+            if (lower.includes(sortBy) || sortBy.split('').every((ch: string) => lower.includes(ch))) {
+              // 숫자 추출 (콤마 포함): "15,000Pa" → 15000, "4.2kg" → 4.2
+              const numMatch = text.match(/[\d,]+(?:\.\d+)?/);
+              if (numMatch) return parseFloat(numMatch[0].replace(/,/g, ''));
+            }
+          }
+          return Infinity;  // 값 없으면 뒤로 보냄
+        };
+
+
+        const sortCards = (cards: any[]) =>
+          [...cards].sort((a, b) => {
+            const av = extractSortValue(a);
+            const bv = extractSortValue(b);
+            return sortOrder === 'asc' ? av - bv : bv - av;
+          });
+
+        setProductCardListSpec((prev: any) => applyToSpec(prev, sortCards));
+        applyToHistory(sortCards);
+        console.log(`[mutateSurface] 클라이언트 정렬: "${sortBy}" ${sortOrder}`);
+      } else {
+        console.warn('[mutateSurface] sort op이지만 result_card_names도 sort_by도 없음');
+      }
+
+    } else if (op === 'add') {
+
+
       const newCards: any[] = mutationResult.new_cards ?? [];
 
       if (newCards.length > 0) {
@@ -2426,14 +2688,16 @@ export default function ChatPage() {
             </span>
           )}
         </div>
-        <div className="flex items-center bg-[#F1F3F5] rounded-full p-[3px] border border-black/[0.02] shadow-inner shadow-slate-200/50 flex-shrink-0">
-          <button type="button" onClick={() => setJourneyTab("criteria")} className={`px-4 py-1.5 rounded-full text-[12px] font-medium transition-all duration-200 ${journeyTab === "criteria" ? "bg-white text-slate-800 shadow-[0_1px_4px_rgba(0,0,0,0.08)] border border-black/[0.04]" : "text-slate-400 hover:text-slate-600"}`}>Criteria</button>
-          <button type="button" onClick={() => setJourneyTab("information")} className={`px-4 py-1.5 rounded-full text-[12px] font-medium transition-all duration-200 ${journeyTab === "information" ? "bg-white text-slate-800 shadow-[0_1px_4px_rgba(0,0,0,0.08)] border border-black/[0.04]" : "text-slate-400 hover:text-slate-600"}`}>Information</button>
+        <div className="flex items-center bg-[#F1F3F5] rounded-full p-[2px] border border-black/[0.02] shadow-inner shadow-slate-200/50 flex-shrink-0">
+          <button type="button" onClick={() => setJourneyTab("criteria")} className={`px-3 py-1 rounded-full text-[11px] font-medium transition-all duration-200 ${journeyTab === "criteria" ? "bg-white text-slate-800 shadow-[0_1px_4px_rgba(0,0,0,0.08)] border border-black/[0.04]" : "text-slate-400 hover:text-slate-600"}`}>Criteria</button>
+          <button type="button" onClick={() => setJourneyTab("information")} className={`px-3 py-1 rounded-full text-[11px] font-medium transition-all duration-200 ${journeyTab === "information" ? "bg-white text-slate-800 shadow-[0_1px_4px_rgba(0,0,0,0.08)] border border-black/[0.04]" : "text-slate-400 hover:text-slate-600"}`}>Information</button>
         </div>
       </div>
+      {journeyTab === "criteria" && unchartedSpec && unchartedSpec.labels.length > 0 && (
+        <div className="flex-shrink-0 mb-3">{manualRegistry.UnchartedTerritoryChip({ props: { labels: unchartedSpec.labels, skipAnimation: unchartedHasShownRef.current, onExplore: (label: string) => { unchartedHasShownRef.current = true; const cat = assignedItem === "A" ? "유모차" : assignedItem === "B" ? "로봇 청소기" : assignedItem === "C" ? "카메라" : "제품"; handleSubmit(`${cat} 구매에서 '${label}' 기준의 세부 항목을 알려줘`); startTransition(() => { setDismissedUncharted(prev => { const next = new Set(prev); next.add(label); return next; }); setUnchartedSpec(prev => prev ? { labels: prev.labels.filter(l => l !== label) } : null); }); } } })}</div>
+      )}
       <div className="flex-1 overflow-y-auto styled-scrollbar pr-1">
         <div className={journeyTab === "criteria" ? "" : "hidden"}>
-          {unchartedSpec && unchartedSpec.labels.length > 0 && (<div className="mb-3">{manualRegistry.UnchartedTerritoryChip({ props: { labels: unchartedSpec.labels, skipAnimation: unchartedHasShownRef.current, onExplore: (label: string) => { unchartedHasShownRef.current = true; const cat = assignedItem === "A" ? "유모차" : assignedItem === "B" ? "로봇 청소기" : assignedItem === "C" ? "카메라" : "제품"; handleSubmit(`${cat} 구매에서 '${label}' 기?Ĭ의 세부 항목을 알려?Ĭ`); setDismissedUncharted(prev => { const next = new Set(prev); next.add(label); return next; }); setUnchartedSpec(prev => prev ? { labels: prev.labels.filter(l => l !== label) } : null); } } })}</div>)}
           {(localizedCriteriaMap ?? sidebarSpec.CriteriaMap) ? (<ExplorerRenderer spec={localizedCriteriaMap ?? sidebarSpec.CriteriaMap} bindings={sidebarBindings} />) : (<div className="flex flex-col items-center justify-center h-full gap-2 py-12"><p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">{locale === 'en' ? 'Start a conversation' : '대화를 시작하면'}<br />{locale === 'en' ? 'to build your criteria map' : '여기에 탐색 기록이 쌓여요'}</p></div>)}
         </div>
         <div className={journeyTab === "information" ? "" : "hidden"}>
@@ -2521,24 +2785,24 @@ export default function ChatPage() {
                     <div className="flex items-center gap-0.5 ml-1 pl-1 border-l border-slate-200">
                       <button onClick={(e) => { e.stopPropagation(); setEditingCriteriaIdx(i); setEditingMinText(criterion.min || ""); }} className={`p-0.5 transition-colors text-slate-300 hover:text-slate-600`}><Pencil className="w-2.5 h-2.5" /></button>
                       <button onClick={(e) => {
-                          e.stopPropagation();
-                          const removedName = criterion.name;
-                          setDroppedCriteria(prev => prev.filter((_, idx) => idx !== i));
-                          setTradeoffSpecs(prev => { const next = { ...prev }; delete next[removedName]; return next; });
-                          // Comparison Table에서 해당 기준 row 제거
-                          setCompTableSpec((prev: any) => {
-                            if (!prev?.props?.rows) return prev;
-                            const norm = (s: string) => s.replace(/\s+/g, '').toLowerCase();
-                            const rn = norm(removedName);
-                            const filteredRows = prev.props.rows.filter((row: any) => {
-                              const crit = norm(String(row.criterion ?? ''));
-                              return !(crit === rn || crit.includes(rn) || rn.includes(crit));
-                            });
-                            const next = { ...prev, props: { ...prev.props, rows: filteredRows } };
-                            compTableSpecRef.current = next;
-                            return next;
+                        e.stopPropagation();
+                        const removedName = criterion.name;
+                        setDroppedCriteria(prev => prev.filter((_, idx) => idx !== i));
+                        setTradeoffSpecs(prev => { const next = { ...prev }; delete next[removedName]; return next; });
+                        // Comparison Table에서 해당 기준 row 제거
+                        setCompTableSpec((prev: any) => {
+                          if (!prev?.props?.rows) return prev;
+                          const norm = (s: string) => s.replace(/\s+/g, '').toLowerCase();
+                          const rn = norm(removedName);
+                          const filteredRows = prev.props.rows.filter((row: any) => {
+                            const crit = norm(String(row.criterion ?? ''));
+                            return !(crit === rn || crit.includes(rn) || rn.includes(crit));
                           });
-                        }} className={`p-0.5 transition-colors text-slate-300 hover:text-slate-900`}><X className="w-3 h-3" /></button>
+                          const next = { ...prev, props: { ...prev.props, rows: filteredRows } };
+                          compTableSpecRef.current = next;
+                          return next;
+                        });
+                      }} className={`p-0.5 transition-colors text-slate-300 hover:text-slate-900`}><X className="w-3 h-3" /></button>
                     </div>
                   </div>
                 );
@@ -2601,8 +2865,8 @@ export default function ChatPage() {
           onClick={() => setShowConfirmModal(true)}
           disabled={!selectedItemName}
           className={`w-full py-2.5 rounded-[10px] text-[13px] font-semibold transition-all duration-200 ${selectedItemName
-              ? 'bg-black text-white border border-black hover:bg-neutral-800'
-              : 'bg-white text-slate-400 border border-slate-200 opacity-40 cursor-not-allowed'
+            ? 'bg-black text-white border border-black hover:bg-neutral-800'
+            : 'bg-white text-slate-400 border border-slate-200 opacity-40 cursor-not-allowed'
             }`}
         >
           {locale === 'en' ? 'Purchase' : '구매하기'}
@@ -2682,11 +2946,11 @@ export default function ChatPage() {
             <div className="mx-6 rounded-[8px] border border-slate-200 bg-white px-3 py-2 flex flex-col gap-1.5">
               {/* Row 1: ??이??+ 질문(1?? + ????스??프 + ??N/N ??*/}
               <div className="flex items-center gap-1.5">
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-slate-400 flex-shrink-0"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-slate-400 flex-shrink-0"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
                 <p className="text-[11.5px] font-semibold text-slate-700 leading-snug truncate flex-1 min-w-0">
                   {activeEntry.query}
                 </p>
-                
+
                 {total > 1 && (
                   <div className="flex items-center gap-0.5 flex-shrink-0">
                     <button
@@ -2695,7 +2959,7 @@ export default function ChatPage() {
                       disabled={activeHistoryIndex <= 0}
                       className="w-5 h-5 flex items-center justify-center rounded transition-all duration-150 disabled:opacity-25 hover:bg-slate-200 text-slate-500"
                     >
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
                     </button>
                     <span className="text-[10px] font-semibold text-slate-400 tabular-nums px-0.5">{activeHistoryIndex + 1}/{total}</span>
                     <button
@@ -2704,19 +2968,49 @@ export default function ChatPage() {
                       disabled={activeHistoryIndex >= total - 1}
                       className="w-5 h-5 flex items-center justify-center rounded transition-all duration-150 disabled:opacity-25 hover:bg-slate-200 text-slate-500"
                     >
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
                     </button>
                   </div>
                 )}
               </div>
 
-
+              {/* Row 2: mutate 이력 "꼬리 질문" — 페이지는 안 늘어나지만 무슨 변경이 있었는지 기록 */}
+              {(activeEntry.mutateLog?.length ?? 0) > 0 && (() => {
+                const log = activeEntry.mutateLog!;
+                const visibleCount = mutateLogExpanded ? log.length : Math.min(3, log.length);
+                const visible = log.slice(log.length - visibleCount);
+                const hiddenCount = log.length - visible.length;
+                return (
+                  <div className="flex flex-col gap-1">
+                    {hiddenCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setMutateLogExpanded(true)}
+                        className="text-[9px] text-slate-400 hover:text-slate-600 pl-4 text-left w-fit"
+                      >
+                        이전 {hiddenCount}건 더보기
+                      </button>
+                    )}
+                    {visible.map((entry) => (
+                      // timestamp를 key로 써서(인덱스 대신) "더보기" 클릭 시 슬라이딩 윈도우가
+                      // 밀리는 것과 무관하게 항목 정체성이 안정적으로 유지된다 (애니메이션은 없음).
+                      <div key={entry.timestamp.getTime()} className="flex items-center gap-1.5 pl-3 text-[9px] text-slate-500 min-w-0">
+                        <span className="text-slate-300 flex-shrink-0">└</span>
+                        <span className="flex-shrink-0 text-[8.5px] font-bold rounded-full px-1.5 py-0.5 leading-none select-none whitespace-nowrap text-slate-500 bg-slate-100">
+                          {mutateOpLabel(entry.op)}
+                        </span>
+                        <span className="truncate">{entry.userQuery || entry.summary}</span>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
             </div>
           </div>
         )}
 
         {/* Product cards area ??카드????크??*/}
-        <div className="flex-1 overflow-y-auto overflow-x-hidden no-scrollbar p-4 pt-0 flex flex-col gap-3 relative">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden styled-scrollbar p-4 pt-0 flex flex-col gap-3 relative">
           {coverageNoticeSpec && manualRegistry.CoverageNotice && (
             manualRegistry.CoverageNotice({ props: coverageNoticeSpec.props })
           )}
@@ -2762,6 +3056,48 @@ export default function ChatPage() {
           </span>
         )}
       </div>
+
+      {/* History Banner — 표를 만든 질문 + 그 뒤로 이어진 mutate(기준/제품 추가·삭제) 꼬리 질문 */}
+      {compTableSpec && compTableQuery && (
+        <div className="flex-shrink-0 rounded-[8px] border border-slate-200 bg-white px-3 py-2 flex flex-col gap-1.5">
+          <div className="flex items-center gap-1.5">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-slate-400 flex-shrink-0"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+            <p className="text-[11.5px] font-semibold text-slate-700 leading-snug truncate flex-1 min-w-0">
+              {compTableQuery}
+            </p>
+          </div>
+
+          {compTableMutateLog.length > 0 && (() => {
+            const log = compTableMutateLog;
+            const visibleCount = compTableMutateLogExpanded ? log.length : Math.min(3, log.length);
+            const visible = log.slice(log.length - visibleCount);
+            const hiddenCount = log.length - visible.length;
+            return (
+              <div className="flex flex-col gap-1">
+                {hiddenCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setCompTableMutateLogExpanded(true)}
+                    className="text-[9px] text-slate-400 hover:text-slate-600 pl-4 text-left w-fit"
+                  >
+                    이전 {hiddenCount}건 더보기
+                  </button>
+                )}
+                {visible.map((entry) => (
+                  <div key={entry.id} className="flex items-center gap-1.5 pl-3 text-[9px] text-slate-500 min-w-0">
+                    <span className="text-slate-300 flex-shrink-0">└</span>
+                    <span className="flex-shrink-0 text-[8.5px] font-bold rounded-full px-1.5 py-0.5 leading-none select-none whitespace-nowrap text-slate-500 bg-slate-100">
+                      {mutateOpLabel(entry.op)}
+                    </span>
+                    <span className="truncate">{entry.userQuery || entry.summary}</span>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
       {compTableSpec ? (
         <div className="flex-1 overflow-auto no-scrollbar">
           <ExplorerRenderer
@@ -2985,7 +3321,7 @@ export default function ChatPage() {
                 {/* 바코??*/}
                 <div style={{ padding: '28px 44px 32px', textAlign: 'center' }}>
                   <div style={{ display: 'flex', justifyContent: 'center', gap: '1px', alignItems: 'stretch', height: '40px' }}>
-                     {[2, 1, 3, 1, 2, 1, 1, 3, 2, 1, 2, 3, 1, 1, 2, 1, 3, 1, 2, 1, 1, 2, 3, 1, 2, 1, 1, 3, 1, 2, 1, 3, 2, 1, 1, 2, 1, 2, 3, 1, 2, 1, 2, 1, 3, 2, 1, 1, 2, 3, 1, 2, 1, 3, 1, 2, 1, 2, 1, 3].map((w, i) => (<div key={i} style={{ width: (w * 1.4) + 'px', backgroundColor: i % 11 === 0 ? 'transparent' : '#1e293b' }} />))}
+                    {[2, 1, 3, 1, 2, 1, 1, 3, 2, 1, 2, 3, 1, 1, 2, 1, 3, 1, 2, 1, 1, 2, 3, 1, 2, 1, 1, 3, 1, 2, 1, 3, 2, 1, 1, 2, 1, 2, 3, 1, 2, 1, 2, 1, 3, 2, 1, 1, 2, 3, 1, 2, 1, 3, 1, 2, 1, 2, 1, 3].map((w, i) => (<div key={i} style={{ width: (w * 1.4) + 'px', backgroundColor: i % 11 === 0 ? 'transparent' : '#1e293b' }} />))}
 
 
                   </div>
@@ -3059,7 +3395,7 @@ export default function ChatPage() {
             )}
 
             {/* SLOT 1 (LEFT) */}
-            <aside {...slotDropProps('left')} className={`bg-white z-10 flex flex-col overflow-hidden rounded-2xl shadow-[0_0_8px_rgba(0,0,0,0.07)] ${isPanelShown(panelSlots.left) ? 'border border-slate-200' : 'border-0'} ${panelDropTarget === 'left' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`} style={{ width: isPanelShown(panelSlots.left) ? panelWidths[panelSlots.left] : 0, flexShrink: 1, transition: isResizing ? 'none' : 'width 0.45s cubic-bezier(0.4,0,0.2,1)' }}>
+            <aside {...slotDropProps('left')} className={`bg-white z-10 flex flex-col overflow-hidden rounded-2xl shadow-[0_0_20px_rgba(0,0,0,0.05)] ${isPanelShown(panelSlots.left) ? 'border border-slate-200' : 'border-0'} ${panelDropTarget === 'left' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`} style={{ width: isPanelShown(panelSlots.left) ? panelWidths[panelSlots.left] : 0, flexShrink: 1, transition: isResizing ? 'none' : 'width 0.45s cubic-bezier(0.4,0,0.2,1)' }}>
               {isPanelShown(panelSlots.left) && renderPanel(panelSlots.left)}
             </aside>
 
@@ -3079,7 +3415,7 @@ export default function ChatPage() {
             {/* SLOT 2 (COMP TABLE SLOT) */}
             <aside
               {...slotDropProps('compTableSlot')}
-              className={`bg-white overflow-hidden flex flex-col rounded-2xl shadow-[0_0_8px_rgba(0,0,0,0.07)] h-full ${isPanelShown(panelSlots.compTableSlot) ? 'border border-slate-200' : 'border-0'} ${panelDropTarget === 'compTableSlot' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`}
+              className={`bg-white overflow-hidden flex flex-col rounded-2xl shadow-[0_0_20px_rgba(0,0,0,0.05)] h-full ${isPanelShown(panelSlots.compTableSlot) ? 'border border-slate-200' : 'border-0'} ${panelDropTarget === 'compTableSlot' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`}
               style={{ width: isPanelShown(panelSlots.compTableSlot) ? panelWidths[panelSlots.compTableSlot] : 0, flexShrink: isPanelShown(panelSlots.compTableSlot) ? 0 : 1, transition: isResizing ? 'none' : 'width 0.45s cubic-bezier(0.4,0,0.2,1)' }}
             >
               {isPanelShown(panelSlots.compTableSlot) && renderPanel(panelSlots.compTableSlot)}
@@ -3100,7 +3436,7 @@ export default function ChatPage() {
             {/* SLOT 3 (FAR RIGHT SLOT) */}
             <aside
               {...slotDropProps('farRight')}
-              className={`bg-white overflow-hidden flex flex-col rounded-2xl shadow-[0_0_8px_rgba(0,0,0,0.07)] h-full ${isPanelShown(panelSlots.farRight) ? 'border border-slate-200' : 'border-0'} ${panelDropTarget === 'farRight' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`}
+              className={`bg-white overflow-hidden flex flex-col rounded-2xl shadow-[0_0_20px_rgba(0,0,0,0.05)] h-full ${isPanelShown(panelSlots.farRight) ? 'border border-slate-200' : 'border-0'} ${panelDropTarget === 'farRight' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`}
               style={{ width: isPanelShown(panelSlots.farRight) ? panelWidths[panelSlots.farRight] : 0, flexShrink: 1, transition: isResizing ? 'none' : 'width 0.45s cubic-bezier(0.4,0,0.2,1)' }}
             >
               {isPanelShown(panelSlots.farRight) && renderPanel(panelSlots.farRight)}

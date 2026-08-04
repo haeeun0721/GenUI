@@ -8,7 +8,7 @@ export const renderToSidebar = tool({
     inputSchema: z.object({
         agent_reply: z.string().describe("The agent's full reply to be visualized as a UI component. Language must match the conversation locale."),
         intent_summary: z.string().describe("Brief description of the user's intent."),
-        ui_intent_category: z.string().nullable().describe("Category of intent: '1a' (Criteria Exploration → CriteriaMap), or '1b' (Concept Explanation → InformationCard)."),
+        ui_intent_category: z.string().nullable().describe("Component name: 'CriteriaMap' (Criteria Exploration) or 'InformationCard' (Concept Explanation)."),
         turn_number: z.number().describe("The current turn number (incrementing for each new UI step)."),
     }),
     execute: async ({ agent_reply, intent_summary, ui_intent_category, turn_number }) => {
@@ -85,7 +85,7 @@ export const renderToSidebar = tool({
         }
 
         let effectiveUIContext = agent_reply;
-        if (existingCategoriesString && ui_intent_category === "1a") {
+        if (existingCategoriesString && ui_intent_category === "CriteriaMap") {
             const hasExistingTag = effectiveUIContext.includes("[EXISTING CATEGORIES:");
             if (hasExistingTag) {
                 effectiveUIContext = effectiveUIContext.replace(/\[EXISTING CATEGORIES:[^\]]+\]/, existingCategoriesString);
