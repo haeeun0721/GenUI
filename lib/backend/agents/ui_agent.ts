@@ -5,14 +5,14 @@
  * 각 컴포넌트의 프롬프트 + 생성 로직은 generators/ 하위 파일에 위치합니다:
  *   generators/criteria_map.ts        — CriteriaMap (Cat 1a)
  *   generators/information_card.ts    — InformationCard (Cat 1b)
- *   generators/comp_table.ts          — ComparisonTable (Cat 2) — LLM JSON skeleton only
+ *   generators/comp_table.ts          — ComparisonTable (Cat 2) — 표 구조 생성 + WSM 순위/이유
  *   generators/product_card_list.ts   — ProductCardList (Cat 3)
  *   generators/tradeoff_hint.ts       — TradeoffHint (Cat 5)
  *   generators/uncharted_territory.ts — UnchartedTerritoryChip (Cat 6)
  */
 
 
-import { orchestrateCompTablePipeline } from "./data_agent";
+import { orchestrateCompTablePipeline } from "./generators/comp_table";
 import { generateProductCardList }   from "./generators/product_card_list";
 import { generateTradeoffHint }      from "./generators/tradeoff_hint";
 import { generateUnchartedTerritory } from "./generators/uncharted_territory";

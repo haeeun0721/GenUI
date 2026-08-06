@@ -15,7 +15,6 @@ import {
   parseSpecEntry,
   toDisplayValue,
 } from "@/lib/backend/agents/data_agent";
-import { getSpec, setSpec } from "./spec-cache";
 
 // ---------------------------------------------------------------------------
 // 0. 로컬 DB 직접 조회 — 이름 매칭으로 products-*.json에서 제품 스펙 찾기
@@ -72,10 +71,10 @@ export function findProductSpecInDB(productName: string, fieldKey: string, categ
       const matchedSpec = matched.specs.find(s => s.toLowerCase().replace(/\s+/g, "").includes(keyNormalized));
       if (matchedSpec) {
         // "배터리: NP-FW50(1020mAh)" 형태를 그대로 반환하면 행 라벨("배터리 수명")과
-        // 값 안의 라벨("배터리:")이 중복돼 보인다 — lookupCellValue(data_agent.ts)가 이미
+        // 값 안의 라벨("배터리:")이 중복돼 보인다 — lookupCellValue(comp_table.ts)가 이미
         // 하고 있는 것과 동일하게 라벨을 떼고 값만 반환한다.
         const { rawValue } = parseSpecEntry(matchedSpec);
-        const displayValue = toDisplayValue(rawValue);
+        const displayValue = toDisplayValue(rawValue, fieldKey);
         console.log(`[DB lookup] ✅ "${productName}"${nameMatched} (key="${key}") → "${displayValue}" (원본: "${matchedSpec}")`);
         return displayValue;
       }
@@ -135,29 +134,30 @@ export function getStaticSynonyms(fieldKey: string): string[] {
 // ---------------------------------------------------------------------------
 // 2. (제거됨) AI Answer 수치 fast-path — 정규식 기반이라 지원 필드가 6개뿐이었고,
 // tryExtractFromAIAnswer에는 siblingExcludeTokens가 전달되지 않아 SiblingGuard가
-// 적용되지 않는 안전성 구멍이 있었다. 커버리지도 좁고(사용자가 자유롭게 추가하는
-// Decision Criteria 대부분은 이 6개 필드에 해당하지 않음), 공유 캐시 덕분에 같은
-// (제품,기준) 조합은 어차피 최초 1회만 검색되므로 속도 이득도 크지 않아 제거하고
+// 적용되지 않는 안전성 구멍이 있었다. 커버리지도 좁아서(사용자가 자유롭게 추가하는
+// Decision Criteria 대부분은 이 6개 필드에 해당하지 않음) 속도 이득도 크지 않아 제거하고
 // 항상 judgeCell(LLM 검증 경로)만 쓰도록 통일했다.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // 2-1. 수치 범위 합리성 검증 (Sanity Check)
-// 물리적으로 불가능한 값(150dB 소음, 0.1Pa 흡입력 등)을 즉시 차단.
+// 물리적으로 불가능한 값(수백 dB 소음, 소수점 Pa 흡입력 등)만 걸러내는 최후의 안전망.
+// 범위는 일부러 넉넉하게 잡는다 — 정상 제품을 오탈락시키는 게 아니라, 단위 착각/자릿수
+// 오류처럼 "명백히 말이 안 되는" 값만 잡는 게 목적.
 // ---------------------------------------------------------------------------
 
 interface SpecRange { min: number; max: number }
 
 /** 카테고리별 허용 수치 범위 — [fieldKey 매칭 패턴, { min, max }] */
 const SPEC_RANGES: [RegExp, SpecRange][] = [
-  [/소음/,               { min: 40,   max: 90    }],  // dB
-  [/흡입|suction/i,      { min: 500,  max: 50000 }],  // Pa — 최신 제품 최대 ~45,000Pa
-  [/무게|중량|weight/i,  { min: 0.3,  max: 25    }],  // kg
-  [/배터리|battery/i,    { min: 300,  max: 12000 }],  // mAh
-  [/물탱크|water.tank/i, { min: 0.05, max: 5     }],  // L
-  [/먼지통|집진통/,      { min: 0.05, max: 5     }],  // L
-  [/사용시간|runtime/i,  { min: 10,   max: 400   }],  // 분
-  [/충전시간/,           { min: 30,   max: 720   }],  // 분
+  [/소음/,               { min: 20,   max: 100   }],  // dB
+  [/흡입|suction/i,      { min: 100,  max: 80000 }],  // Pa
+  [/무게|중량|weight/i,  { min: 0.05, max: 30    }],  // kg
+  [/배터리|battery/i,    { min: 100,  max: 20000 }],  // mAh
+  [/물탱크|water.tank/i, { min: 0.02, max: 8     }],  // L
+  [/먼지통|집진통/,      { min: 0.02, max: 8     }],  // L
+  [/사용시간|runtime/i,  { min: 5,    max: 600   }],  // 분
+  [/충전시간/,           { min: 5,    max: 900   }],  // 분
 ];
 
 /**
@@ -183,27 +183,7 @@ function sanityCheckValue(value: string, fieldKey: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// 3. 저신뢰 도메인 제외 목록 — Tavily 검색 시 exclude_domains로 사용
-// (예전엔 이 목록으로 "에코 환각"/"제품명 미등장"/"저신뢰 출처 경고" 3가지를 사후
-// 검증했는데, 앞의 두 개는 판단에 영향을 준 적이 없었고(경고만 로그에 남기고 값은
-// 그대로 통과시켰음), 나머지 하나(에코 환각)도 애초에 이 목록으로 검색 결과에서
-// 도메인 자체를 제외하고 있어 실제로 걸릴 일이 거의 없었다 — 그래서 사후 검증
-// 단계는 통째로 제거하고, 이 목록은 exclude_domains 용도로만 남긴다.)
-// ---------------------------------------------------------------------------
-
-const LOW_TRUST_DOMAINS = [
-  // 개인 후기/의견 콘텐츠 — 할루시네이션·에코 위험이 큼
-  "tistory.com", "blog.naver.com", "m.blog.naver.com",
-  "youtube.com", "youtu.be", "tiktok.com", "instagram.com",
-  "namu.wiki", "reddit.com", "fujifilm-dsc.com/manual",
-  // 오픈마켓 리스팅 페이지 — 실제로 재현된 오염 패턴: 리스팅 제목이 "스테이션 포함" 같은
-  // 번들/패키지 상품을 가리키는데, 그걸 단품(target SKU) 스펙으로 착각하는 사례가 있었음
-  "11st.co.kr", "gmarket.co.kr", "auction.co.kr", "coupang.com",
-  "interpark.com", "ssg.com",
-];
-
-// ---------------------------------------------------------------------------
-// 4. 제품명 단순화 (마케팅 수식어만 제거, 모델 구분자 보존)
+// 3. 제품명 단순화 (마케팅 수식어만 제거, 모델 구분자 보존)
 // ---------------------------------------------------------------------------
 
 const MARKETING_SUFFIXES = /\s*(플러스|에디션|리미티드|스페셜)\s*/gi;
@@ -213,7 +193,7 @@ export function simplifyProductName(name: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// 4-1. 스펙 문구 생성 — lookupProductSpec의 bare value(예: "36,000Pa", "○")를
+// 3-1. 스펙 문구 생성 — lookupProductSpec의 bare value(예: "36,000Pa", "○")를
 // Option List 카드 칩에 바로 붙일 수 있는 완성된 문구(예: "흡입력: 36,000Pa")로 변환.
 // auto-enrich(카드 일괄 보강)와 mutate-surface(개별 필드 조회) 양쪽이 공유한다.
 // ---------------------------------------------------------------------------
@@ -248,23 +228,22 @@ export function buildSpecPhrase(fieldKey: string, value: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// 5. 핵심 공개 함수: lookupProductSpec
+// 4. 핵심 공개 함수: lookupProductSpec
 // ---------------------------------------------------------------------------
 
 /**
  * 제품 × 스펙 필드에 대한 값을 조회한다.
- * 우선순위: 공유 캐시 → 로컬 DB → Tavily 1회(advanced, 결과 다다익선) → judgeCell 검증.
+ * 우선순위: 로컬 DB → Tavily 1회(advanced, 전체 도메인, 결과 다다익선) → judgeCell 검증.
  *
  * 예전엔 Tavily를 문구만 바꿔가며 최대 3번 순차 재시도했는데, 재시도끼리 사실상 같은
  * 검색이었고(끝 문구만 다름) 값을 못 찾을 때는 매번 3번 다 왕복하느라 제일 느렸다.
  * 대신 처음부터 advanced 모드로 더 많은 결과(max_results)와 URL당 여러 스니펫
  * (chunks_per_source)을 한 번에 가져오는 것으로 바꿨다 — 순차 재시도(최대 3회 왕복)보다
- * 한 번의 깊은 검색이 평균적으로 더 빠르고, 저신뢰/마켓플레이스 도메인은 애초에
- * exclude_domains로 제외해서 검색 결과 자체가 더 깨끗하다.
+ * 한 번의 깊은 검색이 평균적으로 더 빠르다.
  *
- * 트레이드오프: 예전엔 "재시도마다 값이 다르면 불확실 처리"하는 교차검증이 있었는데,
- * 이제 검색을 한 번만 하니 그 교차검증은 없어졌다 — SiblingGuard/sanity check/도메인
- * 제외로 최대한 커버하지만, 완전히 같은 안전장치는 아니다.
+ * 안전장치는 judgeCell의 Extractive QA + Evidence Verification + SiblingGuard와
+ * Sanity Check(수치 범위 검증)로 건다 — 도메인 자체를 배제하지 않고, 대신 근거가
+ * 명확한 값만 통과시키는 쪽으로 신뢰도를 확보한다.
  */
 export async function lookupProductSpec(
   productName: string,
@@ -272,27 +251,16 @@ export async function lookupProductSpec(
   category: string
 ): Promise<SpecLookupResult> {
 
-  // Step 0: 공유 스펙 캐시 (in-memory) — Comp Table이 이미 찾은 값 즉시 재사용
-  const cached = getSpec(productName, fieldKey);
-  if (cached) {
-    console.log(`[SpecCache HIT] "${productName}" × "${fieldKey}" → "${cached.value}" (${cached.source})`);
-    return { value: cached.value, source: cached.source as "db" | "tavily" };
-  }
-
   // Step 1: 로컬 DB
   // toDisplayValue가 빈 값을 "-"로 정규화할 수 있는데, 문자열 "-"는 JS에서 truthy라
   // dbSpec 자체만 확인하면 "찾음"으로 오판한다 — DB에 실질적 값이 없던 경우이므로
   // Tavily로 넘어가야 한다.
   const dbSpec = findProductSpecInDB(productName, fieldKey, category);
   if (dbSpec && dbSpec !== "-") {
-    setSpec(productName, fieldKey, dbSpec, "db");
     return { value: dbSpec, source: "db" };
   }
 
-  // Step 2: Tavily 검색 — 1차 시도가 실패하면(검색 0건 또는 judgeCell/Sanity Check 탈락)
-  // 저신뢰 도메인 제외를 풀고 딱 1번만 더 시도한다. 오래된/단종 제품처럼 공식 스펙 페이지가
-  // 없고 블로그·커뮤니티에만 정보가 남아있는 경우를 위한 것 — 검증 단계(judgeCell 5중 검증,
-  // Sanity Check)는 재시도에도 동일하게 다 적용되므로 안전성은 그대로 유지된다.
+  // Step 2: Tavily 검색 (전체 도메인, 단일 시도)
   const synonyms = getStaticSynonyms(fieldKey);
   const expectedType = detectCriterionType(fieldKey);
   const terms = [fieldKey, ...synonyms.slice(0, 2)].join(" ");
@@ -303,34 +271,26 @@ export async function lookupProductSpec(
   // 제품명은 큰따옴표(Exact Match)로 감싸서 다른 제품이 섞여 들어오는 걸 원천 차단.
   const query = `"${productName}" ${terms} 제원 사양표`;
 
-  async function attempt(excludeLowTrust: boolean): Promise<{ value: string; sourceUrl?: string; usedSnippet?: string } | null> {
-    const results = await tavilySearch(query, "advanced", {
-      maxResults: 20,
-      chunksPerSource: 3,
-      excludeDomains: excludeLowTrust ? LOW_TRUST_DOMAINS : undefined,
-      includeAnswer: true,
-    });
+  const results = await tavilySearch(query, "advanced", {
+    maxResults: 20,
+    chunksPerSource: 3,
+    includeAnswer: true,
+  });
 
-    console.log(`   🔍 "${productName} × ${fieldKey}" (저신뢰 도메인 제외=${excludeLowTrust}) → ${results.length}개 결과`);
-    results.slice(0, 5).forEach(r => console.log(`      📎 ${r.url}`));
+  console.log(`   🔍 "${productName} × ${fieldKey}" → ${results.length}개 결과`);
+  results.slice(0, 5).forEach(r => console.log(`      📎 ${r.url}`));
 
-    if (results.length === 0) return null;
-
-    const judge = await judgeCell(productName, fieldKey, results, "ko", expectedType, synonyms, siblingTokens);
-    if (judge.value === "-") return null;
-
-    // 수치 범위 합리성 검증 (Sanity Check) — 물리적으로 불가능한 값 즉시 차단
-    if (!sanityCheckValue(judge.value, fieldKey)) {
-      console.log(`   ❌ [Sanity Check 실패] "${judge.value}"`);
-      return null;
+  let judge: { value: string; sourceUrl?: string; usedSnippet?: string } | null = null;
+  if (results.length > 0) {
+    const candidate = await judgeCell(productName, fieldKey, results, "ko", expectedType, synonyms, siblingTokens);
+    if (candidate.value !== "-") {
+      // 수치 범위 합리성 검증 (Sanity Check) — 물리적으로 불가능한 값만 차단
+      if (sanityCheckValue(candidate.value, fieldKey)) {
+        judge = candidate;
+      } else {
+        console.log(`   ❌ [Sanity Check 실패] "${candidate.value}"`);
+      }
     }
-    return judge;
-  }
-
-  let judge = await attempt(true);
-  if (!judge) {
-    console.log(`   🔁 1차 검색 실패 → 저신뢰 도메인 제외 없이 재검색`);
-    judge = await attempt(false);
   }
 
   if (!judge) return { value: "-", source: "none" };
@@ -346,16 +306,14 @@ export async function lookupProductSpec(
     usedSnippet: judge.usedSnippet,
     uncertain: false,
   };
-  // 공유 캐시에 저장 → Option List와 Comp Table이 동일한 값 공유
-  setSpec(productName, fieldKey, judge.value, "tavily", judge.sourceUrl, judge.usedSnippet);
   return finalResult;
 }
 
 // ---------------------------------------------------------------------------
-// 6. 컨텍스트 사전 보강 (ComparisonTable 최초 생성용)
+// 5. 컨텍스트 사전 보강 (ComparisonTable 최초 생성용)
 //
 // data_agent.ts에 있던 enrichContextWithTavily를 여기로 옮기고, 검증 없이 스니펫을
-// 그대로 꽂아넣던 tavilySearchSnippet 대신 lookupProductSpec(캐시→DB→3단계 검색+
+// 그대로 꽂아넣던 tavilySearchSnippet 대신 lookupProductSpec(DB→Tavily 검색+
 // judgeCell 검증+SiblingGuard)을 쓰도록 다시 짰다 — 표 최초 생성 경로가 다른 모든
 // 경로와 다르게 검증을 거치지 않는 가장 약한 고리였기 때문. data_agent.ts에 그대로
 // 두면 spec-lookup.ts(이 파일, data_agent.ts를 import함)와 순환 참조가 생겨서 옮겼다.

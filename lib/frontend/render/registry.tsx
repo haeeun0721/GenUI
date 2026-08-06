@@ -76,7 +76,7 @@ function SpecChips({ specs }: { specs: string[] }) {
       {visible.map((spec: string, i: number) => (
         <span
           key={i}
-          className="text-[9px] text-[#666666] bg-[#F5F5F5] px-1.5 py-0.5 rounded-full whitespace-nowrap"
+          className="text-[9px] text-[#666666] bg-[#F5F5F5] px-1.5 py-0.5 rounded-full max-w-full break-words"
         >
           {spec}
         </span>
@@ -1109,7 +1109,6 @@ export const manualRegistry: Record<string, any> = {
   ProductCard: (allProps: any) => {
     const p = allProps?.props || allProps || {};
     const delay = p._animationDelay || 0;
-    const isDimmed = !!p._dimmed;           // 기준 미충족 → 흐리게
     const isUnconfirmed = !!(p._unconfirmed || (Array.isArray(p._unconfirmedCriteria) && p._unconfirmedCriteria.length > 0));
     const unconfirmedCriteria: string[] = Array.isArray(p._unconfirmedCriteria) && p._unconfirmedCriteria.length > 0
       ? p._unconfirmedCriteria
@@ -1129,24 +1128,11 @@ export const manualRegistry: Record<string, any> = {
 
     return (
       <div
-        className={`group relative flex flex-col bg-white border rounded-[8px] overflow-hidden transition-all duration-500 hover:shadow-[0_2px_8px_rgba(0,0,0,0.06)] w-full${(justAdded || isHighlighted) ? ' animate-highlight-wrap' : ''} ${
-          isDimmed
-            ? "border-[#E5E5E5] opacity-40 grayscale-[50%] hover:opacity-55"
-            : "border-[#EBEBEB] hover:border-[#D0D0D0]"
-        }`}
+        className={`group relative flex flex-col bg-white border rounded-[8px] overflow-hidden transition-all duration-500 hover:shadow-[0_2px_8px_rgba(0,0,0,0.06)] w-full${(justAdded || isHighlighted) ? ' animate-highlight-wrap' : ''} border-[#EBEBEB] hover:border-[#D0D0D0]`}
         style={delay > 0 ? { animationDelay: `${delay}s` } : undefined}
       >
         {/* Product Image (Top) */}
         <div className="relative w-full aspect-[4/3] bg-[#F5F5F5] overflow-hidden">
-          {/* 기준 미충족 뱃지 — 어떤 기준인지 표시 */}
-          {isDimmed && (
-            <div className="absolute top-2 left-2 z-10 bg-slate-700/80 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-full max-w-[calc(100%-16px)] truncate">
-              {(p._dimmedReasons && p._dimmedReasons.length > 0)
-                ? `${p._dimmedReasons.join(', ')} 미충족`
-                : '기준 미충족'}
-            </div>
-          )}
-
           {p.imageUrl ? (
             <img
               src={proxyImg(p.imageUrl)}
@@ -1206,9 +1192,9 @@ export const manualRegistry: Record<string, any> = {
             {p.name}
           </p>
           {/* Spec Chips + 미확인 태그 */}
-          {(Array.isArray(p.specs) && p.specs.length > 0 || (!isDimmed && isUnconfirmed)) && (
+          {(Array.isArray(p.specs) && p.specs.length > 0 || isUnconfirmed) && (
             <div className="flex flex-wrap gap-1">
-              {!isDimmed && unconfirmedCriteria.map((criterionName: string) => (
+              {unconfirmedCriteria.map((criterionName: string) => (
               <span
                   key={criterionName}
                   className="inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-medium bg-slate-50 text-slate-300 border border-slate-100"

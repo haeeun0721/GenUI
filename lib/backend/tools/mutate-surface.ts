@@ -189,6 +189,7 @@ Only use when [CURRENT_OPTION_LIST] is present. For new product searches, use re
             ? matched.specs
             : (p.specs ?? []).slice(0, 4);
           newCards.push({
+            id: `card-${Date.now()}-${newCards.length}`,
             name: p.name,
             price: p.price,
             imageUrl: (p as any).image ?? (p as any).imageUrl ?? "",
@@ -230,6 +231,9 @@ Only use when [CURRENT_OPTION_LIST] is present. For new product searches, use re
             if (m) specs.push(m[0].trim());
           }
           newCards.push({
+            // 병렬로 실행되는 Promise.all 안이라 newCards.length를 인덱스로 못 쓴다(경쟁 상태) —
+            // 랜덤 접미사로 유일성 보장.
+            id: `card-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             name,
             price,
             imageUrl: '',

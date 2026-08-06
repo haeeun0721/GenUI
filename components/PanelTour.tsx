@@ -254,19 +254,18 @@ function PanelSidebar({ active, accent, locale }: { active: boolean; accent: str
 }
 
 /* ── Main component ──────────────────────────────────────────────── */
-export default function PanelTour() {
-  const [showTour, setShowTour] = useState(false);
+export default function PanelTour({ open, onClose, locale }: { open: boolean; onClose: () => void; locale: 'ko' | 'en' }) {
   const [step, setStep] = useState(0);
-  const [locale, setLocale] = useState<'ko' | 'en'>('ko');
   const [mounted, setMounted] = useState(false);
   useEffect(() => { setMounted(true); }, []);
+  useEffect(() => { if (open) setStep(0); }, [open]);
 
   const cur = STEPS[step];
-  const close = () => setShowTour(false);
+  const close = () => onClose();
   const next = () => step < STEPS.length - 1 ? setStep(s => s + 1) : close();
   const prev = () => step > 0 && setStep(s => s - 1);
 
-  const modal = showTour && (
+  const modal = open && (
     <div style={{ position: "fixed", inset: 0, zIndex: 2147483647, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }} onClick={close}>
       <div style={{ width: 1320, maxWidth: "96vw", maxHeight: "94vh", background: "white", borderRadius: 24, overflow: "auto", boxShadow: "0 40px 100px rgba(0,0,0,0.6)", display: "flex", flexDirection: "column" }} onClick={e => e.stopPropagation()}>
 
@@ -325,14 +324,6 @@ export default function PanelTour() {
     </div>
   );
 
-  return (
-    <>
-      {mounted && modal && createPortal(modal, document.body)}
-      <button onClick={() => { setLocale((localStorage.getItem('gs_locale') as 'ko' | 'en') || 'ko'); setStep(0); setShowTour(true); }}
-        style={{ position: "fixed", bottom: 24, left: 24, zIndex: 9003, boxShadow: "0 0 0 1px rgba(0,0,0,0.04), 0 0 16px 6px rgba(0,0,0,0.11)" }}
-        className="w-10 h-10 rounded-full bg-white border border-slate-200 flex items-center justify-center text-slate-500 hover:bg-slate-50 hover:scale-105 transition-all duration-200 text-[15px] font-bold select-none"
-        title="인터페이스 안내 보기"
-      >?</button>
-    </>
-  );
+  if (!mounted || !modal) return null;
+  return createPortal(modal, document.body);
 }

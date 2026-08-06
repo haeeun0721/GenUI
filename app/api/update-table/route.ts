@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  findProductInLocalDB,
-  computeRankingAndReasoning,
-} from "@/lib/backend/agents/data_agent";
+import { findProductInLocalDB } from "@/lib/backend/agents/data_agent";
+import { computeRankingAndReasoning } from "@/lib/backend/agents/generators/comp_table";
 import { lookupProductSpec, enrichContextWithTavily } from "@/lib/backend/services/spec-lookup";
 import { generateUISpec } from "@/lib/backend/agents/ui_agent";
 import { writeCompTableLog } from "@/lib/backend/logger";

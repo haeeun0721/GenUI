@@ -7,10 +7,8 @@ import {
   currentProductCategory,
   currentLocale,
 } from "./sidebar-store";
-import {
-  computeRankingAndReasoning,
-  findProductInLocalDB,
-} from "../agents/data_agent";
+import { findProductInLocalDB } from "../agents/data_agent";
+import { computeRankingAndReasoning } from "../agents/generators/comp_table";
 import { ragSearch } from "../rag/search";
 import { lookupProductSpec } from "../services/spec-lookup";
 
@@ -34,6 +32,17 @@ function cleanCriterionLabel(c: string): string {
   return c.replace(/\s*\[.*?\]\s*/g, "").replace(/\s*\(.*?\)\s*/g, "").trim();
 }
 
+/** 기존 행 id("crit_N") 중 가장 큰 N 다음부터 이어지는 새 id를 발급한다. */
+function makeCriterionIdGenerator(rows: any[]): () => string {
+  let maxIdx = -1;
+  for (const r of rows) {
+    const m = /^crit_(\d+)$/.exec(String(r?.id ?? ""));
+    if (m) maxIdx = Math.max(maxIdx, parseInt(m[1], 10));
+  }
+  let next = maxIdx;
+  return () => `crit_${++next}`;
+}
+
 export const mutateComparisonTable = tool({
   description: `
 Add or remove criterion ROWS, or add/remove product COLUMNS, on the CURRENTLY DISPLAYED ComparisonTable.
@@ -44,9 +53,9 @@ Only use when [CURRENT_COMPARISON_TABLE] is present. Cannot re-check a single ce
     op: z.enum(["add_criteria", "remove_criteria", "add_product", "remove_product"]),
     current_table: z.any().describe("The current Table spec JSON ({ props: { columns, rows } }) to patch in place."),
     criteria_to_add: z.array(z.string()).optional(),
-    criteria_to_remove: z.array(z.string()).optional(),
+    criteria_to_remove: z.array(z.string()).optional().describe("remove_criteria: row `id`s (e.g. 'crit_1') copied from CURRENT_COMPARISON_TABLE — falls back to label matching if an id isn't recognized."),
     products_to_add: z.array(z.string()).optional().describe("add_product: product names/brands/queries to search for (RAG) and add as new columns."),
-    products_to_remove: z.array(z.string()).optional().describe("remove_product: exact product column labels to remove."),
+    products_to_remove: z.array(z.string()).optional().describe("remove_product: column `key`s (e.g. 'prod_1') copied from CURRENT_COMPARISON_TABLE — falls back to label matching if a key isn't recognized."),
     op_summary: z.string().describe("Brief Korean description of the action."),
   }),
   execute: async (args) => {
@@ -63,18 +72,24 @@ Only use when [CURRENT_COMPARISON_TABLE] is present. Cannot re-check a single ce
     const productCols = cols.filter((c: any) => c.key !== "criterion");
 
     if (args.op === "remove_criteria") {
-      const toRemove = (args.criteria_to_remove ?? []).map((c) => cleanCriterionLabel(c).toLowerCase()).filter(Boolean);
+      const raw = (args.criteria_to_remove ?? []).map((c) => String(c).trim()).filter(Boolean);
+      const toRemoveIds = new Set(raw);
+      const toRemoveLabels = raw.map((c) => cleanCriterionLabel(c).toLowerCase());
       rows = rows.filter((r: any) => {
         if (r.criterion === "순위" || r.criterion === "Rank") return true;
+        // 1순위: id 정확히 매칭 (예: "crit_1")
+        if (r.id && toRemoveIds.has(String(r.id))) return false;
+        // fallback: LLM이 id 대신 라벨을 보냈을 경우 대비한 문자열 매칭
         const rn = cleanCriterionLabel(String(r.criterion ?? "")).toLowerCase();
         if (!rn) return true;
-        return !toRemove.some((tr) => rn === tr || rn.includes(tr) || tr.includes(rn));
+        return !toRemoveLabels.some((tr) => rn === tr || rn.includes(tr) || tr.includes(rn));
       });
       console.log(`[mutateComparisonTable] 삭제 후 ${rows.length}개 행 남음`);
     } else if (args.op === "add_criteria") {
       const requested = (args.criteria_to_add ?? []).map(cleanCriterionLabel).filter(Boolean);
       const existing = new Set(rows.map((r: any) => cleanCriterionLabel(String(r.criterion ?? "")).toLowerCase()));
       const toAdd = requested.filter((c) => !existing.has(c.toLowerCase()));
+      const genRowId = makeCriterionIdGenerator(rows);
 
       // 제품 컬럼 라벨 → 전체 제품명 매핑 (update-table/route.ts STRATEGY A와 동일한 패턴)
       const fullNameMap = new Map<string, string>();
@@ -85,7 +100,7 @@ Only use when [CURRENT_COMPARISON_TABLE] is present. Cannot re-check a single ce
       }
 
       for (const criterion of toAdd) {
-        const newRow: Record<string, string> = { criterion };
+        const newRow: Record<string, string> = { id: genRowId(), criterion };
         for (const col of productCols) newRow[col.key] = "-";
 
         await Promise.all(
@@ -103,10 +118,15 @@ Only use when [CURRENT_COMPARISON_TABLE] is present. Cannot re-check a single ce
         console.log(`[mutateComparisonTable] 새 행 추가: "${criterion}"`);
       }
     } else if (args.op === "remove_product") {
-      const toRemove = (args.products_to_remove ?? []).map((p) => p.toLowerCase().trim()).filter(Boolean);
+      const raw = (args.products_to_remove ?? []).map((p) => String(p).trim()).filter(Boolean);
+      const toRemoveKeys = new Set(raw);
+      const toRemoveLabels = raw.map((p) => p.toLowerCase());
       const removedCols = productCols.filter((c: any) => {
+        // 1순위: key 정확히 매칭 (예: "prod_1")
+        if (toRemoveKeys.has(c.key)) return true;
+        // fallback: LLM이 key 대신 라벨을 보냈을 경우 대비한 문자열 매칭
         const cl = c.label.toLowerCase();
-        return toRemove.some((tr) => cl === tr || cl.includes(tr) || tr.includes(cl));
+        return toRemoveLabels.some((tr) => cl === tr || cl.includes(tr) || tr.includes(cl));
       });
       if (removedCols.length === 0) {
         console.warn("[mutateComparisonTable] remove_product: 매칭되는 제품 컬럼 없음");

@@ -13,6 +13,8 @@ import { ExplorerRenderer } from "@/lib/frontend/render/renderer";
 import { manualRegistry } from "@/lib/frontend/render/registry";
 import { computeWsmRanking, importanceLevelToWeight } from "@/lib/shared/wsm-ranking";
 import { ThemeToggle } from "@/components/theme-toggle";
+import PanelTour from "@/components/PanelTour";
+import { HoverTooltip } from "@/components/ui/hover-tooltip";
 import {
   ArrowDown,
   ArrowUp,
@@ -31,6 +33,8 @@ import {
   PanelRight,
   PanelLeft,
   User,
+  History,
+  Compass,
 } from "lucide-react";
 import { Streamdown } from "streamdown";
 import { code } from "@streamdown/code";
@@ -64,6 +68,127 @@ const TOOL_LABELS: Record<string, [string, string]> = {
   getHackerNewsTop: ["Loading Hacker News", "Loaded Hacker News"],
   webSearch: ["Searching the web", "Searched the web"],
 };
+
+// 입력창 위 Q 탭과 히스토리 드로어가 공유하는, 사용자 메시지 원문 → 표시용 텍스트 정리 로직.
+function extractUserDisplayText(rawText: string): string {
+  let displayMsg = rawText;
+  const cumulativeMatch = displayMsg.match(/^\[SYSTEM: CUMULATIVE COMPARISON\] (.*?) ??품??을 Table/i);
+
+  if (cumulativeMatch) {
+    return `"${cumulativeMatch[1].trim()}" ??품??비교??줘.`;
+  }
+
+  const isPureCriteria = /^\[Decision Criteria\s*:[^\]]*\]\s*(?:\n|$|\[)/i.test(rawText);
+  const isPureMyItems = /^\[My items\s*:[^\]]*\]\s*(?:\n|$|\[)/i.test(rawText);
+
+  displayMsg = displayMsg.replace(/\|https?:\/\/[^\s,\]]+/g, "");
+  displayMsg = displayMsg.replace(/^\[Decision Criteria\s*:([^\]]*)\]\s*/i, '"$1" ');
+  displayMsg = displayMsg.replace(/^\[My items\s*:([^\]]*)\]\s*/i, '"$1" ');
+  displayMsg = displayMsg.split(/\n{1,2}\[CONTEXT:/i)[0];
+  displayMsg = displayMsg.split(/\n{1,2}\[DECISION CRITERIA:/i)[0];
+  displayMsg = displayMsg.split(/\n{1,2}\[USER CONTEXT:/i)[0];
+  displayMsg = displayMsg.split(/\n{1,2}\[ASSIGNED ITEM:/i)[0];
+  displayMsg = displayMsg.trim();
+
+  if (isPureCriteria && displayMsg && !displayMsg.includes("조건??로 추천??줘")) displayMsg += " 조건??로 추천??줘.";
+  if (isPureMyItems && displayMsg && !displayMsg.includes("비교??줘")) displayMsg += " ??품??비교??줘.";
+  return displayMsg;
+}
+
+function formatTurnTime(ts: number | undefined, locale: 'ko' | 'en'): string {
+  if (!ts) return "";
+  return new Date(ts).toLocaleTimeString(locale === 'ko' ? 'ko-KR' : 'en-US', { hour: '2-digit', minute: '2-digit' });
+}
+
+function getMessageText(m: any): string {
+  return ((m?.parts ?? []).filter((p: any) => p.type === 'text').map((p: any) => p.text).join("")).trim();
+}
+
+type HistoryTurn = { user: any; assistant: any | null };
+
+// user/assistant 메시지를 턴 단위로 짝짓는다 — 히스토리 드로어와 카운트가 공유하는 기본 단위.
+function buildHistoryTurns(messages: any[]): HistoryTurn[] {
+  const turns: HistoryTurn[] = [];
+  messages.forEach((m) => {
+    if (m.role === 'user') {
+      const isSystemPrompt = (m.parts ?? []).some((p: any) => p.type === 'text' && p.text?.includes('[SYSTEM: CUMULATIVE COMPARISON]'));
+      if (isSystemPrompt) return;
+      turns.push({ user: m, assistant: null });
+    } else if (m.role === 'assistant' && turns.length > 0 && turns[turns.length - 1].assistant === null) {
+      turns[turns.length - 1].assistant = m;
+    }
+  });
+  return turns;
+}
+
+function getActionData(assistant: any): any {
+  return assistant ? ((assistant.parts ?? []).find((p: any) => p.type === 'data-action-type') as any)?.data ?? null : null;
+}
+
+// generate/edit 턴은 캔버스(패널)에 이미 결과가 남아있어서 전체 응답을 다시 보여줄 필요는 없지만,
+// "이 턴에서 뭘 했는지"는 히스토리에서도 한눈에 알 수 있도록 짧은 요약으로 남긴다.
+function actionSummaryLabel(data: any, locale: 'ko' | 'en'): string | null {
+  if (!data) return null;
+  const isEn = locale === 'en';
+  if (data.action === 'generate') {
+    const labels: Record<string, [string, string]> = {
+      CriteriaMap: ['기준 맵 생성됨', 'Criteria map generated'],
+      InformationCard: ['정보 카드 생성됨', 'Information card generated'],
+      ComparisonTable: ['비교 테이블 생성됨', 'Comparison table generated'],
+      ProductCardList: ['옵션 리스트 생성됨', 'Option list generated'],
+    };
+    const pair = labels[data.template];
+    return pair ? (isEn ? pair[1] : pair[0]) : null;
+  }
+  if (data.action === 'edit') {
+    const labels: Record<string, [string, string]> = {
+      optionList: ['옵션 리스트 수정됨', 'Option list updated'],
+      comparisonTable: ['비교 테이블 수정됨', 'Comparison table updated'],
+      criteriaMap: ['기준 맵 수정됨', 'Criteria map updated'],
+    };
+    const pair = labels[data.target_surface];
+    return pair ? (isEn ? pair[1] : pair[0]) : null;
+  }
+  return null;
+}
+
+// 입력창 위 미리보기 한 턴 — 현재 턴(들어오는 애니메이션)과 이전 턴(나가는 애니메이션)이
+// 같은 모양을 쓰도록 공유하는 프레젠테이션 컴포넌트.
+function DockTurnRow({ turn, userLabel, streaming, className }: {
+  turn: { displayMsg: string; assistantText: string; summaryLabel: string | null };
+  userLabel: string;
+  streaming?: boolean;
+  className: string;
+}) {
+  return (
+    <div className={`flex flex-col min-w-0 ml-5 mb-2 ${className}`} style={{ maxWidth: 'calc(100% - 60px)' }}>
+      <div className="flex items-center gap-2.5">
+        <span className="shrink-0 px-2 py-1 rounded-md bg-slate-100 text-slate-500 font-bold text-[10px]">{userLabel}</span>
+        <span className="flex-1 min-w-0 text-[13px] leading-relaxed text-slate-700 whitespace-pre-wrap break-words">{turn.displayMsg}</span>
+      </div>
+      {/* AI 응답 줄은 내용 유무와 관계없이 항상 자리를 예약해서, 스트리밍 중 텍스트/요약 라벨이
+          뒤늦게 나타나거나 사라질 때 이 줄의 등장 자체로 위쪽 패널 경계가 움직이지 않게 한다. */}
+      <div className="ml-1.5 pl-4 border-l border-slate-200 mt-1.5 pb-0.5 flex items-start gap-2 min-h-[26px]">
+        {turn.assistantText ? (
+          <>
+            <span className="shrink-0 px-2 py-1 rounded-md bg-indigo-50 text-indigo-500 font-bold text-[10px] mt-0.5">AI</span>
+            <div className="min-w-0 flex-1 max-h-[180px] overflow-y-auto styled-scrollbar pr-2">
+              <span className="text-[13px] leading-relaxed text-slate-700 whitespace-pre-wrap break-words">
+                {turn.assistantText}
+                {streaming && <span className="inline-block w-[2px] h-[11px] bg-indigo-500 ml-0.5 -mb-0.5 animate-pulse" />}
+              </span>
+            </div>
+          </>
+        ) : turn.summaryLabel ? (
+          <span className="text-[11px] text-slate-400 font-medium flex items-center gap-1">
+            <Sparkles className="w-2.5 h-2.5" />
+            {turn.summaryLabel}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
 
 function ToolCallDisplay({
   toolName,
@@ -126,21 +251,6 @@ function getEunNeun(word: string): string {
     return (code - 0xAC00) % 28 === 0 ? "는" : "은";
   }
   return "는";
-}
-
-// mutate 이력 배지 라벨 — Option List(filter/sort/add)와 ComparisonTable(add_criteria/remove_criteria/
-// add_product/remove_product) mutate 이력 배너에서 공통으로 사용한다.
-function mutateOpLabel(op: string): string {
-  switch (op) {
-    case 'filter': return '필터';
-    case 'sort': return '정렬';
-    case 'add': return '추가';
-    case 'add_criteria': return '기준 추가';
-    case 'remove_criteria': return '기준 삭제';
-    case 'add_product': return '제품 추가';
-    case 'remove_product': return '제품 삭제';
-    default: return op;
-  }
 }
 
 function extractSpecsFromText(text: string): Array<{ kind: 'text' | 'spec', content: any }> {
@@ -450,7 +560,7 @@ const MessageBubble = memo(({
           return (
             <div
               key={`text-${i}-${highlightTerm || 'none'}`}
-              className="relative z-10 text-sm leading-relaxed [&_p+p]:mt-3 [&_ul]:mt-2 [&_ol]:mt-2 [&_pre]:mt-2 select-none"
+              className="relative z-10 text-sm leading-relaxed text-slate-800 [&_p+p]:mt-3 [&_ul]:mt-2 [&_ol]:mt-2 [&_pre]:mt-2 select-none"
             >
               <Streamdown
                 plugins={{ code }}
@@ -692,16 +802,12 @@ export default function ChatPage() {
   type QHEntry = { id: string; query: string; criteria: string[]; timestamp: Date; spec: any; mutateLog?: MutateLogEntry[]; };
   const [queryHistory, setQueryHistory] = useState<QHEntry[]>([]);
   const [activeHistoryIndex, setActiveHistoryIndex] = useState<number>(-1);
-  const [mutateLogExpanded, setMutateLogExpanded] = useState(false);
-  useEffect(() => { setMutateLogExpanded(false); }, [activeHistoryIndex]);
   // Comparison Table 이력 배너 — Option List의 queryHistory/mutateLog와 같은 목적이지만,
   // ComparisonTable은 "페이지"가 아니라 하나의 표가 계속 갱신되는 구조라 별도 페이지 배열 없이
   // "현재 표를 만든 질문" + "그 뒤로 이어진 mutate 꼬리 질문" 두 가지만 추적한다.
   type CompTableMutateLogEntry = { id: string; summary: string; op: string; userQuery?: string };
   const [compTableQuery, setCompTableQuery] = useState<string>('');
   const [compTableMutateLog, setCompTableMutateLog] = useState<CompTableMutateLogEntry[]>([]);
-  const [compTableMutateLogExpanded, setCompTableMutateLogExpanded] = useState(false);
-  useEffect(() => { setCompTableMutateLogExpanded(false); }, [compTableQuery]);
   // productCardListSpec은 "Option List 패널: turn별로 분리된 카드 추적" effect가 매 메시지마다
   // data-option-list-spec 파트만으로 무조건 다시 계산해서 덮어쓰기 때문에, mutateSurface(add/filter/
   // sort)로 반영된 변경사항이 다음 턴이 오면 사라질 수 있다(그 effect는 mutateSurface 결과를 모름).
@@ -725,6 +831,9 @@ export default function ChatPage() {
   const [showExplorationPanel, setShowExplorationPanel] = useState(false);
   const [showCompTablePanel, setShowCompTablePanel] = useState(false);
   const [showOptionListPanel, setShowOptionListPanel] = useState(false);
+  const [showHistoryDrawer, setShowHistoryDrawer] = useState(false);
+  const historyDrawerBodyRef = useRef<HTMLDivElement>(null);
+  const [msgTimestamps, setMsgTimestamps] = useState<Record<string, number>>({});
   const pointerDragRef = useRef<{ type: 'col-l' | 'col-r' | 'col-ct' | 'col-ol' | 'col-or' | 'col-fr' | 'row'; startX: number; startY: number; startVal: number; containerH: number } | null>(null);
   const rightColumnRef = useRef<HTMLDivElement>(null);
 
@@ -823,6 +932,52 @@ export default function ChatPage() {
     useChat<AppMessage>({ transport });
 
   const lastMessage = messages[messages.length - 1];
+
+  // 입력창 위 미리보기(dock) — 턴 단위로 묶은 뒤, 마지막 턴을 "현재"로 보여주고 그 직전
+  // 턴은 새 턴이 시작되는 순간 잠깐 "나가는" 애니메이션으로 보여줬다가 정리한다.
+  // (스트리밍 중엔 messages가 토큰마다 바뀌지만 "턴 개수"는 안 바뀌므로, 이 값에만 걸어두면
+  // 스트리밍 도중 타이머가 매번 취소되는 일 없이 정확히 턴이 바뀔 때만 애니메이션이 걸린다.)
+  type DockTurn = { id: string; displayMsg: string; assistantText: string; summaryLabel: string | null };
+  const dockTurns = useMemo(() => buildHistoryTurns(messages), [messages]);
+  const toDockTurn = (t: HistoryTurn | null): DockTurn | null => {
+    if (!t) return null;
+    const rawText = (t.user as any).content || getMessageText(t.user);
+    const displayMsg = extractUserDisplayText(rawText);
+    if (!displayMsg) return null;
+    const actionData = getActionData(t.assistant);
+    const isNoneReply = actionData?.action === 'none';
+    const assistantText = isNoneReply ? getMessageText(t.assistant) : "";
+    const summaryLabel = t.assistant && !isNoneReply ? actionSummaryLabel(actionData, locale) : null;
+    return { id: t.user.id, displayMsg, assistantText, summaryLabel };
+  };
+  const currentDockTurn = toDockTurn(dockTurns[dockTurns.length - 1] ?? null);
+  const previousDockTurn = toDockTurn(dockTurns.length >= 2 ? dockTurns[dockTurns.length - 2] : null);
+
+  const [showExitingDockTurn, setShowExitingDockTurn] = useState(false);
+  const prevTurnCountRef = useRef(dockTurns.length);
+  useEffect(() => {
+    if (dockTurns.length > prevTurnCountRef.current) {
+      setShowExitingDockTurn(true);
+      const timeoutId = setTimeout(() => setShowExitingDockTurn(false), 450);
+      prevTurnCountRef.current = dockTurns.length;
+      return () => clearTimeout(timeoutId);
+    }
+    prevTurnCountRef.current = dockTurns.length;
+  }, [dockTurns.length]);
+  const exitingDockTurn = showExitingDockTurn ? previousDockTurn : null;
+
+  // 메시지 자체엔 타임스탬프가 없어서(UIMessage에 createdAt 없음), 히스토리에 처음 나타나는
+  // 시점을 그 메시지의 시각으로 기록해둔다 — 새로고침 전까지는 실제 전송 시각과 사실상 같다.
+  useEffect(() => {
+    setMsgTimestamps(prev => {
+      let changed = false;
+      const next = { ...prev };
+      messages.forEach(m => {
+        if (!(m.id in next)) { next[m.id] = Date.now(); changed = true; }
+      });
+      return changed ? next : prev;
+    });
+  }, [messages]);
   const isAgentGenerating = status === 'submitted' || status === 'streaming';
   const activeToolName = isAgentGenerating && lastMessage?.role === 'assistant'
     ? (lastMessage as any).toolInvocations?.slice(-1)[0]?.toolName
@@ -884,29 +1039,18 @@ export default function ChatPage() {
           }),
         });
         if (!res.ok) continue;
-        const { updates, dimmed, unconfirmed } = await res.json() as {
+        const { updates, unconfirmed } = await res.json() as {
           updates: { product_name: string; field_key: string; spec_phrase: string }[];
-          dimmed: { name: string; reason: string }[];
           unconfirmed: string[];
         };
 
-        const dimmedMap = new Map((dimmed ?? []).map(d => [d.name, d.reason]));
         const unconfirmedSet = new Set(unconfirmed ?? []);
 
         // 화면에 표시되는 카드 업데이트 함수
         const applyCardUpdates = (cardList: any[]) =>
           cardList.map((card: any) => {
             const update = updates?.find((u) => u.product_name === card.name);
-            const dimmedReason = dimmedMap.get(card.name);
-            const isDimmed = !!dimmedReason;
             const isUnconfirmed = unconfirmedSet.has(card.name);
-
-            // 미충????유 ??데??트 (??평가??기???? 기존 목록??서 ??거 ????시 ??정)
-            const prevReasons: string[] = card._dimmedReasons ?? [];
-            const evaluatedCriteriaNames = newCriteria.map(c => c.name);
-            const filteredReasons = prevReasons.filter(r => !evaluatedCriteriaNames.includes(r));
-            const newReasons = isDimmed ? [...filteredReasons, dimmedReason] : filteredReasons;
-            const updatedIsDimmed = newReasons.length > 0;
 
             if (update) {
               const specsCopy = [...(card.specs ?? [])];
@@ -917,8 +1061,6 @@ export default function ChatPage() {
               return {
                 ...card,
                 specs: specsCopy,
-                _dimmed: updatedIsDimmed,
-                _dimmedReasons: newReasons,
                 _unconfirmedCriteria: isUnconfirmed
                   ? [...new Set([...(card._unconfirmedCriteria ?? []), criterion.name])]
                   : (card._unconfirmedCriteria ?? []),
@@ -927,14 +1069,10 @@ export default function ChatPage() {
             }
 
             // ??펙 ??데??트??????????정 결과가 ??는 카드
-            if (isDimmed || isUnconfirmed || prevReasons.length !== newReasons.length) {
+            if (isUnconfirmed) {
               return {
                 ...card,
-                _dimmed: updatedIsDimmed,
-                _dimmedReasons: newReasons,
-                _unconfirmedCriteria: isUnconfirmed
-                  ? [...new Set([...(card._unconfirmedCriteria ?? []), criterion.name])]
-                  : (card._unconfirmedCriteria ?? []),
+                _unconfirmedCriteria: [...new Set([...(card._unconfirmedCriteria ?? []), criterion.name])],
                 _justUpdated: false,
               };
             }
@@ -945,16 +1083,9 @@ export default function ChatPage() {
             return card;
           });
 
-        const sortByDimmed = (cards: any[]) =>
-          [...cards].sort((a, b) => {
-            const aD = a._dimmed ? 1 : 0;
-            const bD = b._dimmed ? 1 : 0;
-            return aD - bD; // 미충족(1)이 뒤로
-          });
-
         setProductCardListSpec((prev: any) => {
           if (!prev?.props?.cards) return prev;
-          const updatedCards = sortByDimmed(applyCardUpdates(prev.props.cards));
+          const updatedCards = applyCardUpdates(prev.props.cards);
           const next = { ...prev, props: { ...prev.props, cards: updatedCards } };
           productCardListSpecRef.current = next;
           return next;
@@ -1081,7 +1212,7 @@ export default function ChatPage() {
     if (curr.length === 0) {
       setProductCardListSpec((prev: any) => {
         if (!prev?.props?.cards) return prev;
-        const resetCards = prev.props.cards.map((c: any) => ({ ...c, _dimmed: false, _unconfirmedCriteria: [], _dimmedReasons: [] }));
+        const resetCards = prev.props.cards.map((c: any) => ({ ...c, _unconfirmedCriteria: [] }));
         const next = { ...prev, props: { ...prev.props, cards: resetCards } };
         productCardListSpecRef.current = next;
         return next;
@@ -1105,40 +1236,9 @@ export default function ChatPage() {
       (p) => !curr.some((c) => c.name === p.name)
     );
 
-    // [1] 현재 기준 목록에 없는 흐림 이유는 전부 해제 (강제 동기화)
-    const currentCriteriaNames = curr.map((c: any) => c.name);
     const removedNames = removedCriteria.map((c: any) => c.name);
 
-    const clearStaleDimming = (prev: any) => {
-      if (!prev?.props?.cards) return prev;
-      const updatedCards = prev.props.cards.map((card: any) => {
-        if (!card._dimmedReasons || card._dimmedReasons.length === 0) return card;
-        const validReasons = card._dimmedReasons.filter((r: string) =>
-          currentCriteriaNames.some((name: string) =>
-            r === name || r.includes(name) || name.includes(r)
-          )
-        );
-        return { ...card, _dimmedReasons: validReasons, _dimmed: validReasons.length > 0 };
-      });
-      return { ...prev, props: { ...prev.props, cards: updatedCards } };
-    };
-
     if (removedCriteria.length > 0) {
-      setProductCardListSpec((prev: any) => {
-        const next = clearStaleDimming(prev);
-        productCardListSpecRef.current = next;
-        return next;
-      });
-
-      // specToShow는 queryHistory[activeHistoryIndex].spec에서 렌더링 → 동시 업데이트
-      setQueryHistory((prev: any[]) => {
-        if (!prev || prev.length === 0) return prev;
-        return prev.map((entry: any, idx: number) => {
-          if (idx !== activeHistoryIndex) return entry;
-          return { ...entry, spec: clearStaleDimming(entry.spec) };
-        });
-      });
-
       // 테이블 행 즉시 제거 + WSM 순위 재계산
       setCompTableSpec((prev: any) => {
         if (!prev?.props?.rows || !prev?.props?.columns) return prev;
@@ -1150,7 +1250,7 @@ export default function ChatPage() {
         compTableSpecRef.current = next;
         return next;
       });
-      console.log('[table] 기준 제거 → 흐림 해제(curr 기준) + 행 삭제: [' + removedNames.join(', ') + ']');
+      console.log('[table] 기준 제거 → 행 삭제: [' + removedNames.join(', ') + ']');
     }
 
     // [2] 새 기준 → Option List auto-enrich
@@ -1373,6 +1473,15 @@ export default function ChatPage() {
   }, [openPriorityIdx]);
 
   useEffect(() => {
+    if (!showHistoryDrawer) return;
+    const handleKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") setShowHistoryDrawer(false); };
+    document.addEventListener("keydown", handleKeyDown);
+    const body = historyDrawerBodyRef.current;
+    if (body) body.scrollTop = body.scrollHeight;
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [showHistoryDrawer]);
+
+  useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container || !isStickToBottom.current) return;
     const timeoutId = setTimeout(() => {
@@ -1451,15 +1560,25 @@ export default function ChatPage() {
         ? `\n\n[ASSIGNED ITEM: ${assignedItem}]`
         : "";
 
+      // 참가자별 공유 메모리(session-memory.ts) 키로 서버가 사용 — 대화가 휘발되지 않고
+      // 참가자 단위로 이어지게 하려면 매 요청에 실어 보내야 한다.
+      const participantIdTag = participantId.trim()
+        ? `\n\n[PARTICIPANT ID: ${participantId.trim()}]`
+        : "";
+
       // 현재 Option List 카드 목록 주입 — mutateSurface 판단에 필요 (가격/스펙 파싱은 route.ts 정규식과 일치해야 함)
       // productCardListSpec을 직접 쓰면 mutateSurface(add/filter/sort) 변경분이 다음 턴에서 사라질 수
       // 있어서(위 activeOptionListCardsRef 주석 참고), 보호된 ref를 우선 사용한다.
       const currentCards = activeOptionListCardsRef.current ?? productCardListSpec?.props?.cards;
+      // ComparisonTable/CriteriaMap과 동일하게 JSON으로 왕복 — id를 실어 보내야 Edit Agent가
+      // 이름 대신 id로 카드를 정확히 지목할 수 있다(route.ts의 JSON.parse와 형태를 맞출 것).
       const currentOptionListTag = Array.isArray(currentCards) && currentCards.length > 0
-        ? `\n\n[CURRENT_OPTION_LIST]\n현재 Option List에 다음 상품이 표시되어 있습니다:\n${currentCards.map((c: any) => {
-          const specsStr = c.specs && c.specs.length > 0 ? ` (스펙: ${c.specs.join(', ')})` : '';
-          return `- ${c.name}${c.price ? ` [가격 ${c.price}]` : ''}${specsStr}`;
-        }).join('\n')}`
+        ? `\n\n[CURRENT_OPTION_LIST]\n${JSON.stringify(currentCards.map((c: any) => ({
+          id: c.id,
+          name: c.name,
+          price: c.price ?? '',
+          specs: c.specs ?? [],
+        })))}`
         : "";
 
       // ??재 ComparisonTable??전체 spec(columns+rows) 주입 ??Edit Agent가 어떤 기준??있는지 판단?????
@@ -1474,16 +1593,17 @@ export default function ChatPage() {
       const existingCategories = criteriaMapRef.current?.props?.categories;
       const currentCriteriaMapTag = Array.isArray(existingCategories) && existingCategories.length > 0
         ? `\n\n[CURRENT_CRITERIA_MAP]\n${JSON.stringify(existingCategories.map((c: any) => ({
+          id: c.id,
           label: c.label,
-          items: (c.items ?? []).map((i: any) => ({ name: i.name })),
+          items: (c.items ?? []).map((i: any) => ({ id: i.id, name: i.name })),
         })))}`
         : "";
 
       setSearchCriteria([]);
       setMentionChips([]);
-      await sendMessage({ text: visibleCriteria + mentionPrefix + message.trim() + criteriaContext + savedCriteriaContext + cartContext + userContextTag + assignedItemTag + currentOptionListTag + currentComparisonTableTag + currentCriteriaMapTag });
+      await sendMessage({ text: visibleCriteria + mentionPrefix + message.trim() + criteriaContext + savedCriteriaContext + cartContext + userContextTag + assignedItemTag + participantIdTag + currentOptionListTag + currentComparisonTableTag + currentCriteriaMapTag });
     },
-    [input, isStreaming, sendMessage, droppedItems, droppedCriteria, searchCriteria, mentionChips, userContext, productCardListSpec],
+    [input, isStreaming, sendMessage, droppedItems, droppedCriteria, searchCriteria, mentionChips, userContext, productCardListSpec, participantId],
   );
 
   const handleKeyDown = useCallback(
@@ -1653,12 +1773,13 @@ export default function ChatPage() {
               const existingItems: any[] = merged[existingIdx].items ?? [];
               const newItems: any[] = cat.items ?? [];
               newItems.forEach((item: any) => {
-                if (!existingItems.some((i: any) => i.name === item.name)) {
+                const idx = existingItems.findIndex((i: any) => i.name === item.name);
+                if (idx === -1) {
                   existingItems.push(item);
                 } else {
-                  // Update existing item
-                  const idx = existingItems.findIndex((i: any) => i.name === item.name);
-                  existingItems[idx] = { ...existingItems[idx], ...item };
+                  // Update existing item — id는 최초 배정된 값을 유지(재생성마다 새로 스탬핑된
+                  // item.id로 덮어쓰면 Edit Agent가 이전 턴에 기억한 id가 다음 턴에 어긋난다).
+                  existingItems[idx] = { ...existingItems[idx], ...item, id: existingItems[idx].id };
                 }
               });
               merged[existingIdx] = { ...merged[existingIdx], items: existingItems };
@@ -1702,12 +1823,15 @@ export default function ChatPage() {
         // 위 CriteriaMap 병합 분기와 달리 누적된 categories에서 항목을 걸러낸다.
         // 항목이 하나도 안 남으면 카테고리 자체를 제거한다(빈 카테고리가 "미탐색" 칩으로 오인되는 것 방지).
       } else if (effectiveSpec.type === "CriteriaMapRemoval") {
-        const categoryLabel: string = effectiveSpec.props?.category_label ?? "";
-        const itemNamesToRemove: string[] = Array.isArray(effectiveSpec.props?.item_names) ? effectiveSpec.props.item_names : [];
+        // category_label/item_names는 id를 담아 오는 게 기본이지만(Edit Agent가 current_criteriaMap의
+        // id를 복사해 돌려줌), id가 없던 구형 상태 등 대비로 라벨/이름 매칭도 계속 지원한다.
+        const categoryRef: string = effectiveSpec.props?.category_label ?? "";
+        const itemRefsToRemove: string[] = Array.isArray(effectiveSpec.props?.item_names) ? effectiveSpec.props.item_names : [];
         const merged: any[] = latestCriteriaMapSpec?.props?.categories ?? [];
-        const catIdx = merged.findIndex((c: any) => c.label === categoryLabel);
-        if (catIdx > -1 && itemNamesToRemove.length > 0) {
-          const remaining = (merged[catIdx].items ?? []).filter((i: any) => !itemNamesToRemove.includes(i.name));
+        const catIdx = merged.findIndex((c: any) => c.id === categoryRef || c.label === categoryRef);
+        if (catIdx > -1 && itemRefsToRemove.length > 0) {
+          const toRemove = new Set(itemRefsToRemove);
+          const remaining = (merged[catIdx].items ?? []).filter((i: any) => !toRemove.has(i.id) && !toRemove.has(i.name));
           if (remaining.length > 0) {
             merged[catIdx] = { ...merged[catIdx], items: remaining };
           } else {
@@ -2146,6 +2270,14 @@ export default function ChatPage() {
     let accumulatedCards: any[] = [];
     let latestSpecBase: any = null;
     let latestCoverageNotice: any = null;
+    // 이름이 같은 카드가 재생성돼도 최초 배정된 id를 유지한다 — renderToOptionList는 매 턴
+    // LLM이 새 id를 스탬핑하므로(백엔드에서 항상 덮어씀), 그대로 넣으면 같은 제품이 턴마다
+    // 다른 id를 갖게 돼 Edit Agent가 이전 턴에 기억한 id가 어긋난다.
+    const mergeCardPreservingId = (list: any[], newCard: any) => {
+      const idx = list.findIndex((c: any) => c.name === newCard.name);
+      if (idx === -1) list.unshift(newCard);
+      else list[idx] = { ...newCard, id: list[idx].id ?? newCard.id };
+    };
     let latestRagNotFound: any = null;
 
     type TurnData = { userQuery: string; specBase: any; cards: any[]; };
@@ -2199,10 +2331,8 @@ export default function ChatPage() {
             latestRagNotFound = null;
             if (spec?.props?.cards && Array.isArray(spec.props.cards)) {
               for (const newCard of spec.props.cards) {
-                const tIdx = turnCards.findIndex((c: any) => c.name === newCard.name);
-                if (tIdx !== -1) turnCards[tIdx] = newCard; else turnCards.unshift(newCard);
-                const gIdx = accumulatedCards.findIndex((c: any) => c.name === newCard.name);
-                if (gIdx !== -1) accumulatedCards[gIdx] = newCard; else accumulatedCards.unshift(newCard);
+                mergeCardPreservingId(turnCards, newCard);
+                mergeCardPreservingId(accumulatedCards, newCard);
               }
             }
           }
@@ -2218,10 +2348,8 @@ export default function ChatPage() {
           if (spec?.type === 'ProductCardList' && Array.isArray(spec?.props?.cards)) {
             if (!turnSpecBase) { turnSpecBase = spec; latestSpecBase = spec; }
             for (const newCard of spec.props.cards) {
-              const tIdx = turnCards.findIndex((c: any) => c.name === newCard.name);
-              if (tIdx !== -1) turnCards[tIdx] = newCard; else turnCards.unshift(newCard);
-              const gIdx = accumulatedCards.findIndex((c: any) => c.name === newCard.name);
-              if (gIdx !== -1) accumulatedCards[gIdx] = newCard; else accumulatedCards.unshift(newCard);
+              mergeCardPreservingId(turnCards, newCard);
+              mergeCardPreservingId(accumulatedCards, newCard);
             }
           }
         }
@@ -2241,10 +2369,8 @@ export default function ChatPage() {
           if (spec?.type === 'ProductCardList' && Array.isArray(spec?.props?.cards)) {
             if (!turnSpecBase) { turnSpecBase = spec; latestSpecBase = spec; }
             for (const newCard of spec.props.cards) {
-              const tIdx = turnCards.findIndex((c: any) => c.name === newCard.name);
-              if (tIdx !== -1) turnCards[tIdx] = newCard; else turnCards.unshift(newCard);
-              const gIdx = accumulatedCards.findIndex((c: any) => c.name === newCard.name);
-              if (gIdx !== -1) accumulatedCards[gIdx] = newCard; else accumulatedCards.unshift(newCard);
+              mergeCardPreservingId(turnCards, newCard);
+              mergeCardPreservingId(accumulatedCards, newCard);
             }
           }
         }
@@ -2383,11 +2509,14 @@ export default function ChatPage() {
     console.log('[mutateSurface] op:', op, JSON.stringify(mutationResult, null, 2));
     const currentCardNames = productCardListSpec?.props?.cards?.map((c: any) => c.name) ?? [];
     console.log('[mutateSurface] current card names:', currentCardNames);
-    const findCard = (cards: any[], name: string) =>
+    // Edit Agent는 id를 우선으로 돌려주지만(current_optionList에서 복사), id가 없던 구형
+    // 상태 등 대비로 이름 부분일치 fallback도 유지한다(ComparisonTable/CriteriaMap과 동일 패턴).
+    const findCard = (cards: any[], idOrName: string) =>
+      cards.find((c: any) => c.id && c.id === idOrName) ??
       cards.find((c: any) =>
-        c.name === name ||
-        c.name?.toLowerCase().includes(name.toLowerCase()) ||
-        name.toLowerCase().includes(c.name?.toLowerCase() ?? '')
+        c.name === idOrName ||
+        c.name?.toLowerCase().includes(idOrName.toLowerCase()) ||
+        idOrName.toLowerCase().includes(c.name?.toLowerCase() ?? '')
       );
     const applyToSpec = (prev: any, updater: (cards: any[]) => any[]) => {
       if (!prev?.props?.cards) return prev;
@@ -2973,38 +3102,6 @@ export default function ChatPage() {
                   </div>
                 )}
               </div>
-
-              {/* Row 2: mutate 이력 "꼬리 질문" — 페이지는 안 늘어나지만 무슨 변경이 있었는지 기록 */}
-              {(activeEntry.mutateLog?.length ?? 0) > 0 && (() => {
-                const log = activeEntry.mutateLog!;
-                const visibleCount = mutateLogExpanded ? log.length : Math.min(3, log.length);
-                const visible = log.slice(log.length - visibleCount);
-                const hiddenCount = log.length - visible.length;
-                return (
-                  <div className="flex flex-col gap-1">
-                    {hiddenCount > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setMutateLogExpanded(true)}
-                        className="text-[9px] text-slate-400 hover:text-slate-600 pl-4 text-left w-fit"
-                      >
-                        이전 {hiddenCount}건 더보기
-                      </button>
-                    )}
-                    {visible.map((entry) => (
-                      // timestamp를 key로 써서(인덱스 대신) "더보기" 클릭 시 슬라이딩 윈도우가
-                      // 밀리는 것과 무관하게 항목 정체성이 안정적으로 유지된다 (애니메이션은 없음).
-                      <div key={entry.timestamp.getTime()} className="flex items-center gap-1.5 pl-3 text-[9px] text-slate-500 min-w-0">
-                        <span className="text-slate-300 flex-shrink-0">└</span>
-                        <span className="flex-shrink-0 text-[8.5px] font-bold rounded-full px-1.5 py-0.5 leading-none select-none whitespace-nowrap text-slate-500 bg-slate-100">
-                          {mutateOpLabel(entry.op)}
-                        </span>
-                        <span className="truncate">{entry.userQuery || entry.summary}</span>
-                      </div>
-                    ))}
-                  </div>
-                );
-              })()}
             </div>
           </div>
         )}
@@ -3066,35 +3163,6 @@ export default function ChatPage() {
               {compTableQuery}
             </p>
           </div>
-
-          {compTableMutateLog.length > 0 && (() => {
-            const log = compTableMutateLog;
-            const visibleCount = compTableMutateLogExpanded ? log.length : Math.min(3, log.length);
-            const visible = log.slice(log.length - visibleCount);
-            const hiddenCount = log.length - visible.length;
-            return (
-              <div className="flex flex-col gap-1">
-                {hiddenCount > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setCompTableMutateLogExpanded(true)}
-                    className="text-[9px] text-slate-400 hover:text-slate-600 pl-4 text-left w-fit"
-                  >
-                    이전 {hiddenCount}건 더보기
-                  </button>
-                )}
-                {visible.map((entry) => (
-                  <div key={entry.id} className="flex items-center gap-1.5 pl-3 text-[9px] text-slate-500 min-w-0">
-                    <span className="text-slate-300 flex-shrink-0">└</span>
-                    <span className="flex-shrink-0 text-[8.5px] font-bold rounded-full px-1.5 py-0.5 leading-none select-none whitespace-nowrap text-slate-500 bg-slate-100">
-                      {mutateOpLabel(entry.op)}
-                    </span>
-                    <span className="truncate">{entry.userQuery || entry.summary}</span>
-                  </div>
-                ))}
-              </div>
-            );
-          })()}
         </div>
       )}
 
@@ -3197,6 +3265,114 @@ export default function ChatPage() {
           </div>
         </div>
       )}
+
+      {/* ???? ??체 ??화 ??록 ??로??????? */}
+      {showHistoryDrawer && (
+        <div
+          className="fixed inset-0 z-[9999] flex justify-start"
+          style={{ backgroundColor: 'rgba(15,23,42,0.28)' }}
+          onClick={() => setShowHistoryDrawer(false)}
+        >
+          <div
+            className="h-full w-[420px] max-w-[90vw] bg-white border-r border-slate-200 shadow-2xl flex flex-col animate-in slide-in-from-left duration-300"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex-shrink-0 flex items-center justify-between px-4 py-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <History className="w-4 h-4 text-slate-400" />
+                <span className="text-[13px] font-bold text-slate-800">{locale === 'en' ? 'Conversation history' : '대화 기록'}</span>
+                <span className="text-[11px] font-semibold text-slate-400">{buildHistoryTurns(messages).length}{locale === 'en' ? ' turns' : '턴'}</span>
+              </div>
+              <button
+                onClick={() => setShowHistoryDrawer(false)}
+                className="p-1.5 rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div ref={historyDrawerBodyRef} className="flex-1 overflow-y-auto px-6 py-6 space-y-8 styled-scrollbar">
+              {(() => {
+                const turns = buildHistoryTurns(messages);
+
+                if (turns.length === 0) {
+                  return <p className="text-[12px] text-slate-400 text-center pt-10">{locale === 'en' ? 'No conversation yet.' : '아직 대화 기록이 없어요.'}</p>;
+                }
+
+                return turns.map((turn, i) => {
+                  const qText = extractUserDisplayText((turn.user as any).content || getMessageText(turn.user));
+                  const actionData = getActionData(turn.assistant);
+                  const isNone = actionData?.action === 'none';
+                  const aText = isNone ? getMessageText(turn.assistant) : "";
+                  const summaryLabel = !isNone ? actionSummaryLabel(actionData, locale) : null;
+                  const isLastTurn = i === turns.length - 1;
+                  const userLabel = "User";
+                  return (
+                    <div key={turn.user.id} className="flex flex-col">
+                      {/* 사용자 발화 — AI 배지와 같은 네모 칩 모양 + 텍스트 + 시각 */}
+                      <div className="flex items-center gap-2.5">
+                        <span className="shrink-0 px-2 py-1 rounded-md bg-slate-100 text-slate-500 font-bold text-[10px]">
+                          {userLabel}
+                        </span>
+                        <span className="flex-1 min-w-0 text-[13px] leading-relaxed text-slate-800 whitespace-pre-wrap break-words">{qText || "..."}</span>
+                        <span className="shrink-0 text-[10px] text-slate-300 font-medium">{formatTurnTime(msgTimestamps[turn.user.id], locale)}</span>
+                      </div>
+
+                      {/* AI 응답(none) — 사용자 배지 왼쪽에서 이어지는 세로선으로 연결 */}
+                      {aText && (
+                        <div className="ml-1.5 pl-4 border-l border-slate-200 mt-2 pb-1 flex items-center gap-2">
+                          <span className="shrink-0 px-2 py-1 rounded-md bg-indigo-50 text-indigo-500 font-bold text-[10px]">AI</span>
+                          <span className="min-w-0 text-[13px] leading-relaxed text-slate-800 whitespace-pre-wrap break-words">
+                            {aText}
+                            {isLastTurn && isStreaming && <span className="inline-block w-[2px] h-[11px] bg-indigo-500 ml-0.5 -mb-0.5 animate-pulse" />}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* generate/edit 요약 — 전체 응답 대신 한 줄 요약만 */}
+                      {summaryLabel && (
+                        <div className="ml-1.5 pl-4 border-l border-slate-200 mt-1.5 pb-0.5">
+                          <span className="text-[11px] text-slate-400 font-medium flex items-center gap-1">
+                            <Sparkles className="w-2.5 h-2.5" />
+                            {summaryLabel}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ???? ???? ??이드 레일: ??토리??+ ??화 ??록 ??? */}
+      <div className="fixed left-4 top-1/2 -translate-y-1/2 z-40 flex flex-col items-center gap-1 bg-white border border-slate-200 rounded-full shadow-lg p-1.5">
+        <HoverTooltip label={locale === 'en' ? 'Interface guide' : '인터페이스 안내'} side="right">
+          <button
+            onClick={() => setShowTour(true)}
+            className="w-9 h-9 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-100 hover:text-slate-800 transition-colors"
+          >
+            <Compass className="w-4 h-4" />
+          </button>
+        </HoverTooltip>
+        <div className="w-5 h-px bg-slate-100" />
+        <HoverTooltip label={locale === 'en' ? 'Conversation history' : '대화 기록'} side="right">
+          <button
+            onClick={() => setShowHistoryDrawer(true)}
+            className="relative w-9 h-9 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-100 hover:text-slate-800 transition-colors"
+          >
+            <History className="w-4 h-4" />
+            {buildHistoryTurns(messages).length > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 min-w-[15px] h-[15px] px-[3px] rounded-full bg-indigo-500 text-white text-[9px] font-bold flex items-center justify-center leading-none">
+                {buildHistoryTurns(messages).length}
+              </span>
+            )}
+          </button>
+        </HoverTooltip>
+      </div>
+
+      <PanelTour open={showTour} onClose={() => setShowTour(false)} locale={locale} />
 
       {showSummaryModal && (
         <div
@@ -3378,7 +3554,7 @@ export default function ChatPage() {
       </div>
 
       <div className="flex-1 min-h-0 flex flex-col w-full overflow-hidden">
-        <div className="flex w-full flex-1 min-h-0 p-3 pb-0 relative">
+        <div className="flex w-full flex-1 min-h-0 pt-3 pr-3 pb-0 pl-20 relative">
 
           {/* LEFT AREA FOR DYNAMIC PANELS */}
           <div className="flex-1 flex min-w-0 h-full relative overflow-hidden pr-[48px] justify-center">
@@ -3395,7 +3571,7 @@ export default function ChatPage() {
             )}
 
             {/* SLOT 1 (LEFT) */}
-            <aside {...slotDropProps('left')} className={`bg-white z-10 flex flex-col overflow-hidden rounded-2xl shadow-[0_0_20px_rgba(0,0,0,0.05)] ${isPanelShown(panelSlots.left) ? 'border border-slate-200' : 'border-0'} ${panelDropTarget === 'left' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`} style={{ width: isPanelShown(panelSlots.left) ? panelWidths[panelSlots.left] : 0, flexShrink: 1, transition: isResizing ? 'none' : 'width 0.45s cubic-bezier(0.4,0,0.2,1)' }}>
+            <aside {...slotDropProps('left')} className={`bg-white z-10 flex flex-col overflow-hidden rounded-2xl shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_16px_-8px_rgba(15,23,42,0.12)] ${isPanelShown(panelSlots.left) ? 'border border-slate-200' : 'border-0'} ${panelDropTarget === 'left' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`} style={{ width: isPanelShown(panelSlots.left) ? panelWidths[panelSlots.left] : 0, flexShrink: 1, transition: isResizing ? 'none' : 'width 0.45s cubic-bezier(0.4,0,0.2,1)' }}>
               {isPanelShown(panelSlots.left) && renderPanel(panelSlots.left)}
             </aside>
 
@@ -3415,7 +3591,7 @@ export default function ChatPage() {
             {/* SLOT 2 (COMP TABLE SLOT) */}
             <aside
               {...slotDropProps('compTableSlot')}
-              className={`bg-white overflow-hidden flex flex-col rounded-2xl shadow-[0_0_20px_rgba(0,0,0,0.05)] h-full ${isPanelShown(panelSlots.compTableSlot) ? 'border border-slate-200' : 'border-0'} ${panelDropTarget === 'compTableSlot' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`}
+              className={`bg-white overflow-hidden flex flex-col rounded-2xl shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_16px_-8px_rgba(15,23,42,0.12)] h-full ${isPanelShown(panelSlots.compTableSlot) ? 'border border-slate-200' : 'border-0'} ${panelDropTarget === 'compTableSlot' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`}
               style={{ width: isPanelShown(panelSlots.compTableSlot) ? panelWidths[panelSlots.compTableSlot] : 0, flexShrink: isPanelShown(panelSlots.compTableSlot) ? 0 : 1, transition: isResizing ? 'none' : 'width 0.45s cubic-bezier(0.4,0,0.2,1)' }}
             >
               {isPanelShown(panelSlots.compTableSlot) && renderPanel(panelSlots.compTableSlot)}
@@ -3436,7 +3612,7 @@ export default function ChatPage() {
             {/* SLOT 3 (FAR RIGHT SLOT) */}
             <aside
               {...slotDropProps('farRight')}
-              className={`bg-white overflow-hidden flex flex-col rounded-2xl shadow-[0_0_20px_rgba(0,0,0,0.05)] h-full ${isPanelShown(panelSlots.farRight) ? 'border border-slate-200' : 'border-0'} ${panelDropTarget === 'farRight' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`}
+              className={`bg-white overflow-hidden flex flex-col rounded-2xl shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_16px_-8px_rgba(15,23,42,0.12)] h-full ${isPanelShown(panelSlots.farRight) ? 'border border-slate-200' : 'border-0'} ${panelDropTarget === 'farRight' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`}
               style={{ width: isPanelShown(panelSlots.farRight) ? panelWidths[panelSlots.farRight] : 0, flexShrink: 1, transition: isResizing ? 'none' : 'width 0.45s cubic-bezier(0.4,0,0.2,1)' }}
             >
               {isPanelShown(panelSlots.farRight) && renderPanel(panelSlots.farRight)}
@@ -3481,24 +3657,26 @@ export default function ChatPage() {
             >
               {rightPanelCollapsed ? (
                 /* ??힌 ??태: 36px ??트????단 중앙 */
-                <button
-                  onClick={() => setRightPanelCollapsed(false)}
-                  className="absolute top-3 left-1/2 -translate-x-1/2 p-1.5 rounded-md text-slate-600 hover:bg-slate-100 transition-colors"
-                  title="패널 펼치기"
-                >
-                  <PanelLeft className="w-4 h-4" />
-                </button>
+                <HoverTooltip label="패널 펼치기" side="left" className="absolute top-3 left-1/2 -translate-x-1/2">
+                  <button
+                    onClick={() => setRightPanelCollapsed(false)}
+                    className="p-1.5 rounded-md text-slate-600 hover:bg-slate-100 transition-colors"
+                  >
+                    <PanelLeft className="w-4 h-4" />
+                  </button>
+                </HoverTooltip>
               ) : (
                 <>
                   {/* ??기 버튼 */}
                   <div className="absolute top-3 right-3 z-10">
-                    <button
-                      onClick={() => setRightPanelCollapsed(true)}
-                      className="p-1.5 rounded-md text-slate-600 hover:bg-slate-100 transition-colors"
-                      title="패널 접기"
-                    >
-                      <PanelRight className="w-4 h-4" />
-                    </button>
+                    <HoverTooltip label="패널 접기" side="left">
+                      <button
+                        onClick={() => setRightPanelCollapsed(true)}
+                        className="p-1.5 rounded-md text-slate-600 hover:bg-slate-100 transition-colors"
+                      >
+                        <PanelRight className="w-4 h-4" />
+                      </button>
+                    </HoverTooltip>
                   </div>
                   <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
                     {renderPanel(panelSlots.rightTop)}
@@ -3524,52 +3702,30 @@ export default function ChatPage() {
             </button>
           )}
           <div className="max-w-2xl w-full mx-auto flex flex-col">
-            {/* 최근 질문 ??시 */}
-            {(() => {
-              const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
-              if (!lastUserMsg) return null;
-              const rawText = (lastUserMsg as any).content || ((lastUserMsg as any).parts?.find((p: any) => p.type === 'text')?.text || "");
-              let displayMsg = rawText;
-              const cumulativeMatch = displayMsg.match(/^\[SYSTEM: CUMULATIVE COMPARISON\] (.*?) ??품??을 Table/i);
-
-              if (cumulativeMatch) {
-                displayMsg = `"${cumulativeMatch[1].trim()}" ??품??비교??줘.`;
-              } else {
-                const isPureCriteria = /^\[Decision Criteria\s*:[^\]]*\]\s*(?:\n|$|\[)/i.test(rawText);
-                const isPureMyItems = /^\[My items\s*:[^\]]*\]\s*(?:\n|$|\[)/i.test(rawText);
-
-                displayMsg = displayMsg.replace(/\|https?:\/\/[^\s,\]]+/g, "");
-                displayMsg = displayMsg.replace(/^\[Decision Criteria\s*:([^\]]*)\]\s*/i, '"$1" ');
-                displayMsg = displayMsg.replace(/^\[My items\s*:([^\]]*)\]\s*/i, '"$1" ');
-                displayMsg = displayMsg.split(/\n{1,2}\[CONTEXT:/i)[0];
-                displayMsg = displayMsg.split(/\n{1,2}\[DECISION CRITERIA:/i)[0];
-                displayMsg = displayMsg.split(/\n{1,2}\[USER CONTEXT:/i)[0];
-                displayMsg = displayMsg.split(/\n{1,2}\[ASSIGNED ITEM:/i)[0];
-                displayMsg = displayMsg.trim();
-
-                if (isPureCriteria && displayMsg && !displayMsg.includes("조건??로 추천??줘")) displayMsg += " 조건??로 추천??줘.";
-                if (isPureMyItems && displayMsg && !displayMsg.includes("비교??줘")) displayMsg += " ??품??비교??줘.";
-              }
-
-              if (displayMsg) {
-                return (
-                  <div className="flex animate-in fade-in slide-in-from-bottom-1 duration-300 min-w-0">
-                    <div
-                      className="px-3 py-1.5 ml-5 flex items-center gap-2 bg-white border border-indigo-300 border-b-0 rounded-t-[12px] relative z-10 translate-y-[1px] overflow-hidden"
-                      style={{ maxWidth: 'calc(100% - 60px)' }}
-                    >
-                      <span className="shrink-0 flex items-center justify-center w-5 h-5 rounded-full bg-slate-100 text-slate-400 text-[11px] font-bold">Q</span>
-                      <span
-                        className="min-w-0 leading-relaxed font-medium text-slate-500 whitespace-normal break-words"
-                        title={displayMsg}
-                        style={{ fontSize: displayMsg.length > 120 ? '10px' : displayMsg.length > 80 ? '11px' : displayMsg.length > 40 ? '12px' : '13px' }}
-                      >{displayMsg}</span>
-                    </div>
-                  </div>
-                );
-              }
-              return null;
-            })()}
+            {/* 최근 질문/응답 표시 — 이전 턴은 위로 밀려 사라지고 새 턴이 아래에서 올라온다.
+                두 턴을 grid로 같은 셀에 겹쳐서(각각 flow에 쌓이지 않도록) 전환 중 두 턴의 높이가
+                합산되어 위쪽 패널 경계가 순간적으로 튀는 것을 막는다. */}
+            {(exitingDockTurn || currentDockTurn) && (
+              <div className="grid">
+                {exitingDockTurn && (
+                  <DockTurnRow
+                    key={`exit-${exitingDockTurn.id}`}
+                    turn={exitingDockTurn}
+                    userLabel="User"
+                    className="[grid-area:1/1] animate-out fade-out slide-out-to-top-3 duration-[450ms] ease-in"
+                  />
+                )}
+                {currentDockTurn && (
+                  <DockTurnRow
+                    key={currentDockTurn.id}
+                    turn={currentDockTurn}
+                    userLabel="User"
+                    streaming={isStreaming && lastMessage?.role === 'assistant'}
+                    className="[grid-area:1/1] animate-in fade-in slide-in-from-bottom-3 duration-500 ease-out"
+                  />
+                )}
+              </div>
+            )}
 
             <div
               onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add("bg-slate-50", "border-slate-300"); }}

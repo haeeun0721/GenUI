@@ -42,6 +42,7 @@ import {
   setCurrentLocale,
 } from "@/lib/backend/tools/sidebar-store";
 import { findProductInLocalDB } from "@/lib/backend/agents/data_agent";
+import { loadMemory, appendMemoryTurn } from "@/lib/backend/services/session-memory";
 
 export const maxDuration = 60;
 
@@ -142,6 +143,10 @@ export async function POST(req: Request) {
   const productCategory = assignedItem === "A" ? "유모차" : assignedItem === "B" ? "로봇 청소기" : assignedItem === "C" ? "카메라" : "";
   setCurrentProductCategory(productCategory);
 
+  // Extract PARTICIPANT ID — 참가자별 공유 메모리(session-memory.ts)의 키.
+  const participantIdMatch = latestText.match(/\[PARTICIPANT ID:\s*([^\]]+)\]/);
+  const participantId = participantIdMatch ? participantIdMatch[1].trim() : "";
+
   // Pre-fetch My Items product data BEFORE the Conversation Agent runs.
   const myItemsTagMatch = latestText.match(/\[My items\s*:\s*([^\]]+)\]/i);
   const myItemsRaw = myItemsTagMatch
@@ -187,9 +192,10 @@ export async function POST(req: Request) {
     /\n{0,2}\[CURRENT_OPTION_LIST\][\s\S]*?(?=\n\[|$)/g,
     /\n{0,2}\[USER CONTEXT:[^\]]+\]/g,
     /\n{0,2}\[My items\s*:[^\]]+\]/gi,
-    /\n{0,2}\[DECISION CRITERIA:[^\]]+\]/gi,
+    /\n{0,2}\[DECISION CRITERIA:(?:[^\[\]]|\[[^\]]*\])*\]/gi,
     /\n{0,2}\[CONTEXT:[^\]]+\]/gi,
     /\n{0,2}\[ASSIGNED ITEM:[^\]]+\]/gi,
+    /\n{0,2}\[PARTICIPANT ID:[^\]]+\]/gi,
   ];
   const sanitizedMessages: typeof uiMessages = uiMessages.map(msg => {
     if (msg.role !== "user") return msg;
@@ -206,25 +212,27 @@ export async function POST(req: Request) {
 
   const modelMessages = await convertToModelMessages(sanitizedMessages);
   const hasOptionList = latestText.includes('[CURRENT_OPTION_LIST');
-  // Extract full product data (name + numeric price + specs) from CURRENT_OPTION_LIST
+  // Extract full product data (id + name + numeric price + specs) from CURRENT_OPTION_LIST.
+  // JSON 왕복(app/page.tsx가 JSON.stringify로 씀) — ComparisonTable/CriteriaMap과 동일한 프로토콜.
   const optionListMatch = latestText.match(/\[CURRENT_OPTION_LIST[^\]]*\]([\s\S]*?)(?=\n\[|$)/);
-  interface CurrentProduct { name: string; priceNum: number | null; priceStr: string; specs: string[]; }
+  interface CurrentProduct { id: string; name: string; priceNum: number | null; priceStr: string; specs: string[]; }
   let currentProducts: CurrentProduct[] = [];
   if (hasOptionList && optionListMatch) {
-    const listText = optionListMatch[1];
-    const lines = listText.match(/^[-•]\s*.+$/gm) ?? [];
-    currentProducts = lines.map(line => {
-      // "- 샤오미 미지아 5C 직배수 [가격 572,390원] (스펙: 흡입력 15,000Pa, 낙하방지)"
-      // [가격 이 깨진 경우(인코딩 오류)도 처리: 첫 번째 '[' 앞까지만 이름으로 추출
-      const nameMatch = line.match(/^[-•]\s*([^[\n]+?)(?=\s*\[|\s*$)/);
-      const name = nameMatch?.[1]?.trim() ?? '';
-      const priceMatch = line.match(/\[가격[^\]]*(\d[\d,]*)원?\]/);
-      const priceNum = priceMatch ? parseInt(priceMatch[1].replace(/,/g, '')) : null;
-      const priceStr = priceMatch ? priceMatch[0].replace(/^\[가격\s*/, '').replace(/\]$/, '').trim() : '';
-      const specsMatch = line.match(/\(스펙:\s*([^)]+)\)/);
-      const specs = specsMatch ? specsMatch[1].split(',').map((s: string) => s.trim()).filter(Boolean) : [];
-      return { name, priceNum, priceStr, specs };
-    }).filter(p => p.name);
+    try {
+      const parsed = JSON.parse(optionListMatch[1].trim());
+      currentProducts = (Array.isArray(parsed) ? parsed : []).map((c: any, i: number) => {
+        const priceStr = String(c.price ?? '');
+        const priceMatch = priceStr.match(/(\d[\d,]*)/);
+        const priceNum = priceMatch ? parseInt(priceMatch[1].replace(/,/g, '')) : null;
+        return {
+          id: c.id || `card_${i}`,
+          name: String(c.name ?? '').trim(),
+          priceNum,
+          priceStr,
+          specs: Array.isArray(c.specs) ? c.specs : [],
+        };
+      }).filter((p: CurrentProduct) => p.name);
+    } catch { /* ignore */ }
   }
   const currentProductNames = currentProducts.map(p => p.name);
   console.log(`[Route] Turn ${uiMessages.length} | requestId: ${requestId.slice(0, 10)} | CURRENT_OPTION_LIST: ${hasOptionList ? '✅ 있음' : '❌ 없음'} | products: [${currentProductNames.join(', ')}]`);
@@ -235,7 +243,7 @@ export async function POST(req: Request) {
   // rather than stopping at the next "[" like the other tag parsers do.
   const criteriaMapMatch = latestText.match(/\[CURRENT_CRITERIA_MAP\]([\s\S]*)$/);
   const existingCriteriaCategories = criteriaMapMatch ? criteriaMapMatch[1].trim() : "";
-  let parsedCriteriaMap: Array<{ label: string; items: Array<{ name: string }> }> = [];
+  let parsedCriteriaMap: Array<{ id?: string; label: string; items: Array<{ id?: string; name: string }> }> = [];
   if (existingCriteriaCategories) {
     try { parsedCriteriaMap = JSON.parse(existingCriteriaCategories); } catch { /* ignore */ }
   }
@@ -249,13 +257,17 @@ export async function POST(req: Request) {
   if (comparisonTableMatch) {
     try { currentComparisonTable = JSON.parse(comparisonTableMatch[1]); } catch { /* ignore */ }
   }
-  const comparisonTableProductLabels = (currentComparisonTable?.props?.columns ?? [])
+  // key/id는 Edit Agent가 정확히 지목해서 되돌려줄 안정적인 참조값, label은 사람이 읽는 표시용.
+  // r.id가 없는 구형 테이블(이번 id 도입 전에 생성된 행)은 라벨 자체를 id 자리에 넣는다 —
+  // "crit_0" 같은 가짜 id를 지어내면 mutate-comptable.ts의 id 매칭도, 그다음 라벨 fallback
+  // 매칭도(가짜 id가 실제 라벨과 전혀 안 닮았으므로) 둘 다 실패해 삭제가 조용히 무시된다.
+  const comparisonTableProducts = (currentComparisonTable?.props?.columns ?? [])
     .filter((c: any) => c.key !== "criterion")
-    .map((c: any) => c.label);
-  const comparisonTableCriteriaLabels = (currentComparisonTable?.props?.rows ?? [])
+    .map((c: any) => ({ key: c.key, label: c.label }));
+  const comparisonTableCriteria = (currentComparisonTable?.props?.rows ?? [])
     .filter((r: any) => r.criterion && r.criterion !== "순위" && r.criterion !== "Rank")
-    .map((r: any) => r.criterion);
-  const hasComparisonTable = comparisonTableProductLabels.length > 0 || comparisonTableCriteriaLabels.length > 0;
+    .map((r: any) => ({ id: r.id ?? r.criterion, label: r.criterion }));
+  const hasComparisonTable = comparisonTableProducts.length > 0 || comparisonTableCriteria.length > 0;
   const hasCriteriaMap = parsedCriteriaMap.length > 0;
 
   // ─── Criteria-Only Pre-filter ──────────────────────────────────────────────
@@ -263,10 +275,11 @@ export async function POST(req: Request) {
     .replace(/\[CURRENT_CRITERIA_MAP\][\s\S]*$/, '') // always the trailing tag; strip to end-of-string first
     .replace(/\[CURRENT_COMPARISON_TABLE\]\n[\s\S]*?(?=\n\[|$)/, '')
     .replace(/\[CURRENT_OPTION_LIST\][\s\S]*?(?=\n\[|$)/, '')
-    .replace(/\[DECISION CRITERIA:[^\]]*\]/gi, '')
+    .replace(/\n{0,2}\[DECISION CRITERIA:(?:[^\[\]]|\[[^\]]*\])*\]/gi, '')
     .replace(/\[USER CONTEXT:[^\]]*\]/gi, '')
     .replace(/\[My items\s*:[^\]]*\]/gi, '')
     .replace(/\[ASSIGNED ITEM:[^\]]*\]/gi, '')
+    .replace(/\[PARTICIPANT ID:[^\]]*\]/gi, '')
     .replace(/\[CONTEXT:[^\]]*\]/gi, '')
     .trim();
 
@@ -276,6 +289,16 @@ export async function POST(req: Request) {
     console.log('[Route] ⚡ Criteria-Only 메시지 + Option List 있음 → Agent 호출 생략, 즉시 빈 응답 반환');
     return new Response('', { status: 200, headers: { 'Content-Type': 'text/plain' } });
   }
+
+  // 참가자 공유 메모리 로드 — 이전 턴들의 요약(마크다운). participantId 없거나 Redis 미설정이면 빈 문자열.
+  // 응답을 실제로 만드는 두 지점(CriteriaMap/InformationCard 생성, none 잡담 응답)의 system prompt에만 주입한다.
+  const memoryText = await loadMemory(participantId).catch((err) => {
+    console.error('[SessionMemory] load 실패:', err);
+    return '';
+  });
+  const memoryPromptBlock = memoryText
+    ? `\n\n[PAST INTERACTION MEMORY — 이전 턴 요약(참고용). 실제 현재 화면 상태는 최신 메시지의 CURRENT_* 태그가 우선한다]\n${memoryText}`
+    : '';
 
   // ─── [1] Intent Agent Fast: 의도 분류 (text_reply 없음, ~0.5–1s) ────────────
   // stream은 분류 중 즉시 열려 TTFB 개선. Cat 1a/1b는 text reply를 generator와 병렬 생성.
@@ -287,7 +310,9 @@ export async function POST(req: Request) {
       // ── [1] Intent Analyzer ─────────────────────────────────────────────────────────────
       let intentAnalysis;
       try {
-        intentAnalysis = await analyzeIntent(strippedLatest);
+        // modelMessages already ends with this turn's (sanitized) user message, so pass everything
+        // before it as history and let analyzeIntent append strippedLatest itself.
+        intentAnalysis = await analyzeIntent(strippedLatest, modelMessages.slice(0, -1));
       } catch (err) {
         console.error('[Intent Analyzer] 실패:', err);
         writer.write({ type: "finish-step" } as any);
@@ -308,6 +333,9 @@ export async function POST(req: Request) {
 
       const textId = `text-${Date.now()}`;
       let generatedTemplate: string | null = null;
+      // 이번 턴에 실제로 뭘 만들었는지 한 줄 요약 — 각 분기 끝에서 채워 넣고, 턴이 끝나면
+      // session-memory.ts에 append한다 (참가자별 공유 메모리).
+      let turnMemoryNote = "";
 
       // ── [3a] Generate: create a new UI component ────────────────────────────────────────
       if (actionRoute.action === 'generate') {
@@ -322,6 +350,7 @@ export async function POST(req: Request) {
         }
         const template = templateSelection.template;
         generatedTemplate = template;
+        writer.write({ type: "data-action-type", data: { action: "generate", template } } as any);
 
         // ── Generate: CriteriaMap | InformationCard (Text + JSON Stream) ──────────────────
         if (template === 'CriteriaMap' || template === 'InformationCard') {
@@ -337,14 +366,14 @@ export async function POST(req: Request) {
               buildCommonSystemInstructions(productCategory, locale),
               buildCriteriaMapSystem(locale),
               EDGE_CASES_SYSTEM,
-            ].join("\n\n");
+            ].join("\n\n") + memoryPromptBlock;
             userPrompt = buildCriteriaMapPrompt(strippedLatest, userContextStr, existingCriteriaCategories);
           } else {
             systemStr = [
               buildCommonSystemInstructions(productCategory, locale),
               buildInformationCardSystem(locale),
               EDGE_CASES_SYSTEM,
-            ].join("\n\n");
+            ].join("\n\n") + memoryPromptBlock;
             userPrompt = buildInformationCardPrompt(strippedLatest);
           }
 
@@ -391,6 +420,7 @@ export async function POST(req: Request) {
           if (textReply) {
             console.log(`\x1b[90m[Text Reply]\x1b[0m\n${textReply}`);
           }
+          turnMemoryNote = textReply || `${template} 생성`;
           const firstBrace = fullOutput.indexOf('{');
           if (firstBrace !== -1) {
             let lastBrace = -1;
@@ -404,6 +434,17 @@ export async function POST(req: Request) {
               const jsonPart = fullOutput.substring(firstBrace, lastBrace + 1);
               try {
                 const uiSpec = JSON.parse(jsonPart);
+                // CriteriaMap 카테고리/항목에 안정적인 id를 부여 — LLM은 라벨/이름만 자유 생성하고
+                // 재식별 가능한 참조값은 코드가 보장한다(ComparisonTable의 crit_N/prod_N과 동일한 목적).
+                if (template === 'CriteriaMap' && Array.isArray(uiSpec?.props?.categories)) {
+                  const stamp = Date.now();
+                  uiSpec.props.categories.forEach((cat: any, ci: number) => {
+                    cat.id = cat.id || `cat-${stamp}-${ci}`;
+                    (cat.items ?? []).forEach((item: any, ii: number) => {
+                      item.id = item.id || `item-${stamp}-${ci}-${ii}`;
+                    });
+                  });
+                }
                 console.log(`\n\x1b[35m========== [3] UI Generator: ${template} ==========\x1b[0m`);
                 console.log(`\x1b[32m[Output] Generated JSON:\x1b[0m\n${JSON.stringify(uiSpec, null, 2)}`);
                 console.log(`\x1b[35m========================================================\x1b[0m\n`);
@@ -416,18 +457,31 @@ export async function POST(req: Request) {
 
           // ── Generate: ComparisonTable ──────────────────────────────────────────────────────
         } else if (template === 'ComparisonTable') {
-          await (renderToCompTable as any).execute({
+          const compTableSpec = await (renderToCompTable as any).execute({
             intent_summary: intentAnalysis.user_goal,
             ui_intent_category: 'ComparisonTable',
           });
+          const colLabels = (compTableSpec?.props?.columns ?? [])
+            .filter((c: any) => c.key !== 'criterion')
+            .map((c: any) => c.label)
+            .join(', ');
+          const rowLabels = (compTableSpec?.props?.rows ?? [])
+            .filter((r: any) => r.criterion)
+            .map((r: any) => r.criterion)
+            .join(', ');
+          turnMemoryNote = colLabels
+            ? `비교표 생성: ${colLabels}${rowLabels ? ` × 기준(${rowLabels})` : ''}`
+            : 'ComparisonTable 생성';
 
           // ── Generate: ProductCardList ──────────────────────────────────────────────────────
         } else if (template === 'ProductCardList') {
-          await (renderToOptionList as any).execute({
+          const optionListSpec = await (renderToOptionList as any).execute({
             search_query: intentAnalysis.user_goal,
             intent_summary: intentAnalysis.user_goal,
             ui_intent_category: 'ProductCardList',
           });
+          const cardNames = (optionListSpec?.props?.cards ?? []).map((c: any) => c.name).join(', ');
+          turnMemoryNote = cardNames ? `상품 목록 생성: ${cardNames}` : 'ProductCardList 생성';
         }
 
         // ── Edit: modify a UI surface already on screen ─────────────────────────────────────
@@ -437,7 +491,7 @@ export async function POST(req: Request) {
           editPlan = await planEdit(strippedLatest || intentAnalysis.user_goal, intentAnalysis, {
             optionList: hasOptionList ? currentProducts : undefined,
             comparisonTable: hasComparisonTable
-              ? { products: comparisonTableProductLabels, criteria: comparisonTableCriteriaLabels }
+              ? { products: comparisonTableProducts, criteria: comparisonTableCriteria }
               : undefined,
             criteriaMap: hasCriteriaMap ? parsedCriteriaMap : undefined,
           });
@@ -447,6 +501,9 @@ export async function POST(req: Request) {
           writer.write({ type: "finish", finishReason: "stop" } as any);
           return;
         }
+
+        writer.write({ type: "data-action-type", data: { action: "edit", target_surface: editPlan.target_surface } } as any);
+        turnMemoryNote = editPlan.op_summary || `${editPlan.target_surface} 수정`;
 
         if (editPlan.op_summary) {
           writer.write({ type: "text-start", id: textId } as any);
@@ -511,20 +568,26 @@ export async function POST(req: Request) {
 
         // ── None: conversational reply only ──────────────────────────────────────────────────
       } else {
+        writer.write({ type: "data-action-type", data: { action: "none" } } as any);
         writer.write({ type: "text-start", id: textId } as any);
+        const noneSystemPrompt = (locale === "ko"
+          ? "당신은 쇼핑 어시스턴트입니다. 사용자의 질문에 자연스럽고 친절하게 한국어로 답변하세요. UI 컴포넌트나 시스템 동작에 대해 언급하지 마세요."
+          : "You are a shopping assistant. Answer the user's question naturally and helpfully in English. Do not mention UI components or system behavior.")
+          + memoryPromptBlock;
         const { textStream: noneStream } = streamText({
           model: openai(INTENT_MODEL),
-          system: locale === "ko"
-            ? "당신은 쇼핑 어시스턴트입니다. 사용자의 질문에 자연스럽고 친절하게 한국어로 답변하세요. UI 컴포넌트나 시스템 동작에 대해 언급하지 마세요."
-            : "You are a shopping assistant. Answer the user's question naturally and helpfully in English. Do not mention UI components or system behavior.",
+          system: noneSystemPrompt,
           messages: modelMessages as any,
-          maxOutputTokens: 150,
+          maxOutputTokens: 400,
           temperature: 0.3,
         });
+        let noneReplyText = "";
         for await (const delta of noneStream) {
+          noneReplyText += delta;
           writer.write({ type: "text-delta", id: textId, delta } as any);
         }
         writer.write({ type: "text-end", id: textId } as any);
+        turnMemoryNote = noneReplyText.trim();
         console.log('[Route] action_type=none → 텍스트 응답만 반환');
       }
 
@@ -565,6 +628,18 @@ export async function POST(req: Request) {
         console.log(`[Route] ⚠️  spec 없음 (action=${actionRoute.action}${generatedTemplate ? `, template=${generatedTemplate}` : ''})`);
       } else {
         console.log(`[Route] ✅ spec 전송: sidebar=${sidePanelResults.length} optionList=${optionListResults.length} compTable=${compTableResults.length} mutate=${mutateSurfaceResults.length}`);
+      }
+
+      // ── 공유 메모리 반영 ──────────────────────────────────────────────────────
+      // 실패해도 이번 턴 응답 자체에는 영향을 주지 않는다 (best-effort).
+      if (participantId) {
+        await appendMemoryTurn(participantId, {
+          turn: uiMessages.length,
+          userText: strippedLatest,
+          action: actionRoute.action,
+          template: generatedTemplate,
+          note: turnMemoryNote,
+        }).catch((err) => console.error('[SessionMemory] append 실패:', err));
       }
     },
   });

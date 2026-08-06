@@ -17,6 +17,19 @@ import {
 // Helper: parse + push UI spec JSON
 // ---------------------------------------------------------------------------
 
+// 카드에 안정적인 id를 부여한다 — LLM이 "<unique_id>"로 자체 생성한 값은 매 호출마다
+// 새로 지어내는 것이라 턴을 넘나드는 재식별에 못 쓴다(ComparisonTable의 crit_N/prod_N,
+// CriteriaMap의 cat_N/item_N과 동일한 이유). 여기서 항상 실제 고유값으로 덮어쓴다.
+function stampCardIds(uiSpec: any): any {
+  if (Array.isArray(uiSpec?.props?.cards)) {
+    const stamp = Date.now();
+    uiSpec.props.cards.forEach((card: any, i: number) => {
+      card.id = `card-${stamp}-${i}`;
+    });
+  }
+  return uiSpec;
+}
+
 function parseAndPush(uiSpecString: string): any {
   const firstBrace = uiSpecString.indexOf("{");
   if (firstBrace !== -1) {
@@ -28,13 +41,13 @@ function parseAndPush(uiSpecString: string): any {
       if (stack === 0) { lastBrace = i; break; }
     }
     if (lastBrace !== -1) {
-      const uiSpec = JSON.parse(uiSpecString.substring(firstBrace, lastBrace + 1));
+      const uiSpec = stampCardIds(JSON.parse(uiSpecString.substring(firstBrace, lastBrace + 1)));
       if (currentRequestId) pushOptionListResult(currentRequestId, uiSpec);
       return uiSpec;
     }
   }
   const cleanStr = uiSpecString.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "").trim();
-  const uiSpec = JSON.parse(cleanStr);
+  const uiSpec = stampCardIds(JSON.parse(cleanStr));
   if (currentRequestId) pushOptionListResult(currentRequestId, uiSpec);
   return uiSpec;
 }

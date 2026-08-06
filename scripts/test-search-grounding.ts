@@ -1,6 +1,6 @@
 /**
  * scripts/test-search-grounding.ts
- * lookupProductSpec (캐시→로컬DB→Tavily 1회+judgeCell 검증+SiblingGuard)이
+ * lookupProductSpec (로컬DB→Tavily 1회+judgeCell 검증+SiblingGuard)이
  * "제품을 안 헷갈리는지"를 검증하는 진단 스크립트. 여러 번 반복 실행해서
  * (Tavily 검색 결과 자체의 변동성 때문에) 결과가 안정적인지도 같이 본다.
  *
@@ -12,14 +12,10 @@
  * mutate-comptable.ts / update-table/route.ts / mutate-surface.ts / auto-enrich / fetch-spec이
  * 전부 이 함수 하나로 통합됐으므로, 여기서 검증하면 그 다섯 곳 전부를 검증하는 셈이다.
  *
- * 매 회차마다 캐시를 강제로 비우고 시작한다 — 안 그러면 두 번째 실행부터는 캐시만
- * 재확인하는 거라 진짜 독립적인 반복 시행이 아니게 된다.
- *
  * 실행: npx tsx --env-file=.env.local scripts/test-search-grounding.ts [반복횟수=4]
  */
 
 import { lookupProductSpec } from "../lib/backend/services/spec-lookup";
-import { invalidateSpec } from "../lib/backend/services/spec-cache";
 
 interface TestCase {
   product: string;
@@ -86,9 +82,6 @@ async function runOnce(runIdx: number, totalRuns: number): Promise<RunResult[]> 
   const results: RunResult[] = [];
 
   for (const tc of TEST_CASES) {
-    // 캐시를 강제로 비워서 이번 회차가 진짜 독립적인 새 시도가 되게 한다
-    invalidateSpec(tc.product, tc.criterion);
-
     console.log(`\n\x1b[36m[TEST] "${tc.product}" × "${tc.criterion}"\x1b[0m (기대값: ${tc.expected})`);
     const lookup = await lookupProductSpec(tc.product, tc.criterion, "로봇 청소기");
     const outcome = judgeOutcome(tc, lookup.value, lookup.uncertain);

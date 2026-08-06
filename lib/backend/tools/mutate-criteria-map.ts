@@ -54,8 +54,11 @@ Only use when [CURRENT_CRITERIA_MAP] is present.
         props: {
           categories: [
             {
+              // 병합 시 라벨이 기존 카테고리와 일치하면 프론트가 기존 id를 유지하고,
+              // 새 카테고리면 이 id가 그대로 채택된다(route.ts의 CriteriaMap 생성 시 스탬핑과 동일한 규칙).
+              id: `cat-${Date.now()}`,
               label: args.category_label,
-              items: itemNames.map((name) => ({ name })),
+              items: itemNames.map((name, i) => ({ id: `item-${Date.now()}-${i}`, name })),
             },
           ],
         },
