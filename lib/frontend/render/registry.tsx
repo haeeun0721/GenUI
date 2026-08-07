@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, Fragment } from "react";
 import { ChevronDown, Heart, Check, AlertTriangle, Lightbulb, ArrowRight, Columns3, LayoutList, Sparkles, X } from "lucide-react";
 
 // danuri.io / danawa.com 이미지는 hotlink protection이 걸려 있어 서버 프록시를 통해 로드
@@ -60,13 +60,84 @@ function HeartButton({
 }
 
 // =============================================================================
+// i18n — every registry component reads its locale from allProps.bindings.locale
+// (set by app/page.tsx's `locale` state), defaulting to "ko" when absent.
+// =============================================================================
+
+type UILocale = "ko" | "en";
+
+function resolveLocale(allProps: any): UILocale {
+  return allProps?.bindings?.locale === "en" ? "en" : "ko";
+}
+
+const T = {
+  ko: {
+    collapse: "접기 ↑",
+    showMore: (n: number) => `+${n}개 ↓`,
+    ragNotFoundDefault: "요청하신 기준에 해당하는 제품 데이터가 현재 DB에 없습니다.",
+    ragNotFoundTitle: "DB에서 찾을 수 없는 기준이에요",
+    ragNotFoundFooter: "더 일반적인 조건으로 다시 검색해보거나, 해당 기능에 대해 질문해주세요.",
+    coverageTitle: "일부 기준이 반영되지 않았어요",
+    applied: "반영됨",
+    skipped: "미반영",
+    coverageFooter: "미반영 기준은 현재 DB에 스펙 데이터가 없어요.",
+    whyTradeoff: "왜 이런 딜레마가 생기나요",
+    unchartedTitle: "아직 탐색하지 않은 영역",
+    unexploredSectionTitle: "이 영역도 탐색해보는 건 어떨까요?",
+    important: "중요",
+    criteriaMapEmpty: "대화를 시작하면\n여기에 탐색 기록이 쌓여요",
+    criterionColumn: "비교 항목",
+    unverified: "미확인",
+    unverifiedFor: (name: string) => `${name} 미확인`,
+    whyRecommended: "이렇게 추천드린 이유예요",
+    cancel: "취소",
+    addAndCompare: (n: number) => `${n}개의 제품 추가하여 비교하기`,
+    myOptionsCompareWith: "과 함께 비교하기",
+    myOptionsExpandedTitle: "에 담아뒀던 다른 제품도 함께 비교하기",
+    selectToCompare: "비교에 추가할 제품을 선택해 주세요.",
+    followUpBanner: "비교 결과를 누적해서 볼 수 있게 제공",
+    concept: "개념 정리",
+    askAboutCriterion: (label: string) => `"${label}" 기준에 대해 알려줘`,
+  },
+  en: {
+    collapse: "Collapse ↑",
+    showMore: (n: number) => `+${n} more ↓`,
+    ragNotFoundDefault: "No product data in the current DB matches the requested criteria.",
+    ragNotFoundTitle: "Criteria not found in DB",
+    ragNotFoundFooter: "Try a more general condition, or ask about this feature directly.",
+    coverageTitle: "Some criteria weren't applied",
+    applied: "Applied",
+    skipped: "Skipped",
+    coverageFooter: "Skipped criteria have no spec data in the current DB.",
+    whyTradeoff: "Why this trade-off happens",
+    unchartedTitle: "Unexplored areas",
+    unexploredSectionTitle: "You might also want to explore",
+    important: "Key",
+    criteriaMapEmpty: "Start a conversation\nand your exploration history will appear here",
+    criterionColumn: "Criteria",
+    unverified: "Unverified",
+    unverifiedFor: (name: string) => `${name} unverified`,
+    whyRecommended: "Why we recommend this",
+    cancel: "Cancel",
+    addAndCompare: (n: number) => `Add ${n} product${n === 1 ? "" : "s"} and compare`,
+    myOptionsCompareWith: " — compare together",
+    myOptionsExpandedTitle: " — compare with other items you've saved",
+    selectToCompare: "Select the products to add to the comparison.",
+    followUpBanner: "Comparison results are shown cumulatively",
+    concept: "Concept",
+    askAboutCriterion: (label: string) => `Tell me about the "${label}" criterion`,
+  },
+} as const;
+
+// =============================================================================
 // SpecChips — 스펙 칩 접기/펼치기 컴포넌트
 // =============================================================================
 
 const SPEC_COLLAPSED_COUNT = 4;
 
-function SpecChips({ specs }: { specs: string[] }) {
+function SpecChips({ specs, locale = "ko" }: { specs: string[]; locale?: UILocale }) {
   const [expanded, setExpanded] = useState(false);
+  const t = T[locale];
   if (!Array.isArray(specs) || specs.length === 0) return null;
   const visible = expanded ? specs : specs.slice(0, SPEC_COLLAPSED_COUNT);
   const hiddenCount = specs.length - SPEC_COLLAPSED_COUNT;
@@ -87,7 +158,7 @@ function SpecChips({ specs }: { specs: string[] }) {
           onClick={(e) => { e.stopPropagation(); setExpanded(v => !v); }}
           className="text-[9px] text-[#888] bg-[#EBEBEB] hover:bg-[#DEDEDE] px-1.5 py-0.5 rounded-full whitespace-nowrap transition-colors cursor-pointer select-none"
         >
-          {expanded ? "접기 ↑" : `+${hiddenCount}개 ↓`}
+          {expanded ? t.collapse : t.showMore(hiddenCount)}
         </button>
       )}
     </div>
@@ -103,13 +174,14 @@ export const manualRegistry: Record<string, any> = {
 
   RagNotFound: (allProps: any) => {
     const p = allProps?.props || allProps || {};
-    const message: string = p.message || "요청하신 기준에 해당하는 제품 데이터가 현재 DB에 없습니다.";
+    const t = T[resolveLocale(allProps)];
+    const message: string = p.message || t.ragNotFoundDefault;
     const skipped: string[] = p.skippedCriteria || [];
     return (
       <div className="flex flex-col gap-3 w-full rounded-xl border border-slate-200 bg-white px-4 py-4 animate-highlight-wrap">
         <div className="flex items-center gap-2">
           <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
-          <span className="text-[13px] font-semibold text-slate-700">DB에서 찾을 수 없는 기준이에요</span>
+          <span className="text-[13px] font-semibold text-slate-700">{t.ragNotFoundTitle}</span>
         </div>
         <p className="text-[12px] text-slate-500 leading-relaxed">{message}</p>
         {skipped.length > 0 && (
@@ -124,7 +196,7 @@ export const manualRegistry: Record<string, any> = {
             ))}
           </div>
         )}
-        <p className="text-[11px] text-slate-400">더 일반적인 조건으로 다시 검색해보거나, 해당 기능에 대해 질문해주세요.</p>
+        <p className="text-[11px] text-slate-400">{t.ragNotFoundFooter}</p>
       </div>
     );
   },
@@ -132,6 +204,7 @@ export const manualRegistry: Record<string, any> = {
 
   CoverageNotice: (allProps: any) => {
     const p = allProps?.props || allProps || {};
+    const t = T[resolveLocale(allProps)];
     const applied: string[] = p.appliedCriteria || [];
     const skipped: string[] = p.skippedCriteria || [];
     if (applied.length === 0 && skipped.length === 0) return null;
@@ -155,23 +228,24 @@ export const manualRegistry: Record<string, any> = {
       <div className="flex flex-col gap-2 w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 animate-highlight-wrap">
         <div className="flex items-center gap-1.5">
           <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-          <span className="text-[11px] font-semibold text-slate-600">일부 기준이 반영되지 않았어요</span>
+          <span className="text-[11px] font-semibold text-slate-600">{t.coverageTitle}</span>
         </div>
         <div className="flex flex-wrap gap-1.5">
           {applied.map((c: string, i: number) => (
-            <Chip key={`a-${i}`} label={c} badgeLabel="반영됨" badgeClass="text-emerald-600 bg-emerald-50 border-emerald-100" dotClass="bg-emerald-400" />
+            <Chip key={`a-${i}`} label={c} badgeLabel={t.applied} badgeClass="text-emerald-600 bg-emerald-50 border-emerald-100" dotClass="bg-emerald-400" />
           ))}
           {skipped.map((c: string, i: number) => (
-            <Chip key={`s-${i}`} label={c} badgeLabel="미반영" badgeClass="text-amber-500 bg-amber-50 border-amber-100" dotClass="bg-amber-400" />
+            <Chip key={`s-${i}`} label={c} badgeLabel={t.skipped} badgeClass="text-amber-500 bg-amber-50 border-amber-100" dotClass="bg-amber-400" />
           ))}
         </div>
-        <p className="text-[10.5px] text-slate-400">미반영 기준은 현재 DB에 스펙 데이터가 없어요.</p>
+        <p className="text-[10.5px] text-slate-400">{t.coverageFooter}</p>
       </div>
     );
   },
 
   TradeoffHint: (allProps: any) => {
     const p = allProps?.props || allProps || {};
+    const t = T[resolveLocale(allProps)];
     if (!p.conflictsWith) return null;
     const whyText = p.why || p.reason;
     if (!whyText) return null;
@@ -190,9 +264,8 @@ export const manualRegistry: Record<string, any> = {
             </button>
           )}
         </div>
-        {/* 왜 이런 딜레마가 생기나요 */}
         <div className="flex flex-col gap-0.5">
-          <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">왜 이런 딜레마가 생기나요</span>
+          <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">{t.whyTradeoff}</span>
           <p className="text-[11px] text-slate-600 leading-relaxed">{whyText}</p>
         </div>
       </div>
@@ -202,6 +275,7 @@ export const manualRegistry: Record<string, any> = {
 
   UnchartedTerritoryChip: (allProps: any) => {
     const p = allProps?.props || allProps || {};
+    const t = T[resolveLocale(allProps)];
     const labels: string[] = Array.isArray(p.labels) ? p.labels : [];
     const onExplore: ((label: string) => void) | undefined = p.onExplore;
     const skipAnimation: boolean = p.skipAnimation === true;
@@ -211,7 +285,7 @@ export const manualRegistry: Record<string, any> = {
     return (
       <div className={`flex flex-col gap-2 p-3 rounded-[10px] bg-white${skipAnimation ? '' : ' animate-highlight-wrap'}`}>
         <div className="flex items-center gap-1.5 mb-1">
-          <span className="text-[13.5px] font-semibold text-slate-800">아직 탐색하지 않은 영역</span>
+          <span className="text-[13.5px] font-semibold text-slate-800">{t.unchartedTitle}</span>
         </div>
         <div className="flex flex-wrap gap-1.5">
           {labels.map((label, i) => (
@@ -238,6 +312,7 @@ export const manualRegistry: Record<string, any> = {
 
     return (allProps: any) => {
       const p = allProps?.props || allProps || {};
+      const t = T[resolveLocale(allProps)];
       const categories: any[] = Array.isArray(p.categories) ? p.categories : [];
       const unexploredCategories = categories.filter((c: any) => !c.items || c.items.length === 0);
       const normalCategories = categories.filter((c: any) => c.items && c.items.length > 0);
@@ -343,7 +418,9 @@ export const manualRegistry: Record<string, any> = {
         return (
           <div className="flex flex-col items-center justify-center py-12 gap-2">
             <p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">
-              대화를 시작하면<br />여기에 탐색 기록이 쌓여요
+              {t.criteriaMapEmpty.split("\n").map((line, i) => (
+                <Fragment key={i}>{i > 0 && <br />}{line}</Fragment>
+              ))}
             </p>
           </div>
         );
@@ -384,7 +461,7 @@ export const manualRegistry: Record<string, any> = {
             <div className="mb-4 px-1">
               <div className="flex items-center gap-1.5 mb-3">
                 <Lightbulb className="w-[15px] h-[15px] text-slate-500" />
-                <span className="text-[13.5px] font-bold text-slate-600 tracking-tight">이 영역도 탐색해보는 건 어떨까요?</span>
+                <span className="text-[13.5px] font-bold text-slate-600 tracking-tight">{t.unexploredSectionTitle}</span>
               </div>
               <div className="flex flex-wrap gap-2">
                 {unexploredCategories.filter((cat: any) => !dismissedUnexplored.has(cat.label)).map((cat: any, i: number) => {
@@ -405,7 +482,7 @@ export const manualRegistry: Record<string, any> = {
                       }}
                       onClick={() => {
                         setDismissedUnexplored(prev => new Set(prev).add(cat.label));
-                        allProps.bindings?.onSubmitChat?.(`"${cat.label}" 기준에 대해 알려줘`);
+                        allProps.bindings?.onSubmitChat?.(t.askAboutCriterion(cat.label));
                       }}
                     >
                       <span className="text-[12.5px] font-medium text-slate-700 tracking-tight whitespace-nowrap">{cat.label} ↗</span>
@@ -518,7 +595,7 @@ export const manualRegistry: Record<string, any> = {
                                 ? "text-rose-400 bg-rose-100"
                                 : "text-rose-400 bg-rose-100"
                                 }`}>
-                                중요
+                                {t.important}
                               </span>
                             )}
                             <span className={`text-[12.5px] select-none whitespace-nowrap font-medium ${isSelected ? "text-slate-800" : "text-slate-700"}`}>
@@ -553,6 +630,8 @@ export const manualRegistry: Record<string, any> = {
 
     return (allProps: any) => {
     const p = allProps?.props || allProps || {};
+    const locale = resolveLocale(allProps);
+    const t = T[locale];
     const rawColumns: { key: string; label: string }[] = Array.isArray(p.columns) ? p.columns : [];
     const rows: Record<string, any>[] = Array.isArray(p.rows) ? p.rows : (Array.isArray(p.data) ? p.data : []);
 
@@ -566,11 +645,27 @@ export const manualRegistry: Record<string, any> = {
       cols: transposedProductCols.map(c => c.key),
     });
 
+    // rank 기준 오름차순 정렬 (1위 → 왼쪽). 훅보다 먼저 계산해 FLIP 이펙트의 의존성으로 쓴다.
+    const productCols = isTransposed ? rawColumns.slice(1) : [];
+    const rankRow = isTransposed ? rows.find(r => r.criterion === '순위' || r.criterion === 'Rank') : undefined;
+    const sortedProductCols = rankRow
+      ? [...productCols].sort((a, b) => {
+          const ra = parseInt(String(rankRow[a.key] ?? '99').replace(/[^0-9]/g, '')) || 99;
+          const rb = parseInt(String(rankRow[b.key] ?? '99').replace(/[^0-9]/g, '')) || 99;
+          return ra - rb;
+        })
+      : productCols;
+    const sortedColKeysStr = sortedProductCols.map(c => c.key).join(',');
+
     // 새로 추가된 행/열만 구분해서 하이라이트하기 위한 상태 (CriteriaMap의 animatingKeys와 동일한 목적)
     const [animatingRowKeys, setAnimatingRowKeys] = useState<Set<string>>(new Set());
     const [animatingColKeys, setAnimatingColKeys] = useState<Set<string>>(new Set());
     // 표 전체가 처음 생성되는 순간에만 켜지는 플래그 — 개별 행/열 대신 표 전체를 감싸서 하이라이트한다.
     const [justCreated, setJustCreated] = useState(false);
+    const tableRef = useRef<HTMLTableElement>(null);
+    // 열의 마지막 측정 위치(px) — 새 열 추가가 아니라 "기존 열의 순위가 바뀌어 자리가 이동"할 때
+    // FLIP(First-Last-Invert-Play) 기법으로 이동을 보여주기 위해 이전 위치를 기억해둔다.
+    const prevColRectsRef = useRef<Map<string, number>>(new Map());
 
     useEffect(() => {
       if (!isTransposed) return;
@@ -606,34 +701,66 @@ export const manualRegistry: Record<string, any> = {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [rowsColsKey, isTransposed]);
 
-    if (isTransposed) {
-      const productCols = rawColumns.slice(1); // prod_0, prod_1, ...
-      const rankRow = rows.find(r => r.criterion === '순위' || r.criterion === 'Rank');
-      const dataRows = rows.filter(r => r.criterion !== '순위' && r.criterion !== 'Rank');
-      const rankReasoning: string = p._rankReasoning || '';
+    // FLIP: 새 열이 아니라 기존 열의 순위가 바뀌어 자리만 이동할 때(예: 2위였던 제품이 1위가 됨)도
+    // "정렬됐다"는 게 눈에 보이도록, 이전 위치 → 새 위치로 슬라이드하는 모션을 준다.
+    useLayoutEffect(() => {
+      if (!isTransposed || !tableRef.current) return;
+      const table = tableRef.current;
+      const prevRects = prevColRectsRef.current;
+      const currentRects = new Map<string, number>();
+      const movedKeys: string[] = [];
 
-      // rank 기준 오름차순 정렬 (1위 → 왼쪽)
-      const sortedProductCols = rankRow
-        ? [...productCols].sort((a, b) => {
-            const ra = parseInt(String(rankRow[a.key] ?? '99').replace(/[^0-9]/g, '')) || 99;
-            const rb = parseInt(String(rankRow[b.key] ?? '99').replace(/[^0-9]/g, '')) || 99;
-            return ra - rb;
-          })
-        : productCols;
+      for (const key of sortedColKeysStr ? sortedColKeysStr.split(',') : []) {
+        const th = table.querySelector<HTMLElement>(`th[data-col-key="${key}"]`);
+        if (!th) continue;
+        const left = th.getBoundingClientRect().left;
+        currentRects.set(key, left);
+        const prevLeft = prevRects.get(key);
+        if (prevLeft !== undefined && Math.abs(prevLeft - left) > 1) {
+          const delta = prevLeft - left;
+          const cells = table.querySelectorAll<HTMLElement>(`[data-col-key="${key}"]`);
+          cells.forEach(cell => {
+            cell.style.transition = 'none';
+            cell.style.transform = `translateX(${delta}px)`;
+          });
+          movedKeys.push(key);
+        }
+      }
+
+      if (movedKeys.length > 0) {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            movedKeys.forEach(key => {
+              const cells = table.querySelectorAll<HTMLElement>(`[data-col-key="${key}"]`);
+              cells.forEach(cell => {
+                cell.style.transition = 'transform 0.5s cubic-bezier(0.16, 1, 0.3, 1)';
+                cell.style.transform = '';
+              });
+            });
+          });
+        });
+      }
+
+      prevColRectsRef.current = currentRects;
+    }, [isTransposed, sortedColKeysStr]);
+
+    if (isTransposed) {
+      const dataRows = transposedDataRows;
+      const rankReasoning: string = p._rankReasoning || '';
 
       return (
         <div className={`w-full${justCreated ? ' animate-highlight-wrap' : ''}`}>
           <div className="overflow-x-auto pb-2">
-            <table className="w-full text-[13px] border-collapse">
+            <table ref={tableRef} className="w-full text-[13px] border-collapse">
               <thead>
                 <tr>
                   {/* 비교 항목 헤더 */}
                   <th className="align-top text-left px-3 py-2.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wide border-b border-slate-100 w-[120px]">
-                    {rawColumns[0]?.label ?? '비교 항목'}
+                    {rawColumns[0]?.label ?? t.criterionColumn}
                   </th>
                   {sortedProductCols.map((col, ci) => {
                     const rank = rankRow ? String(rankRow[col.key] ?? '') : '';
-                    const isFirst = rank === '1위';
+                    const isFirst = rank === '1위' || rank === '#1';
                     // 이름이 길면 여러 줄로 줄바꿈되면서 그 컬럼만 셀 높이가 커지고(테이블 기본
                     // vertical-align: middle 때문에) 다른 컬럼의 순위 라벨이 아래로 밀려
                     // "튀어나온" 것처럼 보인다. align-top(위에서 처리)으로 정렬을 고정하고,
@@ -643,6 +770,7 @@ export const manualRegistry: Record<string, any> = {
                     return (
                       <th
                         key={col.key}
+                        data-col-key={col.key}
                         className={`align-top px-3 py-2.5 border-b border-slate-100 text-center ${isFirst ? 'bg-white' : ''}${isColNew ? ' animate-highlight-wrap' : ''}`}
                         onAnimationEnd={(e) => {
                           if (isColNew && e.animationName === 'highlight-wrap') {
@@ -690,10 +818,10 @@ export const manualRegistry: Record<string, any> = {
                     {sortedProductCols.map((col, ci) => {
                       const val = String(row[col.key] ?? '-');
                       const rankVal = rankRow ? String(rankRow[col.key] ?? '') : '';
-                      const isFirst = rankVal === '1위';
+                      const isFirst = rankVal === '1위' || rankVal === '#1';
                       return (
-                        <td key={col.key} className={`px-3 py-2.5 text-center text-[13px] font-medium text-slate-700 ${isFirst ? 'bg-slate-50/60' : ''}`}>
-                          {val === '-' ? <span className="text-[11px] text-slate-300 font-medium">미확인</span> : val}
+                        <td key={col.key} data-col-key={col.key} className={`px-3 py-2.5 text-center text-[13px] font-medium text-slate-700 ${isFirst ? 'bg-slate-50/60' : ''}`}>
+                          {val === '-' ? <span className="text-[11px] text-slate-300 font-medium">{t.unverified}</span> : val}
                         </td>
                       );
                     })}
@@ -705,7 +833,7 @@ export const manualRegistry: Record<string, any> = {
           </div>
           {rankReasoning && (
             <div className="mt-3 px-3 py-2.5 bg-white rounded-[8px] border border-slate-100">
-              <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1">이렇게 추천드린 이유예요</p>
+              <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1">{t.whyRecommended}</p>
               <p className="text-[12.5px] text-slate-600 leading-relaxed">{rankReasoning}</p>
             </div>
           )}
@@ -829,7 +957,7 @@ export const manualRegistry: Record<string, any> = {
         const res = await fetch('/api/fetch-spec', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ products, criteria: col.key }),
+          body: JSON.stringify({ products, criteria: col.key, locale }),
         });
         const data = await res.json() as Record<string, string>;
         setFetchedSpecs(prev => ({ ...prev, [col.key]: data }));
@@ -932,7 +1060,7 @@ export const manualRegistry: Record<string, any> = {
             const res = await fetch('/api/fetch-spec', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ products: [product], criteria: col.key }),
+              body: JSON.stringify({ products: [product], criteria: col.key, locale }),
             });
             const data = await res.json() as Record<string, string>;
             console.log(`[Table] addItemAsRow "${col.key}" for "${item.name}":`, data);
@@ -1090,7 +1218,7 @@ export const manualRegistry: Record<string, any> = {
           <div className="mt-4 p-4 rounded-[12px] bg-white border border-slate-100 animate-highlight-wrap">
             <div className="flex items-center gap-1.5 mb-2">
               <Sparkles className="w-[14px] h-[14px] text-slate-400 shrink-0" />
-              <span className="text-[12.5px] font-bold text-slate-800">이렇게 추천드린 이유예요</span>
+              <span className="text-[12.5px] font-bold text-slate-800">{t.whyRecommended}</span>
             </div>
             <p className="text-[12px] text-slate-600 leading-relaxed font-medium">
               {p._rankReasoning}
@@ -1108,11 +1236,12 @@ export const manualRegistry: Record<string, any> = {
 
   ProductCard: (allProps: any) => {
     const p = allProps?.props || allProps || {};
+    const tr = T[resolveLocale(allProps)]; // named `tr` — `t` below is already used for a setTimeout handle
     const delay = p._animationDelay || 0;
     const isUnconfirmed = !!(p._unconfirmed || (Array.isArray(p._unconfirmedCriteria) && p._unconfirmedCriteria.length > 0));
     const unconfirmedCriteria: string[] = Array.isArray(p._unconfirmedCriteria) && p._unconfirmedCriteria.length > 0
       ? p._unconfirmedCriteria
-      : (p._unconfirmed ? ['미확인'] : []);
+      : (p._unconfirmed ? [tr.unverified] : []);
     const justUpdated = !!p._justUpdated;   // auto-enrich 업데이트 트리거
     const justAdded = !!p._justAdded;       // mutateSurface(add)로 새로 추가된 카드인지 (ProductCardList가 판별)
 
@@ -1199,11 +1328,11 @@ export const manualRegistry: Record<string, any> = {
                   key={criterionName}
                   className="inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-medium bg-slate-50 text-slate-300 border border-slate-100"
                 >
-                  {criterionName === '미확인' ? '미확인' : `${criterionName} 미확인`}
+                  {criterionName === tr.unverified ? tr.unverified : tr.unverifiedFor(criterionName)}
                 </span>
               ))}
               {Array.isArray(p.specs) && p.specs.length > 0 && (
-                <SpecChips specs={p.specs} />
+                <SpecChips specs={p.specs} locale={resolveLocale(allProps)} />
               )}
             </div>
           )}
@@ -1284,6 +1413,7 @@ export const manualRegistry: Record<string, any> = {
 
   ComparisonSelector: (allProps: any) => {
     const p = allProps?.props || allProps || {};
+    const t = T[resolveLocale(allProps)];
     const { currentItems = [] } = p;
     const { savedItems = [], isFollowUp = false } = allProps.bindings || {};
     const emit = allProps.emit;
@@ -1322,7 +1452,7 @@ export const manualRegistry: Record<string, any> = {
           <div className="flex flex-col gap-2">
             {isFollowUp && (
               <div className="flex items-center gap-2 px-1">
-                <span className="text-[12px] font-bold text-primary">비교 결과를 누적해서 볼 수 있게 제공</span>
+                <span className="text-[12px] font-bold text-primary">{t.followUpBanner}</span>
               </div>
             )}
             <button
@@ -1331,7 +1461,7 @@ export const manualRegistry: Record<string, any> = {
             >
               <div className="flex items-center gap-1.5">
                 <span className="text-slate-400">🛒 MY OPTIONS</span>
-                <span className="text-slate-700 font-medium">과 함께 비교하기</span>
+                <span className="text-slate-700 font-medium">{t.myOptionsCompareWith}</span>
               </div>
               <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform text-slate-400" />
             </button>
@@ -1341,9 +1471,9 @@ export const manualRegistry: Record<string, any> = {
             <div className="flex flex-col gap-1">
               <div className="flex items-center gap-1.5 text-[14px] font-semibold">
                 <span className="text-slate-400">🛒 MY OPTIONS</span>
-                <span className="text-slate-800 font-medium">에 담아뒀던 다른 제품도 함께 비교하기</span>
+                <span className="text-slate-800 font-medium">{t.myOptionsExpandedTitle}</span>
               </div>
-              <p className="text-[11px] text-slate-900 font-medium">비교에 추가할 제품을 선택해 주세요.</p>
+              <p className="text-[11px] text-slate-900 font-medium">{t.selectToCompare}</p>
             </div>
 
             <div className="flex flex-wrap gap-2 mt-2">
@@ -1373,14 +1503,14 @@ export const manualRegistry: Record<string, any> = {
                 onClick={() => setIsExpanded(false)}
                 className="flex-1 py-3 bg-slate-50 text-slate-600 rounded-xl text-xs font-bold hover:bg-slate-100 transition-colors"
               >
-                취소
+                {t.cancel}
               </button>
               <button
                 onClick={handleConfirm}
                 disabled={selected.length === 0}
                 className="flex-[2] py-3 bg-primary text-white rounded-xl text-xs font-semibold disabled:opacity-30 disabled:cursor-not-allowed hover:opacity-90 transition-all shadow-sm"
               >
-                {selected.length}개의 제품 추가하여 비교하기
+                {t.addAndCompare(selected.length)}
               </button>
             </div>
           </div>
@@ -1398,11 +1528,12 @@ export const manualRegistry: Record<string, any> = {
 
 manualRegistry.InformationCard = (allProps: any) => {
   const p = allProps?.props || allProps || {};
+  const t = T[resolveLocale(allProps)];
   const points: string[] = Array.isArray(p.points) ? p.points : [];
   return (
     <div className="my-2 flex flex-col gap-2 w-full animate-highlight-wrap">
       <div className="flex flex-col gap-1 border border-slate-200 rounded-xl bg-white px-4 pt-3.5 pb-4">
-        <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">개념 정리</span>
+        <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">{t.concept}</span>
         <h3 className="text-[15px] font-black text-slate-900 tracking-tight leading-tight">{p.term}</h3>
         {p.summary && (
           <p className="text-[12px] text-slate-500 font-medium leading-relaxed mt-0.5">{p.summary}</p>

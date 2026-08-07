@@ -29,7 +29,7 @@ Only use when [CURRENT_CRITERIA_MAP] is present.
       "add_item: new item names to add. remove_item: exact existing item names to remove " +
       "(list every item under the category to remove the whole category)."
     ),
-    op_summary: z.string().describe("Brief Korean description of the action."),
+    op_summary: z.string().describe("Brief user-facing description of the action, in the response locale."),
   }),
   execute: async (args) => {
     const capturedRequestId = currentRequestId;

@@ -1,6 +1,6 @@
 import { tool } from "ai";
 import { z } from "zod";
-import { currentRequestId, currentProductCategory, pushMutateSurfaceResult } from "./sidebar-store";
+import { currentRequestId, currentProductCategory, currentLocale, pushMutateSurfaceResult } from "./sidebar-store";
 import { ragSearch } from "../rag/search";
 import { generateUISpec } from "../agents/ui_agent";
 import { lookupProductSpec, buildSpecPhrase } from "../services/spec-lookup";
@@ -89,7 +89,7 @@ Only use when [CURRENT_OPTION_LIST] is present. For new product searches, use re
     ),
 
     op_summary: z.string().describe(
-      "Brief Korean description of the action, e.g. '가격 낮은 순으로 정렬했어요'"
+      "Brief user-facing description of the action, in the response locale (e.g. '가격 낮은 순으로 정렬했어요' / 'Sorted by lowest price')"
     ),
 
     // sort: 정렬 기준 (프론트엔드 클라이언트 사이드 정렬에 사용)
@@ -258,7 +258,7 @@ Only use when [CURRENT_OPTION_LIST] is present. For new product searches, use re
       if (fieldUpdatesRaw.length > 0) {
         const results = await Promise.all(
           fieldUpdatesRaw.map(async (u) => {
-            const lookup = await lookupProductSpec(u.product_name, u.field_key, currentProductCategory);
+            const lookup = await lookupProductSpec(u.product_name, u.field_key, currentProductCategory, currentLocale);
             return { ...u, lookup };
           })
         );

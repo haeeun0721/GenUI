@@ -11,7 +11,6 @@ import {
 import { useJsonRenderMessage } from "@json-render/react";
 import { ExplorerRenderer } from "@/lib/frontend/render/renderer";
 import { manualRegistry } from "@/lib/frontend/render/registry";
-import { computeWsmRanking, importanceLevelToWeight } from "@/lib/shared/wsm-ranking";
 import { ThemeToggle } from "@/components/theme-toggle";
 import PanelTour from "@/components/PanelTour";
 import { HoverTooltip } from "@/components/ui/hover-tooltip";
@@ -27,7 +26,6 @@ import {
   AlertTriangle,
   Pencil,
   X,
-  ChevronDown,
   Heart,
   GripVertical,
   PanelRight,
@@ -340,13 +338,14 @@ const MessageBubble = memo(({
     isLatestMessage?: boolean;
     userContext?: string;
     onItemRemove?: (name: string) => void;
+    locale?: 'ko' | 'en';
   };
   highlightTerm?: string | null;
   highlightTurn?: number | null;
   isFollowUp?: boolean;
   turns?: number[];
 }) => {
-  const { onItemAdd, onItemRemove, onCompareRequested, savedItems, droppedCriteria, onRequestCriteriaData, onAddMyItemsToTable, userContext } = bindings;
+  const { onItemAdd, onItemRemove, onCompareRequested, savedItems, droppedCriteria, onRequestCriteriaData, onAddMyItemsToTable, userContext, locale: bubbleLocale } = bindings;
   const isUser = message.role === "user";
   const bubbleRef = useRef<HTMLDivElement>(null);
 
@@ -578,7 +577,7 @@ const MessageBubble = memo(({
               <ExplorerRenderer
                 spec={seg.content}
                 loading={isLast && isStreaming}
-                bindings={{ onItemAdd, onItemRemove, onCompareRequested, savedItems, isFollowUp, droppedCriteria, onRequestCriteriaData, onAddMyItemsToTable, isLatestMessage: isLast, userContext }}
+                bindings={{ onItemAdd, onItemRemove, onCompareRequested, savedItems, isFollowUp, droppedCriteria, onRequestCriteriaData, onAddMyItemsToTable, isLatestMessage: isLast, userContext, locale: bubbleLocale }}
               />
             </div>
           );
@@ -707,9 +706,6 @@ export default function ChatPage() {
     criteriaEmpty: locale === 'en' ? 'Click criteria chips\nto pin them here' : '기준 칩을 클릭해\n여기에 고정해두세요',
     optionsEmpty: locale === 'en' ? 'Press ♡ on products\nto save them here' : '관심 제품의 ♡를 눌러\n여기에 저장해보세요',
     optionListEmpty: locale === 'en' ? 'Get product recommendations\nto see options here' : '제품 추천을 받으면\n여기에 옵션이 표시됩니다',
-    impHigh: locale === 'en' ? 'High Imp.' : '중요도 높음',
-    impMedium: locale === 'en' ? 'Med Imp.' : '중요도 보통',
-    impLow: locale === 'en' ? 'Low Imp.' : '중요도 낮음',
     stroller: locale === 'en' ? 'Stroller' : '유모차',
     robotVacuum: locale === 'en' ? 'Robot Vacuum' : '로봇 청소기',
     camera: locale === 'en' ? 'Camera' : '카메라',
@@ -721,14 +717,14 @@ export default function ChatPage() {
     importance: locale === 'en' ? 'IMPORTANCE' : '중요도',
     noCriteria: locale === 'en' ? 'No saved criteria' : '저장된 기준 없음',
     totalCriteria: locale === 'en' ? 'Total Criteria' : '총 결정 기준',
-    productsConsidered: locale === 'en' ? 'PRODUCTS CONSIDERED' : '{T.productsConsidered}',
-    exploredCategories: locale === 'en' ? 'EXPLORED CATEGORIES' : '{T.exploredCategories}',
+    productsConsidered: locale === 'en' ? 'PRODUCTS CONSIDERED' : '검토한 제품',
+    exploredCategories: locale === 'en' ? 'EXPLORED CATEGORIES' : '탐색한 카테고리',
     impKey: locale === 'en' ? 'Key' : '핵심',
     impRef: locale === 'en' ? 'Ref' : '참고',
     countSuffix: locale === 'en' ? '' : '개',
   };
 
-  const [droppedCriteria, setDroppedCriteria] = useState<{ name: string; min?: string; priority: string; important?: boolean; importanceLevel?: string }[]>([]);
+  const [droppedCriteria, setDroppedCriteria] = useState<{ name: string; min?: string; priority: string; important?: boolean }[]>([]);
   const [searchCriteria, setSearchCriteria] = useState<{ name: string; min?: string; priority: string }[]>([]);
   const [droppedItems, setDroppedItems] = useState<{ name: string; image?: string; price?: string; description?: string; specs?: string[]; link?: string }[]>([]);
   const [mentionChips, setMentionChips] = useState<{ name: string; link?: string }[]>([]);
@@ -742,7 +738,6 @@ export default function ChatPage() {
   const [tradeoffSpecs, setTradeoffSpecs] = useState<Record<string, { type: string; props: any }>>({});
   const [tradeoffLoading, setTradeoffLoading] = useState<Set<string>>(new Set());
   const [dismissedTradeoffs, setDismissedTradeoffs] = useState<Set<string>>(new Set());
-  const [openImportanceIdx, setOpenImportanceIdx] = useState<number | null>(null);
   // UnchartedTerritoryChip spec ??set when Cat 2 fires with criteria + items
   const [unchartedSpec, setUnchartedSpec] = useState<{ labels: string[] } | null>(null);
   const [dismissedUncharted, setDismissedUncharted] = useState<Set<string>>(new Set());
@@ -760,6 +755,8 @@ export default function ChatPage() {
     productCardList?: any;
     uncharted?: { labels: string[] };
     tradeoffs?: Record<string, any>;
+    droppedItems?: any[];
+    queryHistory?: any[];
   } | null>(null);
   const isPreTranslatingRef = useRef(false); // 중복 ??행 방??
   const prevTableTurnRef = useRef<number>(-1);
@@ -769,7 +766,7 @@ export default function ChatPage() {
   const prevCompTableCountRef = useRef<number>(0);        // ??전 비교????성 ??수 (비교 반복 감??)
   const unchartedHasShownRef = useRef<boolean>(false);    // ????시 ???? (??후 ??니메이????킵)
   // Reactive Option List ??droppedCriteria 변??감????
-  const prevDroppedCriteriaRef = useRef<{ name: string; min?: string; importanceLevel?: string }[]>([]);
+  const prevDroppedCriteriaRef = useRef<{ name: string; min?: string }[]>([]);
   const productCardListSpecRef = useRef<any>(null); // ??테????로?? 방????최신 spec ref
   const criteriaMapRef = useRef<any>(null); // sidebarSpec.CriteriaMap??최신 값 ??조??(??일????선 밖)
   const [criteriaResetConfirm, setCriteriaResetConfirm] = useState(false);
@@ -902,7 +899,7 @@ export default function ChatPage() {
       onDragStart={(e) => { e.stopPropagation(); setPanelDragging(panelId); e.dataTransfer.setData('application/x-panel', panelId); e.dataTransfer.effectAllowed = 'move'; }}
       onDragEnd={() => { setPanelDragging(null); setPanelDropTarget(null); }}
       className="cursor-grab active:cursor-grabbing p-1 rounded hover:bg-slate-100 transition-colors flex-shrink-0"
-      title="??래그하????널 ??동"
+      title={locale === 'en' ? 'Drag to move panel' : '드래그하여 패널 이동'}
     >
       <GripVertical className="w-3.5 h-3.5 text-slate-300 hover:text-slate-500" />
     </div>
@@ -1014,6 +1011,7 @@ export default function ChatPage() {
   useEffect(() => {
     localStorage.setItem('gs_locale', locale);
     document.cookie = `gs_locale=${locale};path=/;max-age=86400`;
+    document.documentElement.lang = locale;
   }, [locale]);
 
   // Reactive Option List ??Decision Criteria 변??감?? ????동 ??펙 보강
@@ -1036,6 +1034,7 @@ export default function ChatPage() {
             criterion: criterion.name,
             criterionMin: criterion.min ?? null,
             category: productCategory,
+            locale,
           }),
         });
         if (!res.ok) continue;
@@ -1106,18 +1105,15 @@ export default function ChatPage() {
     }
   };
 
-  const updateComparisonTable = async (criteria: Criteria[], removedCriteriaNames: string[] = []) => {
+  const updateComparisonTable = async (criteria: { name: string; min?: string }[], removedCriteriaNames: string[] = []) => {
     const compTable = compTableSpecRef.current;
     if (!compTable?.props?.columns || compTable.props.columns.length <= 1) return;
 
     // columns[1]부터 제품명(label)
     const savedItems = compTable.props.columns.slice(1).map((col: any) => col.label);
-    const criteriaStrings = criteria.map(c => {
-      const levelLabel = (c as any).importanceLevel === 'high' ? '[중요]'
-        : (c as any).importanceLevel === 'low' ? '[낮음]'
-          : '[보통]';
-      return `${c.name} ${levelLabel}`;
-    });
+    // 순위는 더 이상 중요도 가중치가 아니라 서버가 userContext를 보고 판단하므로,
+    // 여기서는 기준명 + min(사용자가 명시한 기준)만 전달한다.
+    const criteriaStrings = criteria.map(c => `${c.name}${c.min ? ` (기준: ${c.min})` : ''}`);
 
     console.log(`[update-table] 기준 변경 감지. 테이블 갱신 시작: ${savedItems.length}개 제품, ${criteriaStrings.length}개 기준 | ${criteriaStrings.join(', ')}`);
 
@@ -1138,7 +1134,8 @@ export default function ChatPage() {
           // criteria 문자열 재구성으로 유추하지 않음 — 서버 측 오탐 삭제 방지.
           removedCriteriaNames,
           category: assignedItem === "A" ? "유모차" : assignedItem === "B" ? "로봇 청소기" : "카메라",
-          locale: locale
+          locale: locale,
+          userContext, // 서버가 순위를 이 사용자의 구매 상황/목적 기준으로 판단하는 데 필요
         }),
       });
 
@@ -1176,17 +1173,9 @@ export default function ChatPage() {
     }
   };
 
-  // \ud074\ub77c\uc774\uc5b8\ud2b8 \uc0ac\uc774\ub4dc WSM \uc21c\uc704 \uc7ac\uacc4\uc0b0 (\uc11c\ubc84 \ud638\ucd9c \uc5c6\uc774 \uc989\uc2dc \uc801\uc6a9) \u2014 \ucc44\uc810/\uc21c\uc704 \ub85c\uc9c1 \uc790\uccb4\ub294
-  // lib/shared/wsm-ranking.ts\ub97c \ubc31\uc5d4\ub4dc(computeRankingAndReasoning)\uc640 \uacf5\uc720\ud55c\ub2e4. \uae30\uc900\ubcc4
-  // \uac00\uc911\uce58\ub9cc \uc774\ucabd \ub370\uc774\ud130 \ud615\ud0dc(\uad6c\uc870\ud654\ub41c droppedCriteria \ubc30\uc5f4)\uc5d0 \ub9de\uac8c \uc5ec\uae30\uc11c \uc870\ud68c\ud55c\ub2e4.
-  const recalcTableRanking = (rows: any[], columns: any[], criteria: typeof droppedCriteria): any[] => {
-    const getWeight = (criterionName: string) => {
-      const c = criteria.find(c => c.name.toLowerCase().includes(criterionName.toLowerCase()) || criterionName.toLowerCase().includes(c.name.toLowerCase()));
-      return importanceLevelToWeight((c as any)?.importanceLevel);
-    };
-    return computeWsmRanking(rows, columns, getWeight);
-  };
-
+  // \uc21c\uc704\ub294 \ub354 \uc774\uc0c1 \ud074\ub77c\uc774\uc5b8\ud2b8\uc5d0\uc11c \uc989\uc2dc \uc7ac\uacc4\uc0b0\ud558\uc9c0 \uc54a\ub294\ub2e4 \u2014 \uc2a4\ud399 \uc6b0\uc704\uac00 \uc544\ub2c8\ub77c \uc0ac\uc6a9\uc790\uc758
+  // \uad6c\ub9e4 \uc0c1\ud669/\ubaa9\uc801\uc5d0 \uc5bc\ub9c8\ub098 \ubd80\ud569\ud558\ub294\uc9c0\ub97c \uc11c\ubc84(computeRankingAndReasoning)\uac00 LLM\uc73c\ub85c \ud310\ub2e8\ud558\uae30
+  // \ub54c\ubb38\uc5d0, \uae30\uc900\uc774 \ubc14\ub00c\uba74 \ud56d\uc0c1 updateComparisonTable()\ub85c \uc11c\ubc84\ub97c \ub2e4\uc2dc \ud638\ucd9c\ud574\uc11c \ubc18\uc601\ud55c\ub2e4.
   useEffect(() => {
     const prev = prevDroppedCriteriaRef.current;
     const curr = droppedCriteria;
@@ -1197,12 +1186,6 @@ export default function ChatPage() {
       if (!p) return true;
       if (p.min !== (c as any).min) return true;
       return false;
-    });
-
-    // [3] 중요도만 변경 (same name/min, different importanceLevel)
-    const importanceChanged = curr.some(c => {
-      const p = prev.find(prevC => prevC.name === c.name);
-      return p && p.min === (c as any).min && p.importanceLevel !== (c as any).importanceLevel;
     });
 
     // 기?? ref ??데??트 (먼??)
@@ -1239,14 +1222,13 @@ export default function ChatPage() {
     const removedNames = removedCriteria.map((c: any) => c.name);
 
     if (removedCriteria.length > 0) {
-      // 테이블 행 즉시 제거 + WSM 순위 재계산
+      // 테이블 행 즉시 제거 (순위는 서버 응답이 올 때까지 잠시 이전 값 유지)
       setCompTableSpec((prev: any) => {
         if (!prev?.props?.rows || !prev?.props?.columns) return prev;
         const filteredRows = prev.props.rows.filter((row: any) =>
           !removedNames.some((name: string) => row.criterion && (row.criterion.includes(name) || name.includes(row.criterion)))
         );
-        const reranked = recalcTableRanking(filteredRows, prev.props.columns, curr);
-        const next = { ...prev, props: { ...prev.props, rows: reranked } };
+        const next = { ...prev, props: { ...prev.props, rows: filteredRows } };
         compTableSpecRef.current = next;
         return next;
       });
@@ -1261,20 +1243,8 @@ export default function ChatPage() {
       else console.log(`[auto-enrich] 카드 없음 — Option List가 아직 없음`);
     }
 
-    // [3] 중요도 변경 → 클라이언트 WSM 즉시 반영
-    if (importanceChanged && newCriteria.length === 0 && removedCriteria.length === 0) {
-      setCompTableSpec((prev: any) => {
-        if (!prev?.props?.rows || !prev?.props?.columns) return prev;
-        const reranked = recalcTableRanking(prev.props.rows, prev.props.columns, curr);
-        const next = { ...prev, props: { ...prev.props, rows: reranked } };
-        compTableSpecRef.current = next;
-        return next;
-      });
-      console.log(`[table] 중요도 변경 → WSM 순위 즉시 재계산`);
-    }
-
-    // 테이블 전체 재빌드 (새 기준 추가 / 제거 / 중요도 변경 시 — reasoning 포함 전체 동기화)
-    if (newCriteria.length > 0 || removedCriteria.length > 0 || importanceChanged || curr.length === 0) {
+    // 테이블 전체 재빌드 (새 기준 추가 / 제거 시 — reasoning 포함 전체 동기화)
+    if (newCriteria.length > 0 || removedCriteria.length > 0 || curr.length === 0) {
       updateComparisonTable(curr, removedNames);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1295,8 +1265,15 @@ export default function ChatPage() {
       if (preTranslated.productCardList) setProductCardListSpec(preTranslated.productCardList);
       if (preTranslated.uncharted) setUnchartedSpec(preTranslated.uncharted);
       if (preTranslated.tradeoffs) setTradeoffSpecs(prev => ({ ...prev, ...preTranslated.tradeoffs }));
+      if (preTranslated.droppedItems) setDroppedItems(preTranslated.droppedItems);
+      if (preTranslated.queryHistory) setQueryHistory(preTranslated.queryHistory);
+      // The cache snapshot was taken when streaming last ended — anything added afterward
+      // (e.g. an item saved to My Options after the search finished) isn't in it. Only skip
+      // the on-demand fallback below when the cache actually covers everything currently on screen.
+      const cacheMissedDroppedItems = droppedItems.length > 0 && !preTranslated.droppedItems;
+      const cacheMissedQueryHistory = queryHistory.some((entry) => entry?.spec) && !preTranslated.queryHistory;
       setPreTranslated(null); // ??용 ????리
-      return;
+      if (!cacheMissedDroppedItems && !cacheMissedQueryHistory) return;
     }
 
     // ??Cache miss: on-demand 번역 (fallback)
@@ -1313,6 +1290,13 @@ export default function ChatPage() {
         if (unchartedSpec) specsToTranslate['uncharted'] = { type: 'UnchartedTerritoryChip', props: unchartedSpec };
         Object.entries(tradeoffSpecs).forEach(([key, spec]) => {
           specsToTranslate[`tradeoff_${key}`] = spec;
+        });
+        if (droppedItems.length > 0) specsToTranslate['droppedItems'] = { type: 'ProductCardList', props: { cards: droppedItems } };
+        // renderOptionList() prefers queryHistory[activeHistoryIndex].spec over productCardListSpec,
+        // so the per-turn history snapshots need their own translation pass too — otherwise the
+        // panel keeps showing the untranslated turn snapshot even after productCardListSpec updates.
+        queryHistory.forEach((entry, i) => {
+          if (entry?.spec) specsToTranslate[`qh_${i}`] = entry.spec;
         });
 
         if (Object.keys(specsToTranslate).length === 0) return;
@@ -1338,6 +1322,10 @@ export default function ChatPage() {
           if (result[`tradeoff_${key}`]) translatedTradeoffs[key] = result[`tradeoff_${key}`];
         });
         if (Object.keys(translatedTradeoffs).length > 0) setTradeoffSpecs(prev => ({ ...prev, ...translatedTradeoffs }));
+        if (result.droppedItems?.props?.cards) setDroppedItems(result.droppedItems.props.cards);
+        if (queryHistory.some((entry) => entry?.spec)) {
+          setQueryHistory((prev) => prev.map((entry, i) => (result[`qh_${i}`] ? { ...entry, spec: result[`qh_${i}`] } : entry)));
+        }
       } finally {
         setIsTranslating(false);
       }
@@ -1406,6 +1394,10 @@ export default function ChatPage() {
     Object.entries(tradeoffSpecs).forEach(([key, spec]) => {
       specsToTranslate[`tradeoff_${key}`] = spec;
     });
+    if (droppedItems.length > 0) specsToTranslate['droppedItems'] = { type: 'ProductCardList', props: { cards: droppedItems } };
+    queryHistory.forEach((entry, i) => {
+      if (entry?.spec) specsToTranslate[`qh_${i}`] = entry.spec;
+    });
 
     if (Object.keys(specsToTranslate).length === 0) return;
     if (isPreTranslatingRef.current) return;
@@ -1426,6 +1418,9 @@ export default function ChatPage() {
         Object.keys(tradeoffSpecs).forEach(key => {
           if (result[`tradeoff_${key}`]) translatedTradeoffs[key] = result[`tradeoff_${key}`];
         });
+        const translatedQueryHistory = queryHistory.some((entry) => entry?.spec)
+          ? queryHistory.map((entry, i) => (result[`qh_${i}`] ? { ...entry, spec: result[`qh_${i}`] } : entry))
+          : undefined;
         setPreTranslated({
           locale: oppositeLocale,
           criteriaMap: result.criteriaMap,
@@ -1434,6 +1429,8 @@ export default function ChatPage() {
           productCardList: result.productCardList,
           uncharted: result.uncharted?.props?.labels ? { labels: result.uncharted.props.labels } : undefined,
           tradeoffs: Object.keys(translatedTradeoffs).length > 0 ? translatedTradeoffs : undefined,
+          droppedItems: result.droppedItems?.props?.cards,
+          queryHistory: translatedQueryHistory,
         });
         console.log(`[Pre-translation] ${oppositeLocale} 번역 완료 -> locale 전환 후 즉시 사용 가능`);
       })
@@ -1545,11 +1542,9 @@ export default function ChatPage() {
         : "";
 
       const savedCriteriaContext = droppedCriteria.length > 0
-        ? `\n\n[DECISION CRITERIA: ${droppedCriteria.map((c: any) => {
-          const levelMap: Record<string, string> = { high: "중요", medium: "보통", low: "낮음" };
-          const priorityLabel = levelMap[c.importanceLevel] || "보통";
-          return `${c.name}${c.min ? ` (기준: ${c.min})` : ''} [${priorityLabel}]`;
-        }).join(', ')}]`
+        ? `\n\n[DECISION CRITERIA: ${droppedCriteria.map((c: any) =>
+          `${c.name}${c.min ? ` (기준: ${c.min})` : ''}`
+        ).join(', ')}]`
         : '';
 
       const userContextTag = userContext.trim()
@@ -2133,13 +2128,11 @@ export default function ChatPage() {
         setTradeoffSpecs((prev) => { const next = { ...prev }; delete next[item.name]; return next; });
       } else {
         const existingCriteria = droppedCriteria.map((c) => ({ name: c.name, important: !!c.important }));
-        const importanceLevel = item.important ? "high" : "low";
         setDroppedCriteria((prev) => [...prev, {
           name: item.name,
           min: item.min,
           priority: item.priority || "medium",
           important: !!item.important,
-          importanceLevel,
           confidence: (item as any).confidence,
         } as any]);
         checkTradeoff({ name: item.name, important: !!item.important }, existingCriteria);
@@ -2148,8 +2141,9 @@ export default function ChatPage() {
     },
     onDragStartCriteria: () => {
       setRightPanelCollapsed(false);
-    }
-  }), [scrollToTurn, handleSubmit, droppedCriteria]);
+    },
+    locale,
+  }), [scrollToTurn, handleSubmit, droppedCriteria, locale]);
 
   const bubbleBindings = useMemo(() => ({
     onItemAdd: handleAddItem,
@@ -2158,13 +2152,19 @@ export default function ChatPage() {
     savedItems: droppedItems,
     droppedCriteria: droppedCriteria,
     userContext,
+    locale,
     onRequestCriteriaData: (criteriaName: string, products: string[]) => {
-      handleSubmit(`지??비교 중인 ${products.join(', ')} ??품??"${criteriaName}" 관??값을 ??함??서 비교???? ??시 만들??줘.`);
+      handleSubmit(locale === 'en'
+        ? `Please redo the comparison table for ${products.join(', ')}, including the "${criteriaName}" value.`
+        : `지금 비교 중인 ${products.join(', ')} 제품의 "${criteriaName}" 관련 값을 포함해서 비교표를 다시 만들어줘.`);
     },
     onAddMyItemsToTable: (currentProducts: string[], newItems: string[]) => {
-      handleSubmit(`${[...currentProducts, ...newItems].join(', ')} ??품??비교??줘. ??전 비교 기????모두 ??????면??추?? ??품????함??서 비교???? 만들??줘.`);
+      const all = [...currentProducts, ...newItems].join(', ');
+      handleSubmit(locale === 'en'
+        ? `Please compare ${all} — keep all previous comparison criteria and include the newly added products.`
+        : `${all} 제품을 비교해줘. 이전 비교 기준은 모두 유지하면서 새로 추가된 제품도 포함해서 비교표를 다시 만들어줘.`);
     },
-  }), [handleAddItem, handleRemoveItem, handleCompare, droppedItems, droppedCriteria, userContext, handleSubmit]);
+  }), [handleAddItem, handleRemoveItem, handleCompare, droppedItems, droppedCriteria, userContext, handleSubmit, locale]);
 
   // Comparison Table ??널: data-comp-table-spec ??트????트??서 최신 spec 추출
   useEffect(() => {
@@ -2712,7 +2712,7 @@ export default function ChatPage() {
   if (!hasStarted) {
     return (
       <div className="h-screen w-full flex items-center justify-center bg-[#FAFAFA]">
-        <div className="w-full max-w-lg flex flex-col gap-10 px-8 animate-in fade-in zoom-in-95 duration-700">
+        <div className="w-full max-w-lg flex flex-col gap-10 px-8">
           {/* Branding + locale toggle */}
           <div className="flex items-center justify-between">
             <h1 className="text-[48px] font-extrabold text-slate-900 tracking-tight leading-none">GenUIdance</h1>
@@ -2823,7 +2823,7 @@ export default function ChatPage() {
         </div>
       </div>
       {journeyTab === "criteria" && unchartedSpec && unchartedSpec.labels.length > 0 && (
-        <div className="flex-shrink-0 mb-3">{manualRegistry.UnchartedTerritoryChip({ props: { labels: unchartedSpec.labels, skipAnimation: unchartedHasShownRef.current, onExplore: (label: string) => { unchartedHasShownRef.current = true; const cat = assignedItem === "A" ? "유모차" : assignedItem === "B" ? "로봇 청소기" : assignedItem === "C" ? "카메라" : "제품"; handleSubmit(`${cat} 구매에서 '${label}' 기준의 세부 항목을 알려줘`); startTransition(() => { setDismissedUncharted(prev => { const next = new Set(prev); next.add(label); return next; }); setUnchartedSpec(prev => prev ? { labels: prev.labels.filter(l => l !== label) } : null); }); } } })}</div>
+        <div className="flex-shrink-0 mb-3">{manualRegistry.UnchartedTerritoryChip({ props: { labels: unchartedSpec.labels, skipAnimation: unchartedHasShownRef.current, onExplore: (label: string) => { unchartedHasShownRef.current = true; const cat = locale === 'en' ? (assignedItem === "A" ? "stroller" : assignedItem === "B" ? "robot vacuum" : assignedItem === "C" ? "camera" : "product") : (assignedItem === "A" ? "유모차" : assignedItem === "B" ? "로봇 청소기" : assignedItem === "C" ? "카메라" : "제품"); handleSubmit(locale === 'en' ? `Tell me more about the "${label}" criterion for buying a ${cat}` : `${cat} 구매에서 '${label}' 기준의 세부 항목을 알려줘`); startTransition(() => { setDismissedUncharted(prev => { const next = new Set(prev); next.add(label); return next; }); setUnchartedSpec(prev => prev ? { labels: prev.labels.filter(l => l !== label) } : null); }); }, locale } })}</div>
       )}
       <div className="flex-1 overflow-y-auto styled-scrollbar pr-1">
         <div className={journeyTab === "criteria" ? "" : "hidden"}>
@@ -2859,11 +2859,6 @@ export default function ChatPage() {
 
 
   const renderCriteriaContent = () => {
-    const impStyles: Record<string, { label: string; className: string; dotClass: string }> = {
-      high: { label: T.impHigh, className: "text-rose-500 bg-rose-50/50 border-rose-100", dotClass: "bg-rose-400" },
-      medium: { label: T.impMedium, className: "text-amber-500 bg-amber-50/50 border-amber-100", dotClass: "bg-amber-400" },
-      low: { label: T.impLow, className: "text-slate-400 bg-slate-50/50 border-slate-100", dotClass: "bg-slate-300" },
-    };
     return (
       <div
         onDragOver={(e) => { if (e.dataTransfer.types.includes('application/x-panel')) return; e.preventDefault(); e.currentTarget.classList.add("bg-primary/5", "border-primary/30"); }}
@@ -2873,7 +2868,7 @@ export default function ChatPage() {
           e.preventDefault(); e.currentTarget.classList.remove("bg-primary/5", "border-primary/30");
           const jsonData = e.dataTransfer.getData("application/json");
           const label = e.dataTransfer.getData("text/plain");
-          if (jsonData) { try { const item = JSON.parse(jsonData); if (item.name && !droppedCriteria.some(c => c.name === item.name)) { const existingCriteria = droppedCriteria.map(c => ({ name: c.name, important: !!c.important })); const importanceLevel = item.important ? "high" : "low"; setDroppedCriteria((prev) => [...prev, { name: item.name, min: item.min, priority: item.priority || "medium", important: !!item.important, importanceLevel } as any]); checkTradeoff({ name: item.name, important: !!item.important }, existingCriteria); } } catch { if (label && !droppedCriteria.some(c => c.name === label)) setDroppedCriteria((prev) => [...prev, { name: label, priority: "medium" }]); } } else if (label && !droppedCriteria.some(c => c.name === label)) { setDroppedCriteria((prev) => [...prev, { name: label, priority: "medium" }]); }
+          if (jsonData) { try { const item = JSON.parse(jsonData); if (item.name && !droppedCriteria.some(c => c.name === item.name)) { const existingCriteria = droppedCriteria.map(c => ({ name: c.name, important: !!c.important })); setDroppedCriteria((prev) => [...prev, { name: item.name, min: item.min, priority: item.priority || "medium", important: !!item.important } as any]); checkTradeoff({ name: item.name, important: !!item.important }, existingCriteria); } } catch { if (label && !droppedCriteria.some(c => c.name === label)) setDroppedCriteria((prev) => [...prev, { name: label, priority: "medium" }]); } } else if (label && !droppedCriteria.some(c => c.name === label)) { setDroppedCriteria((prev) => [...prev, { name: label, priority: "medium" }]); }
         }}
         className="flex flex-col flex-1 overflow-hidden"
       >
@@ -2886,27 +2881,10 @@ export default function ChatPage() {
           {droppedCriteria.length > 0 ? (
             <div className="flex flex-wrap gap-2.5 w-full content-start">
               {droppedCriteria.map((criterion, i) => {
-                const impLevel = (criterion as any).importanceLevel as "high" | "medium" | "low" | undefined;
-                const s = impLevel ? impStyles[impLevel] : null;
                 return (
-                  <div key={i} onClick={() => { setOpenImportanceIdx(null); if (!searchCriteria.some(c => c.name === criterion.name)) setSearchCriteria(prev => [...prev, { name: criterion.name, min: criterion.min, priority: criterion.priority }]); inputRef.current?.focus(); }}
+                  <div key={i} onClick={() => { if (!searchCriteria.some(c => c.name === criterion.name)) setSearchCriteria(prev => [...prev, { name: criterion.name, min: criterion.min, priority: criterion.priority }]); inputRef.current?.focus(); }}
                     className="flex items-center gap-2 rounded-2xl px-2.5 h-[32px] w-fit max-w-full group animate-in zoom-in-95 duration-200 cursor-pointer transition-colors"
                     style={{ backgroundColor: '#ffffff', border: '1px solid #e2e8f0', color: '#1e293b' }}>
-                    <div className="relative shrink-0 flex items-center gap-1 mr-1">
-                      <button onClick={(e) => { e.stopPropagation(); setOpenImportanceIdx(openImportanceIdx === i ? null : i); }} className={`flex items-center gap-1 border rounded-[6px] px-1.5 py-0.5 text-[9px] font-bold transition-all duration-150 ${s ? s.className : "bg-transparent text-slate-300 border-transparent"}`}>
-                        {s && <div className={`w-1 h-1 rounded-full ${s.dotClass}`} />}
-                        {s ? s.label : "·"}
-                        <ChevronDown className="w-2 h-2 opacity-60 ml-0.5" />
-                      </button>
-
-                      {openImportanceIdx === i && (
-                        <div className="absolute top-full left-0 mt-1 z-50 bg-white border border-slate-200 rounded-[12px] shadow-lg py-2 px-2 min-w-[120px]" onClick={(e) => e.stopPropagation()}>
-                          <div className="flex flex-col gap-1">
-                            {(["high", "medium", "low"] as const).map(opt => { const os = impStyles[opt]; return (<button key={opt} onClick={(e) => { e.stopPropagation(); setDroppedCriteria(prev => { const next = [...prev]; next[i] = { ...next[i], importanceLevel: opt, important: opt === "high" } as any; return next; }); setOpenImportanceIdx(null); }} className={`flex-1 rounded py-1 text-[10px] font-bold transition-all hover:bg-slate-50 ${os.className.split(' ')[0]}`}>{os.label}</button>); })}
-                          </div>
-                        </div>
-                      )}
-                    </div>
                     <div className="flex items-center gap-1.5 overflow-hidden min-w-0">
                       <span className="text-[12.5px] font-bold select-none whitespace-nowrap shrink-0 text-slate-800">{criterion.name}</span>
                       {editingCriteriaIdx === i ? (<input autoFocus className={`text-[10.5px] border-b outline-none w-[60px] bg-transparent py-0 shrink-0 text-slate-500 border-slate-300`} value={editingMinText} onChange={(e) => setEditingMinText(e.target.value)} onBlur={() => { setDroppedCriteria(prev => { const next = [...prev]; next[i] = { ...next[i], min: editingMinText }; return next; }); setEditingCriteriaIdx(null); }} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />) : (<span className="text-[10.5px] font-medium select-none truncate text-slate-500" title={criterion.min || T.pinHint}>{criterion.min || T.pinHint}</span>)}
@@ -3042,27 +3020,29 @@ export default function ChatPage() {
           <div className="flex-shrink-0 mx-4 mt-3 rounded-[8px] border border-amber-200 bg-amber-50 px-4 py-3 flex items-start gap-3">
             <span className="text-amber-500 text-[16px] flex-shrink-0">⚠</span>
             <div className="flex-1 min-w-0">
-              <p className="text-[12px] font-semibold text-amber-800">기준이 크게 바뀌어요</p>
-              <p className="text-[11px] text-amber-700 mt-0.5">현재 리스트가 새 기준에 맞지 않을 수 있습니다. 새로 검색할까요?</p>
+              <p className="text-[12px] font-semibold text-amber-800">{locale === 'en' ? 'Criteria changed significantly' : '기준이 크게 바뀌어요'}</p>
+              <p className="text-[11px] text-amber-700 mt-0.5">{locale === 'en' ? 'The current list may not match the new criteria. Search again?' : '현재 리스트가 새 기준에 맞지 않을 수 있습니다. 새로 검색할까요?'}</p>
               <div className="flex gap-2 mt-2">
                 <button
                   type="button"
                   onClick={() => {
                     setCriteriaResetConfirm(false);
                     // 채팅창에 ??검????리??메시지 ??송
-                    const msg = `[Decision Criteria : ${droppedCriteria.map(c => c.name).join(', ')}]\\n기준에 맞는 제품을 새로 찾아줘`;
+                    const msg = locale === 'en'
+                      ? `[Decision Criteria : ${droppedCriteria.map(c => c.name).join(', ')}]\\nFind new products that match the criteria`
+                      : `[Decision Criteria : ${droppedCriteria.map(c => c.name).join(', ')}]\\n기준에 맞는 제품을 새로 찾아줘`;
                     setInput(msg);
                   }}
                   className="text-[11px] font-semibold text-white bg-amber-500 hover:bg-amber-600 rounded-[5px] px-3 py-1.5 transition-colors"
                 >
-                  새로 검색
+                  {locale === 'en' ? 'Search again' : '새로 검색'}
                 </button>
                 <button
                   type="button"
                   onClick={() => setCriteriaResetConfirm(false)}
                   className="text-[11px] font-medium text-amber-700 hover:text-amber-900 rounded-[5px] px-2 py-1.5 transition-colors"
                 >
-                  유지하기
+                  {locale === 'en' ? 'Keep current' : '유지하기'}
                 </button>
               </div>
             </div>
@@ -3109,7 +3089,7 @@ export default function ChatPage() {
         {/* Product cards area ??카드????크??*/}
         <div className="flex-1 overflow-y-auto overflow-x-hidden styled-scrollbar p-4 pt-0 flex flex-col gap-3 relative">
           {coverageNoticeSpec && manualRegistry.CoverageNotice && (
-            manualRegistry.CoverageNotice({ props: coverageNoticeSpec.props })
+            manualRegistry.CoverageNotice({ props: coverageNoticeSpec.props, bindings: { locale } })
           )}
 
           {specToShow ? (
@@ -3657,7 +3637,7 @@ export default function ChatPage() {
             >
               {rightPanelCollapsed ? (
                 /* ??힌 ??태: 36px ??트????단 중앙 */
-                <HoverTooltip label="패널 펼치기" side="left" className="absolute top-3 left-1/2 -translate-x-1/2">
+                <HoverTooltip label={locale === 'en' ? 'Expand panel' : '패널 펼치기'} side="left" className="absolute top-3 left-1/2 -translate-x-1/2">
                   <button
                     onClick={() => setRightPanelCollapsed(false)}
                     className="p-1.5 rounded-md text-slate-600 hover:bg-slate-100 transition-colors"
@@ -3669,7 +3649,7 @@ export default function ChatPage() {
                 <>
                   {/* ??기 버튼 */}
                   <div className="absolute top-3 right-3 z-10">
-                    <HoverTooltip label="패널 접기" side="left">
+                    <HoverTooltip label={locale === 'en' ? 'Collapse panel' : '패널 접기'} side="left">
                       <button
                         onClick={() => setRightPanelCollapsed(true)}
                         className="p-1.5 rounded-md text-slate-600 hover:bg-slate-100 transition-colors"

@@ -4,6 +4,7 @@ import { computeRankingAndReasoning } from "@/lib/backend/agents/generators/comp
 import { lookupProductSpec, enrichContextWithTavily } from "@/lib/backend/services/spec-lookup";
 import { generateUISpec } from "@/lib/backend/agents/ui_agent";
 import { writeCompTableLog } from "@/lib/backend/logger";
+import { setCurrentLocale, setCurrentUserContext } from "@/lib/backend/tools/sidebar-store";
 
 export const maxDuration = 60;
 
@@ -41,6 +42,7 @@ export async function POST(req: NextRequest) {
       category,
       locale = "ko",
       removedCriteriaNames = [],  // ← 사용자가 실제로 제거한 기준만 (행 삭제는 이 목록에서만 발생)
+      userContext = "",
     } = await req.json() as {
       savedItems: string[];
       criteria: string[];
@@ -50,11 +52,18 @@ export async function POST(req: NextRequest) {
       category: string;
       locale?: string;
       removedCriteriaNames?: string[];
+      userContext?: string;
     };
 
     if (!savedItems?.length) {
       return NextResponse.json({ error: "No saved items provided" }, { status: 400 });
     }
+
+    // orchestrateCompTablePipeline(STRATEGY B)와 computeRankingAndReasoning은 공유 전역
+    // (currentLocale/currentUserContext)을 읽지 params로 받지 않는다 — 독립 엔드포인트인
+    // 이 라우트는 매 요청마다 이 값을 최신으로 맞춰줘야 순위 판단이 이 사용자 상황을 반영한다.
+    setCurrentLocale(locale === "en" ? "en" : "ko");
+    setCurrentUserContext(userContext);
 
     console.log(`[update-table] ${savedItems.length}개 제품, ${criteria.length}개 기준`);
 
@@ -131,7 +140,7 @@ export async function POST(req: NextRequest) {
           productCols.map(async (col) => {
             const productLabel = col.label;
             const fullName = fullNameMap.get(productLabel) ?? productLabel;
-            const result = await lookupProductSpec(fullName, cleanLabel, category);
+            const result = await lookupProductSpec(fullName, cleanLabel, category, locale);
             newRow[col.key] = result.uncertain ? "-" : result.value;
             console.log(`[update-table] "${fullName}" × "${cleanLabel}" → "${newRow[col.key]}" (source=${result.source}${result.uncertain ? ", 불확실→폐기" : ""})`);
           })
@@ -207,7 +216,8 @@ export async function POST(req: NextRequest) {
     const { enriched: enrichedContext, productLogs } = await enrichContextWithTavily(
       rawContext,
       criteria,
-      category
+      category,
+      locale
     );
     writeCompTableLog(productLogs, criteria);
 

@@ -14,82 +14,83 @@ import { generateObject } from "ai";
 import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
 import type { IntentAnalysis } from "./intent_analyzer";
+import type { Locale } from "./generators/shared";
 import { currentProductCategory, currentUserContext, currentDecisionCriteria } from "../tools/sidebar-store";
 
 export const EDIT_AGENT_MODEL = "gpt-4o" as const;
-
-const opSummaryField = {
-  op_summary: z.string().describe("1-2 sentence Korean, user-facing confirmation of what will change."),
-};
 
 // z.discriminatedUnion would compile to JSON Schema's `oneOf`, which OpenAI's
 // Responses API structured-outputs mode rejects ("'oneOf' is not permitted").
 // Plain z.union compiles to `anyOf`, which is supported, and TS can still
 // narrow on target_surface since each branch has a literal type for it.
-export const EditPlanSchema = z.union([
-  // ── optionList ────────────────────────────────────────────────────────────
-  z.object({
-    target_surface: z.literal("optionList"),
-    ...opSummaryField,
-    op: z.enum(["filter", "sort", "add"]),
-    result_card_names: z.array(z.string()).nullable()
-      .describe("filter/sort: the matching cards' `id`s (not names) copied from CURRENT_OPTION_LIST, in final order to keep/show."),
-    products_to_add: z.array(z.string()).nullable()
-      .describe("add: product names to search for and add as new cards."),
-    sort_by: z.string().nullable()
-      .describe("sort: Korean field name to sort by, e.g. '가격', '무게', '소음'."),
-    sort_order: z.enum(["asc", "desc"]).nullable(),
-    field_updates: z.array(z.object({
-      product_name: z.string().describe("The matching card's `id` (not name) copied from CURRENT_OPTION_LIST."),
-      field_key: z.string().describe("Short Korean spec keyword, e.g. '무게', '배터리'. Never a value — system looks up the real value."),
-    })).nullable().describe("add: spec fields to look up for existing cards."),
-    original_query: z.string().nullable()
-      .describe("add: original search constraints (e.g. '흡입력 4500pa 이상') to hard-filter newly added products."),
-  }),
+//
+// Field descriptions are built per-locale (op_summary, sort_by, field_key, criteria_to_add,
+// category_label are free text the model writes — they must match the response language the
+// user selected, not be hardcoded to Korean).
+function buildEditPlanSchema(locale: Locale) {
+  const lang = locale === "en" ? "English" : "Korean";
+  const opSummaryField = {
+    op_summary: z.string().describe(`1-2 sentence ${lang}, user-facing confirmation of what will change.`),
+  };
 
-  // ── comparisonTable ─────────────────────────────────────────────────────────
-  // Supports criteria ROWS and product COLUMNS add/remove. Single-cell re-verification is not supported yet.
-  z.object({
-    target_surface: z.literal("comparisonTable"),
-    ...opSummaryField,
-    op: z.enum(["add_criteria", "remove_criteria", "add_product", "remove_product"])
-      .describe("If the request needs something outside this scope (e.g. re-checking one specific cell), " +
-        "target_surface must not be 'comparisonTable' — explain the limitation in op_summary via another surface " +
-        "or a conversational reply instead."),
-    criteria_to_add: z.array(z.string()).nullable()
-      .describe("add_criteria: new criterion row labels to add, in Korean."),
-    criteria_to_remove: z.array(z.string()).nullable()
-      .describe("remove_criteria: exact row `id`s (e.g. 'crit_1') copied from CURRENT_COMPARISON_TABLE to remove — NOT the label."),
-    products_to_add: z.array(z.string()).nullable()
-      .describe("add_product: product names/brands to search for and add as new columns (e.g. '샤오미', '로보락 S9')."),
-    products_to_remove: z.array(z.string()).nullable()
-      .describe("remove_product: exact column `key`s (e.g. 'prod_1') copied from CURRENT_COMPARISON_TABLE to remove — NOT the label."),
-  }),
+  return z.union([
+    // ── optionList ────────────────────────────────────────────────────────────
+    z.object({
+      target_surface: z.literal("optionList"),
+      ...opSummaryField,
+      op: z.enum(["filter", "sort", "add"]),
+      result_card_names: z.array(z.string()).nullable()
+        .describe("filter/sort: the matching cards' `id`s (not names) copied from CURRENT_OPTION_LIST, in final order to keep/show."),
+      products_to_add: z.array(z.string()).nullable()
+        .describe("add: product names to search for and add as new cards."),
+      sort_by: z.string().nullable()
+        .describe(`sort: ${lang} field name to sort by, e.g. ${locale === "en" ? "'price', 'weight', 'noise'" : "'가격', '무게', '소음'"}.`),
+      sort_order: z.enum(["asc", "desc"]).nullable(),
+      field_updates: z.array(z.object({
+        product_name: z.string().describe("The matching card's `id` (not name) copied from CURRENT_OPTION_LIST."),
+        field_key: z.string().describe(`Short ${lang} spec keyword, e.g. ${locale === "en" ? "'weight', 'battery'" : "'무게', '배터리'"}. Never a value — system looks up the real value.`),
+      })).nullable().describe("add: spec fields to look up for existing cards."),
+      original_query: z.string().nullable()
+        .describe(`add: original search constraints (e.g. ${locale === "en" ? "'suction power 4500pa or higher'" : "'흡입력 4500pa 이상'"}) to hard-filter newly added products.`),
+    }),
 
-  // ── criteriaMap ─────────────────────────────────────────────────────────────
-  z.object({
-    target_surface: z.literal("criteriaMap"),
-    ...opSummaryField,
-    op: z.enum(["add_item", "remove_item"]),
-    category_label: z.string()
-      .describe("add_item: reuse an existing label from current_criteriaMap if it fits, otherwise a new " +
-        "short Korean label. remove_item: the existing category's `id` (not the label) copied from " +
-        "current_criteriaMap."),
-    item_names: z.array(z.string()).nullable()
-      .describe("add_item: new item names to add (see [criteriaMap ops] for how to generate these). " +
-        "remove_item: the exact item `id`s (not the names) copied from current_criteriaMap to remove — to " +
-        "remove an entire category, list ALL of its current item ids here."),
-  }),
-]);
+    // ── comparisonTable ─────────────────────────────────────────────────────────
+    // Supports criteria ROWS and product COLUMNS add/remove. Single-cell re-verification is not supported yet.
+    z.object({
+      target_surface: z.literal("comparisonTable"),
+      ...opSummaryField,
+      op: z.enum(["add_criteria", "remove_criteria", "add_product", "remove_product"])
+        .describe("If the request needs something outside this scope (e.g. re-checking one specific cell), " +
+          "target_surface must not be 'comparisonTable' — explain the limitation in op_summary via another surface " +
+          "or a conversational reply instead."),
+      criteria_to_add: z.array(z.string()).nullable()
+        .describe(`add_criteria: new criterion row labels to add, in ${lang}.`),
+      criteria_to_remove: z.array(z.string()).nullable()
+        .describe("remove_criteria: exact row `id`s (e.g. 'crit_1') copied from CURRENT_COMPARISON_TABLE to remove — NOT the label."),
+      products_to_add: z.array(z.string()).nullable()
+        .describe(`add_product: product names/brands to search for and add as new columns (e.g. ${locale === "en" ? "'Xiaomi', 'Roborock S9'" : "'샤오미', '로보락 S9'"}).`),
+      products_to_remove: z.array(z.string()).nullable()
+        .describe("remove_product: exact column `key`s (e.g. 'prod_1') copied from CURRENT_COMPARISON_TABLE to remove — NOT the label."),
+    }),
 
-export type EditPlan = z.infer<typeof EditPlanSchema>;
+    // ── criteriaMap ─────────────────────────────────────────────────────────────
+    z.object({
+      target_surface: z.literal("criteriaMap"),
+      ...opSummaryField,
+      op: z.enum(["add_item", "remove_item"]),
+      category_label: z.string()
+        .describe(`add_item: reuse an existing label from current_criteriaMap if it fits, otherwise a new ` +
+          `short ${lang} label. remove_item: the existing category's `+ "`id` (not the label) copied from " +
+          "current_criteriaMap."),
+      item_names: z.array(z.string()).nullable()
+        .describe(`add_item: new item names to add, in ${lang} (see [criteriaMap ops] for how to generate these). ` +
+          "remove_item: the exact item `id`s (not the names) copied from current_criteriaMap to remove — to " +
+          "remove an entire category, list ALL of its current item ids here."),
+    }),
+  ]);
+}
 
-// OpenAI's Responses API structured-outputs mode also requires the ROOT schema
-// to be `type: "object"` — a union can't sit at the top level even as `anyOf`
-// ("got 'type: None'"). anyOf IS allowed nested inside an object's property,
-// so we wrap the union in a single-field object just for the API call and
-// unwrap it in planEdit(); the public EditPlan type/shape is unaffected.
-const EditPlanRequestSchema = z.object({ plan: EditPlanSchema });
+export type EditPlan = z.infer<ReturnType<typeof buildEditPlanSchema>>;
 
 export interface EditAgentScreen {
   optionList?: Array<{ id: string; name: string; priceNum: number | null; priceStr: string; specs: string[] }>;
@@ -102,11 +103,18 @@ export interface EditAgentScreen {
   criteriaMap?: Array<{ id?: string; label: string; items: Array<{ id?: string; name: string }> }>;
 }
 
-const buildEditAgentPrompt = () => `
+const buildEditAgentPrompt = (locale: Locale) => `
 [Role]
 You are the edit agent for a shopping assistant. You run ONLY when the user wants to change something
 that is already visible on screen — you never decide whether to generate a new UI component, and you
 never know about "templates". Your only job is to decide WHICH surface to change and HOW.
+
+[Language]
+Write ALL free-text output (op_summary, sort_by, field_key, criteria_to_add, category_label, item_names,
+and any other natural-language field in the schema) in ${locale === "en" ? "English" : "Korean"} — regardless
+of what language the example phrases below happen to be written in. The example signal phrases under
+[optionList ops]/[comparisonTable ops]/[criteriaMap ops] are shown in Korean for illustration only; recognize
+the same underlying intent when the user writes in a different language.
 
 [Input]
 - user_message: the user's latest raw request.
@@ -201,7 +209,8 @@ Respond with ONLY a JSON object matching the schema for the chosen target_surfac
 export async function planEdit(
   userMessage: string,
   intentAnalysis: IntentAnalysis,
-  screen: EditAgentScreen
+  screen: EditAgentScreen,
+  locale: Locale = "ko"
 ): Promise<EditPlan> {
   console.log(`\n\x1b[34m========== [3] Edit Agent ==========\x1b[0m`);
   console.log(`\x1b[90m[Input] user_message:\x1b[0m ${userMessage.slice(0, 200)}`);
@@ -238,10 +247,16 @@ export async function planEdit(
   const sanitize = (s: string) => s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
   const cleanPrompt = sanitize(promptParts.join('\n\n'));
 
+  // OpenAI's Responses API structured-outputs mode also requires the ROOT schema to be
+  // `type: "object"` — a union can't sit at the top level even as `anyOf` ("got 'type: None'").
+  // anyOf IS allowed nested inside an object's property, so wrap the union in a single-field
+  // object just for the API call and unwrap below; the public EditPlan type/shape is unaffected.
+  const editPlanRequestSchema = z.object({ plan: buildEditPlanSchema(locale) });
+
   const { object } = await generateObject({
     model: openai(EDIT_AGENT_MODEL),
-    schema: EditPlanRequestSchema,
-    system: buildEditAgentPrompt(),
+    schema: editPlanRequestSchema,
+    system: buildEditAgentPrompt(locale),
     prompt: cleanPrompt,
     temperature: 0,
     maxOutputTokens: 600,

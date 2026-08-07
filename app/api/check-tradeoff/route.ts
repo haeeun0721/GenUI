@@ -1,7 +1,16 @@
 import { generateUISpec } from "@/lib/backend/agents/ui_agent";
+import { setCurrentLocale } from "@/lib/backend/tools/sidebar-store";
 import { NextRequest } from "next/server";
 
 export async function POST(req: NextRequest) {
+  // TradeoffHint generation (generateTradeoffHint) reads the shared currentLocale global —
+  // this route never set it before, so it silently rode on whatever locale a previous,
+  // unrelated /api/generate request happened to leave behind.
+  const cookieHeader = req.headers.get("cookie") ?? "";
+  const localeCookie = cookieHeader.split(";").find(c => c.trim().startsWith("gs_locale="));
+  const locale = (localeCookie?.split("=")[1]?.trim() === "en" ? "en" : "ko") as "ko" | "en";
+  setCurrentLocale(locale);
+
   const {
     existingCriteria,
     newCriterion,
@@ -23,7 +32,8 @@ export async function POST(req: NextRequest) {
   }
 
   // Format criteria with importance labels for the UI Agent
-  const importanceLabel = (important?: boolean) => important ? " (중요)" : "";
+  const importanceLabel = (important?: boolean) =>
+    important ? (locale === "en" ? " (important)" : " (중요)") : "";
 
   const criteriaLines = existingCriteria
     .map(c => `- ${c.name}${importanceLabel(c.important)}`)
@@ -32,7 +42,7 @@ export async function POST(req: NextRequest) {
   const uiContext = [
     `NEW_CRITERION: ${newCriterion.name}${importanceLabel(newCriterion.important)}`,
     `EXISTING_CRITERIA:\n${criteriaLines}`,
-    `PRODUCT_CATEGORY: ${productCategory || "소비재"}`,
+    `PRODUCT_CATEGORY: ${productCategory || (locale === "en" ? "consumer product" : "소비재")}`,
   ].join("\n");
 
   const intentSummary = `Checking trade-off for newly added criterion "${newCriterion.name}" against existing criteria`;

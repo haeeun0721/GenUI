@@ -1,20 +1,23 @@
 /**
  * lib/backend/agents/generators/comp_table.ts
- * ComparisonTable (Category 2) — 표 구조 생성 + WSM 순위/이유 생성.
+ * ComparisonTable (Category 2) — 표 구조 생성 + 순위/이유 생성.
  *
  * Responsibility: 주어진 제품 데이터(DB 값은 즉시, 웹 검색이 필요한 값은
  * data_agent.ts가 판단해 넘겨준 결과)로 Table JSON 구조를 만들고, 완성된 표를
- * 바탕으로 가중합 순위(WSM)와 순위 이유(reasoning)를 생성한다.
+ * 바탕으로 사용자의 구매 상황/목적에 얼마나 부합하는지 순위와 이유를 생성한다.
+ *
+ * 순위는 스펙 수치의 절대적 우위가 아니라, 사용자가 첫 화면에 적은 구매 상황/목적
+ * (currentUserContext) + Decision Criteria 목록을 근거로 LLM이 종합 판단한다.
  *
  * "Tavily에서 받아온 데이터 중 어떤 값을 쓸지 판단"하는 역할(judgeCell, Sanity
  * Check 등)은 data_agent.ts 담당 — 이 파일은 data_agent.ts가 내려준 값을 받아서
  * 표 구조를 만들고 채우고, 순위를 매기는 역할까지만 한다.
  */
 
-import { generateText } from "ai";
+import { generateObject } from "ai";
 import { openai } from "@ai-sdk/openai";
-import { currentLocale as _currentLocale } from "../../tools/sidebar-store";
-import { computeWsmRanking } from "../../../shared/wsm-ranking";
+import { z } from "zod";
+import { currentLocale as _currentLocale, currentUserContext as _currentUserContext } from "../../tools/sidebar-store";
 import {
   tavilySearch,
   judgeCell,
@@ -443,32 +446,42 @@ export async function enrichCompTableCells(
 }
 
 // ---------------------------------------------------------------------------
-// WSM 랭킹 + 분석 코멘트 생성
-// 비교표 데이터를 입력받아 가중합 기반 순위를 계산하고
-// 사용자에게 보여줄 _rankReasoning 텍스트를 반환한다.
+// 순위 + 분석 코멘트 생성
+// 비교표 데이터 + 사용자의 구매 상황/목적을 입력받아, "스펙이 더 좋은가"가 아니라
+// "이 사용자 상황에 얼마나 부합하는가"를 LLM이 종합 판단해 순위와 이유를 함께 만든다.
 // ---------------------------------------------------------------------------
 
-function parseCriterionWeight(str: string): { name: string; weight: number } {
-  const bracket = str.match(/\[(중요|보통|낮음|high|medium|low)\]/i);
-  const raw = bracket?.[1]?.toLowerCase() ?? "보통";
-  const weight = raw === "중요" || raw === "high" ? 0.5
-    : raw === "낮음" || raw === "low" ? 0.2
-    : 0.3;
+/** "흡입력 (기준: 5000pa 이상) [중요]" 같은 문자열에서 이름/min만 뽑아낸다. 남아있을 수 있는
+ *  구 버전 중요도 브라켓([중요]/[낮음] 등)은 더 이상 쓰지 않으므로 이름에서 제거만 한다. */
+function parseCriterionMin(str: string): { name: string; min: string | null } {
+  const parenMatch = str.match(/\(기준:\s*([^)]+)\)/);
+  const min = parenMatch ? parenMatch[1].trim() : null;
   const name = str.replace(/\s*\([^)]*\)/g, "").replace(/\s*\[.*?\]/g, "").trim();
-  return { name, weight };
+  return { name, min };
 }
 
-function findCriterionWeight(rowLabel: string, criteriaList: string[]): number {
+function findCriterionMin(rowLabel: string, criteriaList: string[]): string | null {
   const rowLower = rowLabel.toLowerCase();
   for (const c of criteriaList) {
-    const { name, weight } = parseCriterionWeight(c);
+    const { name, min } = parseCriterionMin(c);
     const nameLower = name.toLowerCase();
-    if (nameLower.includes(rowLower) || rowLower.includes(nameLower)) return weight;
+    if (nameLower.includes(rowLower) || rowLower.includes(nameLower)) return min;
     const words = nameLower.split(/\s+/).filter(w => w.length >= 2);
-    if (words.some(w => rowLower.includes(w))) return weight;
+    if (words.some(w => rowLower.includes(w))) return min;
   }
-  return 0.3;
+  return null;
 }
+
+const rankingSchema = z.object({
+  ranking: z
+    .array(z.array(z.string()))
+    .describe(
+      "Products ordered from best fit (index 0) to worst fit for the user's situation. " +
+      "Each inner array is a tie group — put 2+ product names together only when they're genuinely " +
+      "too close to call. Every product name passed in `products` must appear exactly once, total."
+    ),
+  reasoning: z.string().describe("2-3 plain-text sentences explaining why the top product(s) fit best."),
+});
 
 export async function computeRankingAndReasoning(
   tableJson: CompTableJson,
@@ -481,61 +494,98 @@ export async function computeRankingAndReasoning(
 
   if (!hasRankRow || productCols.length === 0) return { reasoning: "" };
 
-  // WSM 가중합 순위 계산은 프론트(app/page.tsx의 즉시 재계산)와 로직이 갈라지지 않도록
-  // lib/shared/wsm-ranking.ts의 공용 함수를 쓴다. 가중치 소스만 여기(문자열 "[중요]" 태그
-  // 파싱)와 프론트(구조화된 criteria 배열)가 서로 달라 getWeight로 어댑터를 넘긴다.
-  const rankedRows = computeWsmRanking(finalRows, tableJson.props?.columns ?? [], (criterion) =>
-    findCriterionWeight(criterion, decisionCriteria)
-  );
-  tableJson.props!.rows = rankedRows; // 호출자들이 tableJson을 그대로 참조하므로 in-place로 반영
-  const rankRow = rankedRows.find(r => r["criterion"] === "순위" || r["criterion"] === "Rank")!;
-
-  console.log(`\x1b[32m\n[STEP 5] WSM 순위 결정 (중요도 가중합):`);
-  const actualRankLines = productCols.map(col => {
-    const rank = String((rankRow as Record<string, string>)[col.key] ?? "-");
-    return `${col.label}: ${rank}`;
-  }).join(", ");
-
   const lang = locale === "en" ? "English" : "Korean";
   const dataRows = finalRows.filter(r => r["criterion"] && r["criterion"] !== "순위" && r["criterion"] !== "Rank");
 
+  // 제품이 하나뿐이면 판단할 게 없다 — LLM 호출 없이 바로 1위 처리.
+  if (productCols.length === 1) {
+    const label = locale === "en" ? "#1" : "1위";
+    tableJson.props!.rows = finalRows.map(r =>
+      (r["criterion"] === "순위" || r["criterion"] === "Rank") ? { ...r, [productCols[0].key]: label } : r
+    );
+    return { reasoning: "" };
+  }
+
   const fullTableLines = dataRows.map(row => {
     const criterion = row["criterion"] ?? "";
-    const w = findCriterionWeight(criterion, decisionCriteria);
-    const wLabel = w === 0.5 ? "[중요]" : w === 0.2 ? "[낮음]" : "[보통]";
+    const min = findCriterionMin(criterion, decisionCriteria);
+    const minNote = min ? ` (사용자가 명시한 기준: ${min})` : "";
     const vals = productCols.map(col => {
       const val = String((row as Record<string, string>)[col.key] ?? "-");
       return `${col.label}: ${val}`;
     }).join(" | ");
-    return `  - ${criterion} ${wLabel}: ${vals}`;
+    return `  - ${criterion}${minNote}: ${vals}`;
   }).join("\n");
 
+  const productNames = productCols.map(c => c.label);
+  const userContext = _currentUserContext?.trim() || "(not specified)";
+  const criteriaNames = decisionCriteria.map(c => parseCriterionMin(c).name).filter(Boolean).join(", ") || "(none specified)";
+
+  console.log(`\x1b[32m\n[STEP 5] 순위 판단 (구매 상황/목적 기반):`);
+  console.log(`         user_context: ${userContext}`);
+
   try {
-    const { text: reasoning } = await generateText({
+    const { object } = await generateObject({
       model: openai("gpt-4o"),
-      system: `You are a shopping advisor. Your ONLY job is to explain WHY one product ranked higher than another, using EXCLUSIVELY the data in the comparison table below.
+      schema: rankingSchema,
+      system: `You are a shopping advisor. Rank the given products for THIS SPECIFIC USER's purchase situation, then explain why, using EXCLUSIVELY the data in the comparison table.
 
 ABSOLUTE RULES:
-1. You MUST reference only the criterion names and cell values that appear in the table. Do NOT invent, guess, or add ANY information not explicitly shown in the table cells.
-2. If a cell says "미확인" or "-", say so or ignore that criterion — do NOT infer what it might mean.
-3. Do NOT mention product features, specs, or qualities that are not column rows in the table (e.g., do NOT say "quiet" unless "소음" is a criterion row).
-4. Do NOT give purchasing advice or suggestions about things outside the table.
-5. Do NOT use markdown formatting (no **, *, #, _). Plain text only.
-6. Write 2-3 sentences in ${lang}.
-7. If all products are tied, say they are equal on all measured criteria.`,
-      prompt: `Ranking result: ${actualRankLines}
+1. Base the ranking ONLY on the criterion values shown in the table. Do NOT invent, guess, or add ANY information not explicitly shown in the table cells.
+2. A criterion being numerically higher (or lower) is NOT automatically "better" — judge whether each value is actually good enough / relevant for the user's stated situation and purpose. A modest spec that comfortably covers the user's need should not be penalized just for being smaller than an excessive spec the user doesn't need.
+3. If a criterion row has a user-specified requirement noted next to it (e.g. "사용자가 명시한 기준: ..."), treat a product that fails to meet it as a serious drawback — near-disqualifying — unless every product fails it.
+4. If a cell says "미확인" or "-", ignore that criterion for that product — do NOT infer what it might mean.
+5. If products are genuinely too close to call on the overall picture, group them as tied in the same inner array — do NOT force an artificial ordering.
+6. Do NOT use markdown formatting (no **, *, #, _) in the reasoning. Plain text only.
+7. Write the reasoning as 2-3 sentences in ${lang}.
+8. Every product in "products" must appear exactly once across the ranking groups.`,
+      prompt: `User's purchase situation and purpose: ${userContext}
 
-Comparison table (use ONLY these values in your explanation):
+Decision criteria the user cares about: ${criteriaNames}
+
+Products to rank: ${productNames.join(", ")}
+
+Comparison table (use ONLY these values):
 ${fullTableLines}
 
-Based solely on the table values above, explain why the top-ranked product scored higher.`,
+Rank the products from best to worst fit for this user's situation, and explain why the top-ranked product(s) fit best.`,
       temperature: 0.3,
     });
 
-    const cleanReasoning = reasoning.trim()
+    // LLM이 정한 순서(및 동점 그룹)를 "순위" 행 라벨("N위"/"공동 N위")로 바꿔 써넣는다.
+    // 이름 매칭은 정확히 일치하지 않을 수 있어 label 포함관계로 한 번 더 시도한다.
+    const labelToKey = new Map(productCols.map(c => [c.label, c.key]));
+    const rankUpdates: Record<string, string> = {};
+    let rank = 1;
+    for (const group of object.ranking) {
+      const rankLabel = locale === "en"
+        ? (group.length > 1 ? `Tied #${rank}` : `#${rank}`)
+        : (group.length > 1 ? `공동 ${rank}위` : `${rank}위`);
+      for (const productName of group) {
+        const key = labelToKey.get(productName)
+          ?? productCols.find(c => c.label.includes(productName) || productName.includes(c.label))?.key;
+        if (key) rankUpdates[key] = rankLabel;
+      }
+      rank += group.length;
+    }
+    // LLM이 빠뜨린 제품이 있으면 맨 뒤로 밀어 넣는다 (표시 누락 방지 안전장치).
+    for (const col of productCols) {
+      if (!(col.key in rankUpdates)) {
+        rankUpdates[col.key] = locale === "en" ? `#${rank}` : `${rank}위`;
+        rank += 1;
+      }
+    }
+
+    tableJson.props!.rows = finalRows.map(row => {
+      if (row["criterion"] !== "순위" && row["criterion"] !== "Rank") return row;
+      return { ...row, ...rankUpdates };
+    });
+
+    const cleanReasoning = object.reasoning.trim()
       .replace(/\*\*/g, "").replace(/\*/g, "").replace(/^#+\s*/gm, "").replace(/_/g, "");
     return { reasoning: cleanReasoning };
-  } catch {
+  } catch (err) {
+    console.error("[CompTable STEP 5] 순위 판단 실패:", err);
     return { reasoning: "" };
   }
 }

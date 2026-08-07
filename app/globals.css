@@ -198,24 +198,30 @@ mark.highlight-soft {
 }
 
 /* 새로 생기거나(신규 UI 마운트) 업데이트된(기존 UI에 새 항목 추가) 부위의 등장을
-   알리는 opacity 0→1 페이드인. 이 클래스 하나만으로 등장 모션을 처리한다. */
+   알리는 페이드인 + 살짝 튀어오르는 모션. 이 클래스 하나만으로 등장 모션을 처리한다. */
 @keyframes highlight-wrap {
   0% {
     opacity: 0;
+    transform: translateY(14px) scale(0.94);
   }
 
-  12% {
+  45% {
     opacity: 1;
+  }
+
+  65% {
+    transform: translateY(-3px) scale(1.015);
   }
 
   100% {
     opacity: 1;
+    transform: translateY(0) scale(1);
   }
 }
 
 .animate-highlight-wrap {
   opacity: 0;
-  animation: highlight-wrap 2s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: highlight-wrap 0.65s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 /* Accordion body: smooth height using CSS grid trick */

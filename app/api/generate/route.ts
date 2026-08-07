@@ -494,7 +494,7 @@ export async function POST(req: Request) {
               ? { products: comparisonTableProducts, criteria: comparisonTableCriteria }
               : undefined,
             criteriaMap: hasCriteriaMap ? parsedCriteriaMap : undefined,
-          });
+          }, locale);
         } catch (err) {
           console.error('[Edit Agent] 실패:', err);
           writer.write({ type: "finish-step" } as any);

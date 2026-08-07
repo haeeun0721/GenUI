@@ -811,7 +811,8 @@ Rules:
   is NOT part of the exact product name given above, that text is about the SIBLING model, not this one —
   set all fields to null even if the rest of the segment looks relevant. Never carry a sibling model's spec
   over to this product just because most of the name matches.
-- If the value is not explicitly stated in any segment, set all fields to null.`
+- If the value is not explicitly stated in any segment, set all fields to null.
+- Write "value" in ${locale === "en" ? "English" : "Korean"} — translate faithfully from the source segment if it is in a different language. Numbers/units stay as-is (e.g. "75dB", "6,400mAh").`
     : `You are a product spec verifier using extractive QA.
 Given numbered text segments, determine if the product explicitly has or lacks the specified feature/criterion, and extract concrete detail if named.
 Respond with ONLY a JSON object:
@@ -830,7 +831,8 @@ Rules for "value":
   "Pro", or a different trailing model code). If the segment you would cite names such a variant/suffix that
   is NOT part of the exact product name given above, that text is about the SIBLING model, not this one —
   set all fields to null even if the rest of the segment looks relevant. Never carry a sibling model's
-  feature over to this product just because most of the name matches.`;
+  feature over to this product just because most of the name matches.
+- When "value" is a feature list (not the bare "○"/"X" symbols), write it in ${locale === "en" ? "English" : "Korean"} — translate faithfully from the source segment if it is in a different language.`;
 
   const { text } = await generateText({
     model: openai("gpt-4o-mini"),

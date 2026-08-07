@@ -34,6 +34,7 @@ export const ExplorerRenderer = ({
   loading,
   bindings,
 }: ExplorerRendererProps): ReactNode => {
+  const isEn = bindings?.locale === "en";
   // 1. Detect and extract root from Page-level spec (ViewSpec)
   let spec = incomingSpec;
   if (spec && (spec as any).root && (spec as any).elements) {
@@ -52,7 +53,9 @@ export const ExplorerRenderer = ({
   if (!spec || typeof spec !== "object") {
     return (
       <div className="p-4 border border-dashed border-amber-500/50 rounded-lg bg-amber-500/5 text-amber-600 text-xs text-center italic">
-        {loading ? "AI가 설계를 준비 중입니다..." : "데이터가 없거나 형식이 잘못되었습니다."}
+        {loading
+          ? (isEn ? "AI is preparing the design..." : "AI가 설계를 준비 중입니다...")
+          : (isEn ? "No data, or the format is invalid." : "데이터가 없거나 형식이 잘못되었습니다.")}
       </div>
     );
   }
@@ -62,7 +65,7 @@ export const ExplorerRenderer = ({
     return (
       <div className="p-4 border border-destructive/50 rounded-lg bg-destructive/5 text-destructive text-xs">
         <p className="font-bold mb-1">Rendering Error</p>
-        <p>사이드바 데이터가 배열 형식입니다. 개별 컴포넌트 객체여야 합니다.</p>
+        <p>{isEn ? "Sidebar data is an array. It must be an individual component object." : "사이드바 데이터가 배열 형식입니다. 개별 컴포넌트 객체여야 합니다."}</p>
         <pre className="mt-2 p-2 bg-background rounded border text-[10px] overflow-auto max-h-32">
           {JSON.stringify(spec, null, 2)}
         </pre>
@@ -75,7 +78,7 @@ export const ExplorerRenderer = ({
     return (
       <div className="p-4 border border-destructive/50 rounded-lg bg-destructive/5 text-destructive text-xs">
         <p className="font-bold mb-1">Invalid Component Spec</p>
-        <p>'type' 필드가 누락되었습니다. (자동 추출 실패)</p>
+        <p>{isEn ? "The 'type' field is missing. (auto-extraction failed)" : "'type' 필드가 누락되었습니다. (자동 추출 실패)"}</p>
         <pre className="mt-2 p-2 bg-background rounded border text-[10px] overflow-auto max-h-32">
           {JSON.stringify(spec, null, 2)}
         </pre>

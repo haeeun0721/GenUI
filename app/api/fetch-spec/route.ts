@@ -10,10 +10,11 @@ import { lookupProductSpec } from "@/lib/backend/services/spec-lookup";
 
 export async function POST(req: NextRequest) {
   try {
-    const { products, criteria, category = "unknown" } = (await req.json()) as {
+    const { products, criteria, category = "unknown", locale = "ko" } = (await req.json()) as {
       products: { name: string; link?: string }[];
       criteria: string;
       category?: string;
+      locale?: string;
     };
 
     if (!products?.length || !criteria) {
@@ -25,7 +26,7 @@ export async function POST(req: NextRequest) {
     const entries = await Promise.all(
       products.map(async p => {
         console.log(`  [fetch-spec] "${p.name}" → "${criteria}" 검색 중...`);
-        const result = await lookupProductSpec(p.name, criteria, category);
+        const result = await lookupProductSpec(p.name, criteria, category, locale);
         // uncertain=true(시도 간 값 불일치)는 비교표에 표시하지 않음 → 오정보보다 공백이 낫다
         const value = (result.value === "-" || result.uncertain === true) ? "-" : result.value;
         if (result.uncertain) {

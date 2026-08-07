@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 
 const STEPS = [
   {
-    id: "exploration", accentColor: "#64748b",
+    id: "exploration", accentColor: "#6366f1",
     title: "EXPLORATION JOURNEY", 
     desc: "채팅 중 제품의 특징이 언급되거나 새로운 개념을 탐색할 때 생성되는 패널입니다. 해당 카테고리에서 고려해야 할 주요 구매 기준과 관련 상세 정보를 구조화하여 시각적으로 제공합니다.",
     descEn: "This panel appears when product features are mentioned or new concepts are explored during the chat. It visually structures and provides key purchase criteria and detailed information for the category.",
@@ -13,7 +13,7 @@ const STEPS = [
     marks: [],
   },
   {
-    id: "optionList", accentColor: "#64748b",
+    id: "optionList", accentColor: "#6366f1",
     title: "OPTION LIST", 
     desc: "사용자가 특정 조건을 제시하거나 제품 추천을 요청할 때 생성되는 패널입니다. 현재까지 파악된 사용자의 요구사항을 바탕으로 필터링된 맞춤형 제품 후보군을 리스트 형태로 제공합니다.",
     descEn: "This panel is generated when you provide specific conditions or ask for recommendations. It displays a filtered list of tailored product candidates based on your identified requirements.",
@@ -22,7 +22,7 @@ const STEPS = [
     marks: [],
   },
   {
-    id: "compTable", accentColor: "#64748b",
+    id: "compTable", accentColor: "#6366f1",
     title: "COMPARISON TABLE", 
     desc: "My Options에 2개 이상의 제품이 추가된 상태에서 상세 비교를 요청할 때 생성되는 패널입니다. 사용자가 저장한 Decision Criteria를 바탕으로 각 제품의 스펙과 특징을 표 형태로 대조하여 보여줍니다.",
     descEn: "This panel is created when you request a detailed comparison with at least 2 products in My Options. It contrasts the specs and features of each product in a table format based on your saved Decision Criteria.",
@@ -31,7 +31,7 @@ const STEPS = [
     marks: [],
   },
   {
-    id: "sidebar", accentColor: "#64748b",
+    id: "sidebar", accentColor: "#6366f1",
     title: "SAVED ITEMS",
     desc: "우측 사이드바는 전체 탐색 과정을 관통하는 나만의 개인 저장소입니다. 상단의 Decision Criteria에는 내가 중요하다고 판단한 기준들이, 하단의 My Options에는 비교를 위해 담아둔 관심 제품들이 모이게 됩니다.",
     descEn: "The right sidebar serves as your personal repository throughout the exploration process. The top Decision Criteria section holds your saved key factors, while the bottom My Options section gathers products you've favorited for comparison.",
@@ -296,7 +296,7 @@ export default function PanelTour({ open, onClose, locale }: { open: boolean; on
           <div style={{ display: "flex", justifyContent: "center", marginTop: 14 }}>
             <div style={{ display: "flex", gap: 6 }}>
               {STEPS.map((_, i) => (
-                <button key={i} onClick={() => setStep(i)} style={{ width: i === step ? 22 : 7, height: 7, borderRadius: 99, background: i === step ? "#000000" : "#cbd5e1", transition: "all 0.25s", border: "none", padding: 0, cursor: "pointer" }} />
+                <button key={i} onClick={() => setStep(i)} style={{ width: i === step ? 22 : 7, height: 7, borderRadius: 99, background: i === step ? "#6366f1" : "#cbd5e1", transition: "all 0.25s", border: "none", padding: 0, cursor: "pointer" }} />
               ))}
             </div>
           </div>
@@ -315,7 +315,7 @@ export default function PanelTour({ open, onClose, locale }: { open: boolean; on
         <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", padding: "0 28px 22px", flexShrink: 0 }}>
           <div style={{ display: "flex", gap: 8 }}>
             {step > 0 && <button onClick={prev} style={{ padding: "9px 18px", borderRadius: 99, border: "1px solid #e2e8f0", background: "white", fontSize: 12, fontWeight: 500, color: "#64748b", cursor: "pointer" }}>{locale === 'en' ? '← Prev' : '← 이전'}</button>}
-            <button onClick={next} style={{ padding: "9px 22px", borderRadius: 99, border: "none", background: "#000000", color: "white", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+            <button onClick={next} style={{ padding: "9px 22px", borderRadius: 99, border: "none", background: "#6366f1", color: "white", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
               {step < STEPS.length - 1 ? (locale === 'en' ? 'Next →' : '다음 →') : (locale === 'en' ? 'Get Started ✓' : '시작하기 ✓')}
             </button>
           </div>

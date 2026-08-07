@@ -248,7 +248,8 @@ export function buildSpecPhrase(fieldKey: string, value: string): string {
 export async function lookupProductSpec(
   productName: string,
   fieldKey: string,
-  category: string
+  category: string,
+  locale: string = "ko"
 ): Promise<SpecLookupResult> {
 
   // Step 1: 로컬 DB
@@ -282,7 +283,7 @@ export async function lookupProductSpec(
 
   let judge: { value: string; sourceUrl?: string; usedSnippet?: string } | null = null;
   if (results.length > 0) {
-    const candidate = await judgeCell(productName, fieldKey, results, "ko", expectedType, synonyms, siblingTokens);
+    const candidate = await judgeCell(productName, fieldKey, results, locale, expectedType, synonyms, siblingTokens);
     if (candidate.value !== "-") {
       // 수치 범위 합리성 검증 (Sanity Check) — 물리적으로 불가능한 값만 차단
       if (sanityCheckValue(candidate.value, fieldKey)) {
@@ -340,7 +341,8 @@ export interface ProductLogForContext {
 export async function enrichContextWithTavily(
   contextSummary: string,
   decisionCriteria: string[],
-  category: string
+  category: string,
+  locale: string = "ko"
 ): Promise<{ enriched: string; productLogs: ProductLogForContext[] }> {
   const productLogs: ProductLogForContext[] = [];
 
@@ -412,7 +414,7 @@ export async function enrichContextWithTavily(
         missingCriteria.slice(0, 5).map(async (criterion) => {
           // cleanCriterion으로 [중요]/[낮음] 브라켓과 괄호 설명을 제거하고 조회
           const cleanedCriterion = cleanCriterion(criterion);
-          const result = await lookupProductSpec(productName, cleanedCriterion, category);
+          const result = await lookupProductSpec(productName, cleanedCriterion, category, locale);
           if (result.value !== "-" && !result.uncertain) {
             console.log(`   🔍 "${productName}" × "${cleanedCriterion}" → "${result.value}" (source=${result.source})`);
             return { criterion, url: result.sourceUrl ?? "", snippet: result.value };

@@ -14,11 +14,12 @@ import { lookupProductSpec, buildSpecPhrase } from "@/lib/backend/services/spec-
 
 export async function POST(req: NextRequest) {
   try {
-    const { cards, criterion, criterionMin, category } = await req.json() as {
+    const { cards, criterion, criterionMin, category, locale = "ko" } = await req.json() as {
       cards:       { name: string; price?: string; specs: string[] }[];
       criterion:   string;
       criterionMin?: string;
       category:    string;
+      locale?:     string;
     };
 
     if (!cards?.length || !criterion || !category) {
@@ -45,7 +46,7 @@ export async function POST(req: NextRequest) {
           return { card, specPhrase: null, uncertain: false };
         }
 
-        const result = await lookupProductSpec(card.name, fieldKey, category);
+        const result = await lookupProductSpec(card.name, fieldKey, category, locale);
         if (result.value === "-") return { card, specPhrase: null, uncertain: false };
 
         const specPhrase = buildSpecPhrase(fieldKey, result.value);

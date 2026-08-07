@@ -56,7 +56,7 @@ Only use when [CURRENT_COMPARISON_TABLE] is present. Cannot re-check a single ce
     criteria_to_remove: z.array(z.string()).optional().describe("remove_criteria: row `id`s (e.g. 'crit_1') copied from CURRENT_COMPARISON_TABLE — falls back to label matching if an id isn't recognized."),
     products_to_add: z.array(z.string()).optional().describe("add_product: product names/brands/queries to search for (RAG) and add as new columns."),
     products_to_remove: z.array(z.string()).optional().describe("remove_product: column `key`s (e.g. 'prod_1') copied from CURRENT_COMPARISON_TABLE — falls back to label matching if a key isn't recognized."),
-    op_summary: z.string().describe("Brief Korean description of the action."),
+    op_summary: z.string().describe("Brief user-facing description of the action, in the response locale."),
   }),
   execute: async (args) => {
     const capturedRequestId = currentRequestId;
@@ -106,7 +106,7 @@ Only use when [CURRENT_COMPARISON_TABLE] is present. Cannot re-check a single ce
         await Promise.all(
           productCols.map(async (col: any) => {
             const fullName = fullNameMap.get(col.label) ?? col.label;
-            const result = await lookupProductSpec(fullName, criterion, currentProductCategory);
+            const result = await lookupProductSpec(fullName, criterion, currentProductCategory, currentLocale);
             newRow[col.key] = result.uncertain ? "-" : result.value;
             console.log(`[mutateComparisonTable] "${fullName}" × "${criterion}" → "${newRow[col.key]}" (source=${result.source}${result.uncertain ? ", 불확실→폐기" : ""})`);
           })
@@ -182,7 +182,7 @@ Only use when [CURRENT_COMPARISON_TABLE] is present. Cannot re-check a single ce
         await Promise.all(
           criterionRows.map(async (row: any) => {
             const criterion = String(row.criterion ?? "");
-            const result = await lookupProductSpec(prod.name, criterion, currentProductCategory);
+            const result = await lookupProductSpec(prod.name, criterion, currentProductCategory, currentLocale);
             row[newKey] = result.uncertain ? "-" : result.value;
             console.log(`[mutateComparisonTable/add_product] "${prod.name}" × "${criterion}" → "${row[newKey]}" (source=${result.source}${result.uncertain ? ", 불확실→폐기" : ""})`);
           })

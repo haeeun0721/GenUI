@@ -1,9 +1,18 @@
 import { generateUISpec } from "@/lib/backend/agents/ui_agent";
+import { setCurrentLocale } from "@/lib/backend/tools/sidebar-store";
 
 export const maxDuration = 30;
 
 export async function POST(req: Request) {
   try {
+    // generateUnchartedTerritory reads the shared currentLocale global — this route never
+    // set it before, so it silently rode on whatever locale a previous, unrelated
+    // /api/generate request happened to leave behind.
+    const cookieHeader = req.headers.get("cookie") ?? "";
+    const localeCookie = cookieHeader.split(";").find(c => c.trim().startsWith("gs_locale="));
+    const locale = (localeCookie?.split("=")[1]?.trim() === "en" ? "en" : "ko") as "ko" | "en";
+    setCurrentLocale(locale);
+
     const body = await req.json();
     const existingCategories: string[] = body.existingCategories ?? [];
     const productCategory: string = body.productCategory ?? "";
@@ -11,9 +20,9 @@ export async function POST(req: Request) {
 
     const uiContext = [
       `PRODUCT_CATEGORY: ${productCategory}`,
-      `EXISTING_CATEGORIES: ${existingCategories.join(", ") || "없음"}`,
+      `EXISTING_CATEGORIES: ${existingCategories.join(", ") || (locale === "en" ? "none" : "없음")}`,
       alreadySuggested.length > 0
-        ? `ALREADY_SUGGESTED: ${alreadySuggested.join(", ")}  ← 이미 제안한 영역이므로 제외하고 새로운 영역만 제안`
+        ? `ALREADY_SUGGESTED: ${alreadySuggested.join(", ")}  ← already suggested, exclude these and propose only new areas`
         : "",
     ].filter(Boolean).join("\n");
 

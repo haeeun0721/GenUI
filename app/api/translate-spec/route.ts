@@ -29,12 +29,13 @@ export async function POST(req: NextRequest) {
 You will receive a JSON object where each key maps to a UI spec. Translate ALL human-readable text values into ${lang}.
 Rules:
 - Translate ONLY string values that are human-readable text (labels, names, reasons, summaries, points, why, etc.)
-- Do NOT translate: keys, type fields, URLs, IDs, numeric values, "○", "X", "-", "순위", "Rank", "criterion", product keys like "prod_0"
+- Do NOT translate: keys, type fields, URLs, IDs, "○", "X", "-", "순위", "Rank", "criterion", product keys like "prod_0"
 - Preserve the EXACT JSON structure and all keys. Output ONLY the translated JSON object, no explanation.
 - For CriteriaMap: translate category labels and item names.
 - For InformationCard: translate term, summary, and points array.
-- For Table: translate column labels (not criterion key column), row criterion values, _rankReasoning.
-- For ProductCardList: translate card specs arrays.
+- For Table: translate column labels (not criterion key column), row criterion values, _rankReasoning. Column labels that are product names follow the same name/brand rule as ProductCardList below.
+- For ProductCardList: translate card specs arrays, AND card name/brand — these often arrive in Korean from a Korean retail catalog (e.g. name "모바 M1", brand "모바"); when translating to English, transliterate the Korean word into its natural English spelling (e.g. "모바" → "Moba") and keep existing Latin letters/numbers/model codes unchanged (e.g. "M330 Pro" stays "M330 Pro") — never leave a Korean (Hangul) word in a translated name or brand. When translating to Korean, restore/keep the original Korean form if evident from context, otherwise leave as-is.
+- For ProductCardList/Table price values: the underlying prices are Korean Won — do not fabricate a currency conversion, only reformat the currency marker itself (Korean "원" suffix ↔ "₩" prefix symbol for the same number), e.g. "329,990원" ↔ "₩329,990".
 - For TradeoffHint: translate newCriterion, conflictsWith, why.
 - For UnchartedTerritoryChip: translate labels array.`;
 
