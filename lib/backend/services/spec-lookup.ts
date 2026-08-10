@@ -10,10 +10,10 @@ import * as path from "path";
 import {
   tavilySearch,
   judgeCell,
-  detectCriterionType,
   getSiblingExcludeTokens,
   parseSpecEntry,
   toDisplayValue,
+  hasUnitDimensionMismatch,
 } from "@/lib/backend/agents/data_agent";
 
 // ---------------------------------------------------------------------------
@@ -25,14 +25,17 @@ import {
 // 필드키 동의어 확장 — "무게" 검색 시 "중량"도 함께 찾기
 const FIELD_SYNONYMS: [RegExp, string[]][] = [
   [/무게|weight/i,                    ["무게", "중량"]],
-  [/배터리|battery/i,                 ["배터리", "배터리용량", "사용시간"]],
+  // 배터리 "수명/사용시간"(지속시간)과 배터리 "용량"(mAh)은 서로 다른 물리량이다.
+  // 이 패턴을 아래 배터리 패턴보다 먼저 검사해야 "배터리 수명" 같은 필드키가
+  // "배터리"/"배터리용량"(mAh) 스펙에 먼저 매칭돼 잘못된 단위로 반환되지 않는다.
+  [/수명|사용\s*시간|런타임|run.*time/i, ["사용시간", "배터리 수명", "런타임"]],
+  [/배터리|battery/i,                 ["배터리용량", "배터리"]],
   [/충전\s*시간|charge/i,            ["충전시간", "충전"]],
   [/소음|noise/i,                     ["소음", "소음수준"]],
   [/흡입\s*력|suction/i,             ["흡입력", "흡입"]],
   [/담한\s*면적|area/i,              ["담한면적", "사용고도지 면적"]],
   [/먼지통|집진통|dust.*bin|bin/i,  ["먼지통", "집진통", "먼지통용량"]],
   [/물통|water.*tank|tank/i,         ["물통", "물탱크", "물탱크용량"]],
-  [/사용\s*시간|run.*time/i,         ["사용시간", "배터리"]],
   [/먼지\s*비움|empty/i,             ["먼지비움", "자동먼지비움", "비움"]],
   [/걸레\s*세척|wash/i,              ["걸레세척", "자동걸레세척", "세척"]],
   [/걸레\s*건조|dry/i,               ["걸레건조", "온풍건조", "건조"]],
@@ -68,12 +71,15 @@ export function findProductSpecInDB(productName: string, fieldKey: string, categ
     const synonyms = expandFieldKeySynonyms(fieldKey);
     for (const key of synonyms) {
       const keyNormalized = key.toLowerCase().replace(/\s+/g, "");
-      const matchedSpec = matched.specs.find(s => s.toLowerCase().replace(/\s+/g, "").includes(keyNormalized));
-      if (matchedSpec) {
+      const candidates = matched.specs.filter(s => s.toLowerCase().replace(/\s+/g, "").includes(keyNormalized));
+      for (const matchedSpec of candidates) {
         // "배터리: NP-FW50(1020mAh)" 형태를 그대로 반환하면 행 라벨("배터리 수명")과
         // 값 안의 라벨("배터리:")이 중복돼 보인다 — lookupCellValue(comp_table.ts)가 이미
         // 하고 있는 것과 동일하게 라벨을 떼고 값만 반환한다.
         const { rawValue } = parseSpecEntry(matchedSpec);
+        // fieldKey가 기대하는 단위군과 값의 실제 단위군이 다르면(예: "배터리 수명"(분) vs
+        // "배터리: 6400mAh"(용량)) 서로 다른 물리량이므로 건너뛰고 다음 후보를 본다.
+        if (hasUnitDimensionMismatch(fieldKey, rawValue)) continue;
         const displayValue = toDisplayValue(rawValue, fieldKey);
         console.log(`[DB lookup] ✅ "${productName}"${nameMatched} (key="${key}") → "${displayValue}" (원본: "${matchedSpec}")`);
         return displayValue;
@@ -103,84 +109,9 @@ export interface SpecLookupResult {
 }
 
 // ---------------------------------------------------------------------------
-// 1. 정적 유의어 사전 (LLM 호출 불필요)
+// 1. (통합됨) 유의어·단위 정규화·수치 범위 검증은 judgeCell(LLM) 프롬프트로 통합.
+// 별도 STATIC_SYNONYMS / SPEC_RANGES / normalizeUnitValue 함수 불필요.
 // ---------------------------------------------------------------------------
-
-const STATIC_SYNONYMS: Record<string, string[]> = {
-  "물탱크":       ["물탱크 크기", "탱크 용량", "water tank"],
-  "물탱크 용량":  ["물탱크 크기", "탱크 용량", "물통"],
-  "먼지통":       ["집진통", "더스트빈", "dustbin"],
-  "먼지통 용량":  ["집진통", "집진 용량", "먼지 통"],
-  "흡입력":       ["흡입 파워", "파스칼", "suction power"],
-  "소음":         ["소음 수준", "데시벨", "noise level"],
-  "소음 수준":    ["소음 dB", "noise", "작동음"],
-  "배터리":       ["배터리 용량", "battery", "mAh"],
-  "무게":         ["중량", "weight", "본체 무게"],
-  "충전시간":     ["충전 소요", "charge time", "완충"],
-  "사용시간":     ["배터리 지속", "runtime", "최대 사용"],
-  "화소":         ["해상도", "megapixel", "MP"],
-  "손떨림보정":   ["OIS", "이미지 안정화", "image stabilization"],
-  "방수":         ["생활방수", "IPX", "방진"],
-};
-
-export function getStaticSynonyms(fieldKey: string): string[] {
-  const lower = fieldKey.toLowerCase();
-  for (const [key, syns] of Object.entries(STATIC_SYNONYMS)) {
-    if (lower.includes(key.toLowerCase())) return syns;
-  }
-  return [];
-}
-
-// ---------------------------------------------------------------------------
-// 2. (제거됨) AI Answer 수치 fast-path — 정규식 기반이라 지원 필드가 6개뿐이었고,
-// tryExtractFromAIAnswer에는 siblingExcludeTokens가 전달되지 않아 SiblingGuard가
-// 적용되지 않는 안전성 구멍이 있었다. 커버리지도 좁아서(사용자가 자유롭게 추가하는
-// Decision Criteria 대부분은 이 6개 필드에 해당하지 않음) 속도 이득도 크지 않아 제거하고
-// 항상 judgeCell(LLM 검증 경로)만 쓰도록 통일했다.
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// 2-1. 수치 범위 합리성 검증 (Sanity Check)
-// 물리적으로 불가능한 값(수백 dB 소음, 소수점 Pa 흡입력 등)만 걸러내는 최후의 안전망.
-// 범위는 일부러 넉넉하게 잡는다 — 정상 제품을 오탈락시키는 게 아니라, 단위 착각/자릿수
-// 오류처럼 "명백히 말이 안 되는" 값만 잡는 게 목적.
-// ---------------------------------------------------------------------------
-
-interface SpecRange { min: number; max: number }
-
-/** 카테고리별 허용 수치 범위 — [fieldKey 매칭 패턴, { min, max }] */
-const SPEC_RANGES: [RegExp, SpecRange][] = [
-  [/소음/,               { min: 20,   max: 100   }],  // dB
-  [/흡입|suction/i,      { min: 100,  max: 80000 }],  // Pa
-  [/무게|중량|weight/i,  { min: 0.05, max: 30    }],  // kg
-  [/배터리|battery/i,    { min: 100,  max: 20000 }],  // mAh
-  [/물탱크|water.tank/i, { min: 0.02, max: 8     }],  // L
-  [/먼지통|집진통/,      { min: 0.02, max: 8     }],  // L
-  [/사용시간|runtime/i,  { min: 5,    max: 600   }],  // 분
-  [/충전시간/,           { min: 5,    max: 900   }],  // 분
-];
-
-/**
- * 추출된 수치 스펙이 물리적으로 타당한 범위 내인지 검증.
- * 범위 정의 없거나 수치 파싱 불가면 통과(true). 범위 이탈 시 false 반환.
- */
-function sanityCheckValue(value: string, fieldKey: string): boolean {
-  for (const [pattern, range] of SPEC_RANGES) {
-    if (!pattern.test(fieldKey)) continue;
-    const cleaned = value.replace(/,/g, "");
-    const numMatch = cleaned.match(/[\d.]+/);
-    if (!numMatch) return true; // 수치 없는 값(boolean 등)은 통과
-    let num = parseFloat(numMatch[0]);
-    // mL 단위로 온 물탱크/먼지통 값을 L로 변환 후 비교 (영문 키워드 포함)
-    if (/ml/i.test(value) && /탱크|통|tank|bin|dust/i.test(fieldKey)) num /= 1000;
-    if (num < range.min || num > range.max) {
-      console.log(`[SanityCheck] ❌ 범위 이탈: "${value}" (${fieldKey}) 허용범위: ${range.min}–${range.max}`);
-      return false;
-    }
-    return true;
-  }
-  return true;
-}
 
 // ---------------------------------------------------------------------------
 // 3. 제품명 단순화 (마케팅 수식어만 제거, 모델 구분자 보존)
@@ -211,20 +142,19 @@ function cleanSpecValue(raw: string): string {
 
 export function buildSpecPhrase(fieldKey: string, value: string): string {
   const v = cleanSpecValue(value); // 마케팅 수식어 제거
+  // 이미 "[기준]: 값" 형태면 기준명 중복 방지를 위해 그대로 둔다
+  if (v.includes(":")) return v;
   if (v === "○") {
-    if (/연동|호환|연결/.test(fieldKey)) return `${fieldKey} 가능`;
-    if (/기능/.test(fieldKey)) return `${fieldKey} 지원`;
-    if (/방식|타입|type/.test(fieldKey)) return `${fieldKey} 적용`;
-    return `${fieldKey} 지원`;
+    if (/연동|호환|연결/.test(fieldKey)) return `${fieldKey}: 가능`;
+    if (/방식|타입|type/.test(fieldKey)) return `${fieldKey}: 적용`;
+    return `${fieldKey}: 지원`;
   }
   if (v === "X") {
-    if (/연동|호환|연결/.test(fieldKey)) return `${fieldKey} 불가`;
-    return `${fieldKey} 없음`;
+    if (/연동|호환|연결/.test(fieldKey)) return `${fieldKey}: 불가`;
+    return `${fieldKey}: 없음`;
   }
-  // value 타입 — 콜론 있으면 기준명 반복 방지
-  if (v.includes(":")) return v;
-  if (/\d/.test(v)) return `${fieldKey}: ${v}`;
-  return `${fieldKey} ${v}`;
+  // value 타입 — 숫자든 텍스트/목록이든 항상 "[기준]: 값" 형식으로 통일
+  return `${fieldKey}: ${v}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,17 +163,21 @@ export function buildSpecPhrase(fieldKey: string, value: string): string {
 
 /**
  * 제품 × 스펙 필드에 대한 값을 조회한다.
- * 우선순위: 로컬 DB → Tavily 1회(advanced, 전체 도메인, 결과 다다익선) → judgeCell 검증.
+ * 우선순위: 로컬 DB → Tavily 1차(advanced, 전체 도메인, 결과 다다익선) → judgeCell 검증
+ * → (1차 실패 시에만) Tavily 2차(다른 문구 + 스펙표 도메인 한정) → judgeCell 재검증.
  *
- * 예전엔 Tavily를 문구만 바꿔가며 최대 3번 순차 재시도했는데, 재시도끼리 사실상 같은
- * 검색이었고(끝 문구만 다름) 값을 못 찾을 때는 매번 3번 다 왕복하느라 제일 느렸다.
- * 대신 처음부터 advanced 모드로 더 많은 결과(max_results)와 URL당 여러 스니펫
- * (chunks_per_source)을 한 번에 가져오는 것으로 바꿨다 — 순차 재시도(최대 3회 왕복)보다
- * 한 번의 깊은 검색이 평균적으로 더 빠르다.
+ * 예전엔 Tavily를 문구만 바꿔가며 매번 최대 3번 순차 재시도했는데, 재시도끼리 사실상 같은
+ * 검색이었고(끝 문구만 다름) 성공하는 대부분의 경우에도 매번 왕복 비용을 치러 느렸다.
+ * 대신 1차는 advanced 모드로 더 많은 결과(max_results)와 URL당 여러 스니펫
+ * (chunks_per_source)을 한 번에 가져오고, 정말 실패한 경우에만(=재시도가 실제로 의미
+ * 있는 경우에만) 다른 문구 + 신뢰할 수 있는 스펙표 도메인(다나와/에누리/컴퓨존)으로
+ * 좁힌 2차 검색을 추가로 시도한다 — 성공 케이스의 지연시간은 그대로 두면서 실패 케이스의
+ * 회수율만 끌어올린다.
  *
  * 안전장치는 judgeCell의 Extractive QA + Evidence Verification + SiblingGuard와
- * Sanity Check(수치 범위 검증)로 건다 — 도메인 자체를 배제하지 않고, 대신 근거가
- * 명확한 값만 통과시키는 쪽으로 신뢰도를 확보한다.
+ * Sanity Check(수치 범위 검증)로 건다 — 1차는 도메인을 배제하지 않고 근거가 명확한
+ * 값만 통과시키는 쪽으로, 2차는 도메인 자체를 스펙표 중심으로 좁혀 형제 제품 혼동
+ * 위험을 낮추는 쪽으로 신뢰도를 확보한다.
  */
 export async function lookupProductSpec(
   productName: string,
@@ -253,59 +187,74 @@ export async function lookupProductSpec(
 ): Promise<SpecLookupResult> {
 
   // Step 1: 로컬 DB
-  // toDisplayValue가 빈 값을 "-"로 정규화할 수 있는데, 문자열 "-"는 JS에서 truthy라
-  // dbSpec 자체만 확인하면 "찾음"으로 오판한다 — DB에 실질적 값이 없던 경우이므로
-  // Tavily로 넘어가야 한다.
   const dbSpec = findProductSpecInDB(productName, fieldKey, category);
   if (dbSpec && dbSpec !== "-") {
     return { value: dbSpec, source: "db" };
   }
 
-  // Step 2: Tavily 검색 (전체 도메인, 단일 시도)
-  const synonyms = getStaticSynonyms(fieldKey);
-  const expectedType = detectCriterionType(fieldKey);
-  const terms = [fieldKey, ...synonyms.slice(0, 2)].join(" ");
-  // 형제 SKU(예: "...Slim" vs "...Slim 직배수") 오염 방지 — evidence_quote에 이 토큰이
-  // 있으면 judgeCell이 코드 레벨에서 확정적으로 폐기한다.
+  // Step 2: Tavily 검색 → judgeCell
   const siblingTokens = getSiblingExcludeTokens(productName, category);
+  const q1 = `${productName} ${fieldKey}`;
 
-  // 제품명은 큰따옴표(Exact Match)로 감싸서 다른 제품이 섞여 들어오는 걸 원천 차단.
-  const query = `"${productName}" ${terms} 제원 사양표`;
-
-  const results = await tavilySearch(query, "advanced", {
-    maxResults: 20,
-    chunksPerSource: 3,
-    includeAnswer: true,
+  // ── Q1 실행 ──────────────────────────────────────────────────────────────
+  const res1 = await tavilySearch(q1, "advanced", {
+    maxResults: 20, chunksPerSource: 5, includeAnswer: true,
   });
+  const tavilyAnswer = res1.answer;
 
-  console.log(`   🔍 "${productName} × ${fieldKey}" → ${results.length}개 결과`);
-  results.slice(0, 5).forEach(r => console.log(`      📎 ${r.url}`));
+  if (tavilyAnswer) console.log(`💡 [Tavily Answer] "${productName} × ${fieldKey}"\n   ${tavilyAnswer.slice(0, 200)}`);
 
-  let judge: { value: string; sourceUrl?: string; usedSnippet?: string } | null = null;
-  if (results.length > 0) {
-    const candidate = await judgeCell(productName, fieldKey, results, locale, expectedType, synonyms, siblingTokens);
-    if (candidate.value !== "-") {
-      // 수치 범위 합리성 검증 (Sanity Check) — 물리적으로 불가능한 값만 차단
-      if (sanityCheckValue(candidate.value, fieldKey)) {
-        judge = candidate;
-      } else {
-        console.log(`   ❌ [Sanity Check 실패] "${candidate.value}"`);
-      }
+  const answerSegment = tavilyAnswer
+    ? [{ url: res1.results[0]?.url ?? "https://tavily.com", content: tavilyAnswer, score: 999, title: "Tavily Answer" }]
+    : [];
+  const resultsWithAnswer = [...answerSegment, ...res1.results];
+
+  // ── judgeCell 한 번 ───────────────────────────────────────────────────────
+  let judge: { value: string; sourceUrl?: string; usedSnippet?: string; uncertain?: boolean } | null = null;
+  if (resultsWithAnswer.length > 0) {
+    const c1 = await judgeCell(productName, fieldKey, resultsWithAnswer, locale, undefined, [], siblingTokens);
+    if (c1.value !== "-") judge = c1;
+  }
+
+  // ── Q1 실패 시 2차 검색: 다른 문구 + 신뢰할 수 있는 스펙표 도메인으로 제한 ─────────
+  // 1차 쿼리가 실패하는 경우는 (a) 문구가 안 맞았거나 (b) 블로그/후기 글만 잡혀서
+  // 근거가 약했거나(SiblingGuard/Evidence Verification 탈락) 둘 중 하나가 많다.
+  // 다나와/에누리/컴퓨존처럼 모델코드 기준으로 정리된 스펙표는 형제 제품과 혼동될
+  // 여지가 적고 구조화돼 있어 재시도 성공률이 높다 — 모든 조회에 매번 걸지 않고
+  // 1차가 실패했을 때만 추가 비용을 쓴다.
+  if (!judge) {
+    console.log(`⚠️  [1차 검색 실패] "${productName} × ${fieldKey}" → 2차 검색(스펙표 도메인 우선) 시도`);
+    const q2 = `${productName} 상세 스펙 사양표`;
+    const res2 = await tavilySearch(q2, "advanced", {
+      maxResults: 20, chunksPerSource: 5, includeAnswer: true,
+      includeDomains: ["danawa.com", "prod.danawa.com", "enuri.com", "compuzone.co.kr"],
+    });
+    const tavilyAnswer2 = res2.answer;
+    if (tavilyAnswer2) console.log(`💡 [Tavily Answer 2차] "${productName} × ${fieldKey}"\n   ${tavilyAnswer2.slice(0, 200)}`);
+
+    const answerSegment2 = tavilyAnswer2
+      ? [{ url: res2.results[0]?.url ?? "https://tavily.com", content: tavilyAnswer2, score: 999, title: "Tavily Answer" }]
+      : [];
+    const resultsWithAnswer2 = [...answerSegment2, ...res2.results];
+
+    if (resultsWithAnswer2.length > 0) {
+      const c2 = await judgeCell(productName, fieldKey, resultsWithAnswer2, locale, undefined, [], siblingTokens);
+      if (c2.value !== "-") judge = c2;
     }
   }
 
-  if (!judge) return { value: "-", source: "none" };
-
-  console.log(`   ✅ "${productName}" → ${judge.value}`);
-  if (judge.sourceUrl)   console.log(`      📎 출처: ${judge.sourceUrl}`);
-  if (judge.usedSnippet) console.log(`      💬 스니펫: "${judge.usedSnippet.slice(0, 120)}"`);
+  if (!judge) {
+    console.log(`❌ [judgeCell] "${productName} × ${fieldKey}" → 값 없음 (2차 검색 후에도)`);
+    return { value: "-", source: "none" };
+  }
+  console.log(`${judge.uncertain ? "⚠️ " : "✅"} [judgeCell] "${productName} × ${fieldKey}" → ${judge.value}${judge.uncertain ? " (추정)" : ""}`);
 
   const finalResult: SpecLookupResult = {
     value: judge.value,
     source: "tavily",
     sourceUrl: judge.sourceUrl,
     usedSnippet: judge.usedSnippet,
-    uncertain: false,
+    uncertain: judge.uncertain === true,
   };
   return finalResult;
 }

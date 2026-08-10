@@ -1,4 +1,4 @@
-import { analyzeIntent, INTENT_MODEL } from "@/lib/backend/agents/intent_analyzer";
+import { analyzeIntent } from "@/lib/backend/agents/intent_analyzer";
 import { routeAction } from "@/lib/backend/agents/action_router";
 import { selectTemplate } from "@/lib/backend/agents/template_selector";
 import { planEdit } from "@/lib/backend/agents/edit_agent";
@@ -42,7 +42,9 @@ import {
   setCurrentLocale,
 } from "@/lib/backend/tools/sidebar-store";
 import { findProductInLocalDB } from "@/lib/backend/agents/data_agent";
+import { streamChatReply } from "@/lib/backend/agents/chat_agent";
 import { loadMemory, appendMemoryTurn } from "@/lib/backend/services/session-memory";
+import { logChatTurn } from "@/lib/backend/services/research-log";
 
 export const maxDuration = 60;
 
@@ -189,7 +191,7 @@ export async function POST(req: Request) {
   const STRIP_PATTERNS = [
     /\n{0,2}\[CURRENT_CRITERIA_MAP\][\s\S]*$/g,
     /\n{0,2}\[CURRENT_COMPARISON_TABLE\]\n[\s\S]*?(?=\n\[|$)/g,
-    /\n{0,2}\[CURRENT_OPTION_LIST\][\s\S]*?(?=\n\[|$)/g,
+    /\n{0,2}\[CURRENT_OPTION_LIST\]\n[\s\S]*?(?=\n\[|$)/g,
     /\n{0,2}\[USER CONTEXT:[^\]]+\]/g,
     /\n{0,2}\[My items\s*:[^\]]+\]/gi,
     /\n{0,2}\[DECISION CRITERIA:(?:[^\[\]]|\[[^\]]*\])*\]/gi,
@@ -214,7 +216,7 @@ export async function POST(req: Request) {
   const hasOptionList = latestText.includes('[CURRENT_OPTION_LIST');
   // Extract full product data (id + name + numeric price + specs) from CURRENT_OPTION_LIST.
   // JSON 왕복(app/page.tsx가 JSON.stringify로 씀) — ComparisonTable/CriteriaMap과 동일한 프로토콜.
-  const optionListMatch = latestText.match(/\[CURRENT_OPTION_LIST[^\]]*\]([\s\S]*?)(?=\n\[|$)/);
+  const optionListMatch = latestText.match(/\[CURRENT_OPTION_LIST[^\]]*\]\n([\s\S]*?)(?=\n\[|$)/);
   interface CurrentProduct { id: string; name: string; priceNum: number | null; priceStr: string; specs: string[]; }
   let currentProducts: CurrentProduct[] = [];
   if (hasOptionList && optionListMatch) {
@@ -274,7 +276,7 @@ export async function POST(req: Request) {
   const strippedLatest = latestText
     .replace(/\[CURRENT_CRITERIA_MAP\][\s\S]*$/, '') // always the trailing tag; strip to end-of-string first
     .replace(/\[CURRENT_COMPARISON_TABLE\]\n[\s\S]*?(?=\n\[|$)/, '')
-    .replace(/\[CURRENT_OPTION_LIST\][\s\S]*?(?=\n\[|$)/, '')
+    .replace(/\[CURRENT_OPTION_LIST\]\n[\s\S]*?(?=\n\[|$)/, '')
     .replace(/\n{0,2}\[DECISION CRITERIA:(?:[^\[\]]|\[[^\]]*\])*\]/gi, '')
     .replace(/\[USER CONTEXT:[^\]]*\]/gi, '')
     .replace(/\[My items\s*:[^\]]*\]/gi, '')
@@ -290,22 +292,26 @@ export async function POST(req: Request) {
     return new Response('', { status: 200, headers: { 'Content-Type': 'text/plain' } });
   }
 
-  // 참가자 공유 메모리 로드 — 이전 턴들의 요약(마크다운). participantId 없거나 Redis 미설정이면 빈 문자열.
-  // 응답을 실제로 만드는 두 지점(CriteriaMap/InformationCard 생성, none 잡담 응답)의 system prompt에만 주입한다.
-  const memoryText = await loadMemory(participantId).catch((err) => {
-    console.error('[SessionMemory] load 실패:', err);
-    return '';
-  });
-  const memoryPromptBlock = memoryText
-    ? `\n\n[PAST INTERACTION MEMORY — 이전 턴 요약(참고용). 실제 현재 화면 상태는 최신 메시지의 CURRENT_* 태그가 우선한다]\n${memoryText}`
-    : '';
-
   // ─── [1] Intent Agent Fast: 의도 분류 (text_reply 없음, ~0.5–1s) ────────────
   // stream은 분류 중 즉시 열려 TTFB 개선. Cat 1a/1b는 text reply를 generator와 병렬 생성.
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
       writer.write({ type: "start" } as any);
       writer.write({ type: "start-step" } as any);
+
+      // 참가자 공유 메모리 로드 — 이전 턴들의 요약(마크다운). participantId 없거나 Redis 미설정이면 빈 문자열.
+      // analyzeIntent/routeAction과 동시에 진행하고, 실제로 쓰이는 시점(CriteriaMap/InformationCard 생성,
+      // none 잡담 응답)에만 await한다 — 그 시점이면 이미 두 LLM 호출이 끝난 뒤라 대개 즉시 resolve된다.
+      const memoryPromptBlock = loadMemory(participantId)
+        .catch((err) => {
+          console.error('[SessionMemory] load 실패:', err);
+          return '';
+        })
+        .then((memoryText) =>
+          memoryText
+            ? `\n\n[PAST INTERACTION MEMORY — 이전 턴 요약(참고용). 실제 현재 화면 상태는 최신 메시지의 CURRENT_* 태그가 우선한다]\n${memoryText}`
+            : ''
+        );
 
       // ── [1] Intent Analyzer ─────────────────────────────────────────────────────────────
       let intentAnalysis;
@@ -333,6 +339,8 @@ export async function POST(req: Request) {
 
       const textId = `text-${Date.now()}`;
       let generatedTemplate: string | null = null;
+      let editTargetSurface: string | null = null;
+      let editOpValue: string | null = null;
       // 이번 턴에 실제로 뭘 만들었는지 한 줄 요약 — 각 분기 끝에서 채워 넣고, 턴이 끝나면
       // session-memory.ts에 append한다 (참가자별 공유 메모리).
       let turnMemoryNote = "";
@@ -341,7 +349,7 @@ export async function POST(req: Request) {
       if (actionRoute.action === 'generate') {
         let templateSelection;
         try {
-          templateSelection = await selectTemplate(intentAnalysis, hasOptionList, currentProductNames, currentProducts);
+          templateSelection = await selectTemplate(intentAnalysis, hasOptionList, currentProductNames);
         } catch (err) {
           console.error('[Template Selector] 실패:', err);
           writer.write({ type: "finish-step" } as any);
@@ -366,14 +374,14 @@ export async function POST(req: Request) {
               buildCommonSystemInstructions(productCategory, locale),
               buildCriteriaMapSystem(locale),
               EDGE_CASES_SYSTEM,
-            ].join("\n\n") + memoryPromptBlock;
+            ].join("\n\n") + (await memoryPromptBlock);
             userPrompt = buildCriteriaMapPrompt(strippedLatest, userContextStr, existingCriteriaCategories);
           } else {
             systemStr = [
               buildCommonSystemInstructions(productCategory, locale),
               buildInformationCardSystem(locale),
               EDGE_CASES_SYSTEM,
-            ].join("\n\n") + memoryPromptBlock;
+            ].join("\n\n") + (await memoryPromptBlock);
             userPrompt = buildInformationCardPrompt(strippedLatest);
           }
 
@@ -504,6 +512,8 @@ export async function POST(req: Request) {
 
         writer.write({ type: "data-action-type", data: { action: "edit", target_surface: editPlan.target_surface } } as any);
         turnMemoryNote = editPlan.op_summary || `${editPlan.target_surface} 수정`;
+        editTargetSurface = editPlan.target_surface;
+        editOpValue = editPlan.op;
 
         if (editPlan.op_summary) {
           writer.write({ type: "text-start", id: textId } as any);
@@ -570,17 +580,7 @@ export async function POST(req: Request) {
       } else {
         writer.write({ type: "data-action-type", data: { action: "none" } } as any);
         writer.write({ type: "text-start", id: textId } as any);
-        const noneSystemPrompt = (locale === "ko"
-          ? "당신은 쇼핑 어시스턴트입니다. 사용자의 질문에 자연스럽고 친절하게 한국어로 답변하세요. UI 컴포넌트나 시스템 동작에 대해 언급하지 마세요."
-          : "You are a shopping assistant. Answer the user's question naturally and helpfully in English. Do not mention UI components or system behavior.")
-          + memoryPromptBlock;
-        const { textStream: noneStream } = streamText({
-          model: openai(INTENT_MODEL),
-          system: noneSystemPrompt,
-          messages: modelMessages as any,
-          maxOutputTokens: 400,
-          temperature: 0.3,
-        });
+        const { textStream: noneStream } = streamChatReply(locale, await memoryPromptBlock, modelMessages as any);
         let noneReplyText = "";
         for await (const delta of noneStream) {
           noneReplyText += delta;
@@ -640,6 +640,16 @@ export async function POST(req: Request) {
           template: generatedTemplate,
           note: turnMemoryNote,
         }).catch((err) => console.error('[SessionMemory] append 실패:', err));
+
+        await logChatTurn({
+          participantId,
+          turnIndex: uiMessages.length,
+          userText: strippedLatest,
+          action: actionRoute.action,
+          template: generatedTemplate,
+          editTarget: editTargetSurface,
+          editOp: editOpValue,
+        }).catch((err) => console.error('[ResearchLog] logChatTurn 실패:', err));
       }
     },
   });

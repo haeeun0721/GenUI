@@ -43,6 +43,15 @@ export async function POST(req: NextRequest) {
       locale = "ko",
       removedCriteriaNames = [],  // ← 사용자가 실제로 제거한 기준만 (행 삭제는 이 목록에서만 발생)
       userContext = "",
+      // Option List(auto-enrich)가 같은 사용자 조작(기준 하나 추가/변경) 사이클 안에서 이미
+      // 검색/판단해둔 값. 있으면 이 값을 그대로 쓰고 lookupProductSpec을 다시 호출하지 않는다 —
+      // 두 패널이 각자 독립적으로 실시간 검색을 돌려 같은 제품×기준인데 값이 갈리는 문제 방지.
+      // 전역/영속 캐시(Map 등)는 일부러 안 쓴다 — 그런 캐시는 이 요청뿐 아니라 서버 프로세스에
+      // 붙는 다른 모든 세션/참가자에도 공유돼서, 한 참가자의 검색 결과를 다른 참가자가 그대로
+      // 받아버리는 문제가 생긴다. 대신 프론트(app/page.tsx)가 auto-enrich 응답을 기다렸다가
+      // update-table 요청 body에 실어 보내는 방식 — 이 요청 하나의 생명주기 밖으로 절대
+      // 새어나가지 않는다.
+      prefetchedValues = [],
     } = await req.json() as {
       savedItems: string[];
       criteria: string[];
@@ -53,7 +62,16 @@ export async function POST(req: NextRequest) {
       locale?: string;
       removedCriteriaNames?: string[];
       userContext?: string;
+      prefetchedValues?: { product_name: string; field_key: string; value: string | null }[];
     };
+
+    // 정규화 키(기준명 소문자+공백제거 + 제품명 소문자+공백제거)로 prefetched 값 조회
+    const normKey = (criterion: string, productName: string) =>
+      `${cleanCriterionLabel(criterion).replace(/\s+/g, "").toLowerCase()}__${productName.replace(/\s+/g, "").toLowerCase()}`;
+    const prefetchedMap = new Map<string, string>();
+    for (const p of prefetchedValues) {
+      if (p.value) prefetchedMap.set(normKey(p.field_key, p.product_name), p.value);
+    }
 
     if (!savedItems?.length) {
       return NextResponse.json({ error: "No saved items provided" }, { status: 400 });
@@ -105,9 +123,12 @@ export async function POST(req: NextRequest) {
 
       // 제품 전체 이름 매핑: col.label → fullName
       // Option List(auto-enrich)는 card.name을 그대로 lookupProductSpec에 넘기므로,
-      // 여기서도 반드시 동일한 문자열을 써야 공유 캐시(makeCacheKey)가 같은 키로 맞아떨어진다.
+      // 여기서도 반드시 동일한 문자열을 써야 prefetchedMap 키(normKey)가 같은 키로 맞아떨어져
+      // 위에서 받은 prefetchedValues를 인식하고 재사용할 수 있다.
       // (과거엔 matchCard.name을 찾고도 DB의 Name: 필드로 덮어써서, 표기 차이(공백/접두어/모델 접미사)
-      //  하나만 있어도 캐시 키가 어긋나 두 패널이 서로 다른 검색을 독립적으로 수행 → 값 불일치 버그로 이어졌음)
+      //  하나만 있어도 키가 어긋나 두 패널이 서로 다른 검색을 독립적으로 수행 → 값 불일치 버그로 이어졌음.
+      //  지금은 애초에 auto-enrich가 검색을 먼저 끝내고 그 결과를 여기로 넘겨받는 구조라 재검색 자체가
+      //  일어나지 않지만, 이름이 어긋나면 prefetched 매칭에 실패해 다시 독립 검색으로 빠지므로 여전히 중요)
       const fullNameMap = new Map<string, string>();
       for (const col of productCols) {
         const shortLabel = col.label;
@@ -115,7 +136,7 @@ export async function POST(req: NextRequest) {
           (c: any) => c.name?.includes(shortLabel) || shortLabel.includes(c.name)
         );
         if (matchCard?.name) {
-          // Option List 카드와 매칭됨 → Option List가 쓰는 이름을 그대로 재사용 (캐시 키 일치 보장)
+          // Option List 카드와 매칭됨 → Option List가 쓰는 이름을 그대로 재사용 (prefetched 매칭 보장)
           fullNameMap.set(shortLabel, matchCard.name);
           continue;
         }
@@ -140,9 +161,20 @@ export async function POST(req: NextRequest) {
           productCols.map(async (col) => {
             const productLabel = col.label;
             const fullName = fullNameMap.get(productLabel) ?? productLabel;
+
+            // Option List(auto-enrich)가 이번 사이클에서 이미 찾아둔 값이 있으면 재사용 —
+            // 새로 Tavily/judgeCell을 돌리면 같은 제품×기준인데 두 패널이 서로 다른 값을
+            // 받게 될 수 있다(검색 결과 변동성).
+            const prefetched = prefetchedMap.get(normKey(cleanLabel, fullName));
+            if (prefetched) {
+              newRow[col.key] = prefetched;
+              console.log(`[update-table] "${fullName}" × "${cleanLabel}" → "${prefetched}" (source=prefetched, Option List와 공유)`);
+              return;
+            }
+
             const result = await lookupProductSpec(fullName, cleanLabel, category, locale);
-            newRow[col.key] = result.uncertain ? "-" : result.value;
-            console.log(`[update-table] "${fullName}" × "${cleanLabel}" → "${newRow[col.key]}" (source=${result.source}${result.uncertain ? ", 불확실→폐기" : ""})`);
+            newRow[col.key] = result.uncertain && result.value !== "-" ? `${result.value} (추정)` : result.value;
+            console.log(`[update-table] "${fullName}" × "${cleanLabel}" → "${newRow[col.key]}" (source=${result.source}${result.uncertain ? ", 불확실" : ""})`);
           })
         );
 

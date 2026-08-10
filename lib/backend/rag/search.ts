@@ -95,11 +95,45 @@ export async function embedQuery(text: string): Promise<number[]> {
   return data.embedding.values;
 }
 
+/**
+ * 여러 텍스트를 한 번의 API 호출로 임베딩한다(scripts/embed-products.mjs와 동일한
+ * batchEmbedContents 방식) — judgeCell의 후보 구절 재랭킹처럼, 텍스트 개수가 많아
+ * embedQuery를 개별 호출하면 왕복이 너무 많아지는 경우에 쓴다. 실패(키 없음/API 오류)
+ * 시 null을 반환하므로, 호출부는 항상 기존 방식으로 폴백할 수 있어야 한다.
+ */
+export async function embedBatch(texts: string[]): Promise<number[][] | null> {
+  if (!EMBED_API_KEY || texts.length === 0) return null;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBED_MODEL}:batchEmbedContents?key=${EMBED_API_KEY}`;
+  const body = {
+    requests: texts.map((text) => ({
+      model: `models/${EMBED_MODEL}`,
+      content: { parts: [{ text }] },
+    })),
+  };
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!res.ok) {
+      console.warn(`[embedBatch] Google API ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      return null;
+    }
+    const data = await res.json() as { embeddings: { values: number[] }[] };
+    return data.embeddings.map((e) => e.values);
+  } catch (err) {
+    console.warn("[embedBatch] 실패:", err);
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Cosine Similarity
 // ---------------------------------------------------------------------------
 
-function cosineSimilarity(a: number[], b: number[]): number {
+export function cosineSimilarity(a: number[], b: number[]): number {
   let dot = 0, normA = 0, normB = 0;
   for (let i = 0; i < a.length; i++) {
     dot += a[i] * b[i];
@@ -262,6 +296,7 @@ export async function ragSearch(
   const scored = filteredProducts
     .filter((p) => {
       if (excludeNames.some((ex) => p.name.includes(ex) || ex.includes(p.name))) return false;
+      if (p.specs.length === 0) return false; // 스펙 정보 없는 제품은 "정보 없음" 카드로 이어지므로 추천 후보에서 제외
       return !!embeddings[p.id];
     })
     .map((p) => ({ product: p, score: cosineSimilarity(queryVec, embeddings[p.id]) }))

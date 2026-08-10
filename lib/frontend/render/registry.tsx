@@ -12,7 +12,7 @@ function proxyImg(url?: string): string {
     if (PROXY_DOMAINS.some(d => host === d || host.endsWith("." + d))) {
       return `/api/img-proxy?url=${encodeURIComponent(url)}`;
     }
-  } catch {}
+  } catch { }
   return url;
 }
 
@@ -87,8 +87,10 @@ const T = {
     important: "중요",
     criteriaMapEmpty: "대화를 시작하면\n여기에 탐색 기록이 쌓여요",
     criterionColumn: "비교 항목",
-    unverified: "미확인",
-    unverifiedFor: (name: string) => `${name} 미확인`,
+    unverified: "(추정)",
+    unverifiedFor: (name: string) => `${name} (추정)`,
+    notFound: "정보 없음",
+    notFoundFor: (name: string) => `${name} 정보 없음`,
     whyRecommended: "이렇게 추천드린 이유예요",
     cancel: "취소",
     addAndCompare: (n: number) => `${n}개의 제품 추가하여 비교하기`,
@@ -115,8 +117,10 @@ const T = {
     important: "Key",
     criteriaMapEmpty: "Start a conversation\nand your exploration history will appear here",
     criterionColumn: "Criteria",
-    unverified: "Unverified",
-    unverifiedFor: (name: string) => `${name} unverified`,
+    unverified: "(est.)",
+    unverifiedFor: (name: string) => `${name} (est.)`,
+    notFound: "Not found",
+    notFoundFor: (name: string) => `${name} info not found`,
     whyRecommended: "Why we recommend this",
     cancel: "Cancel",
     addAndCompare: (n: number) => `Add ${n} product${n === 1 ? "" : "s"} and compare`,
@@ -411,7 +415,7 @@ export const manualRegistry: Record<string, any> = {
             categoryElRefs.current[label]?.scrollIntoView({ behavior: "smooth", block: "nearest" });
           });
         }
-      // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [categoriesKey]);
 
       if (categories.length === 0) {
@@ -629,172 +633,550 @@ export const manualRegistry: Record<string, any> = {
     const globalSeenCols = new Set<string>();
 
     return (allProps: any) => {
-    const p = allProps?.props || allProps || {};
-    const locale = resolveLocale(allProps);
-    const t = T[locale];
-    const rawColumns: { key: string; label: string }[] = Array.isArray(p.columns) ? p.columns : [];
-    const rows: Record<string, any>[] = Array.isArray(p.rows) ? p.rows : (Array.isArray(p.data) ? p.data : []);
+      const p = allProps?.props || allProps || {};
+      const locale = resolveLocale(allProps);
+      const t = T[locale];
+      const rawColumns: { key: string; label: string; imageUrl?: string }[] = Array.isArray(p.columns) ? p.columns : [];
+      const rows: Record<string, any>[] = Array.isArray(p.rows) ? p.rows : (Array.isArray(p.data) ? p.data : []);
 
-    // ── TRANSPOSED TABLE (criteria = rows, products = columns) ──────────────
-    const isTransposed = rawColumns[0]?.key === 'criterion';
+      // ── TRANSPOSED TABLE (criteria = rows, products = columns) ──────────────
+      const isTransposed = rawColumns[0]?.key === 'criterion';
 
-    const transposedDataRows = isTransposed ? rows.filter(r => r.criterion !== '순위' && r.criterion !== 'Rank') : [];
-    const transposedProductCols = isTransposed ? rawColumns.slice(1) : [];
-    const rowsColsKey = JSON.stringify({
-      rows: transposedDataRows.map(r => r.criterion),
-      cols: transposedProductCols.map(c => c.key),
-    });
+      const transposedDataRows = isTransposed ? rows.filter(r => r.criterion !== '순위' && r.criterion !== 'Rank') : [];
+      const transposedProductCols = isTransposed ? rawColumns.slice(1) : [];
+      const rowsColsKey = JSON.stringify({
+        rows: transposedDataRows.map(r => r.criterion),
+        cols: transposedProductCols.map(c => c.key),
+      });
 
-    // rank 기준 오름차순 정렬 (1위 → 왼쪽). 훅보다 먼저 계산해 FLIP 이펙트의 의존성으로 쓴다.
-    const productCols = isTransposed ? rawColumns.slice(1) : [];
-    const rankRow = isTransposed ? rows.find(r => r.criterion === '순위' || r.criterion === 'Rank') : undefined;
-    const sortedProductCols = rankRow
-      ? [...productCols].sort((a, b) => {
+      // rank 기준 오름차순 정렬 (1위 → 왼쪽). 훅보다 먼저 계산해 FLIP 이펙트의 의존성으로 쓴다.
+      const productCols = isTransposed ? rawColumns.slice(1) : [];
+      const rankRow = isTransposed ? rows.find(r => r.criterion === '순위' || r.criterion === 'Rank') : undefined;
+      const sortedProductCols = rankRow
+        ? [...productCols].sort((a, b) => {
           const ra = parseInt(String(rankRow[a.key] ?? '99').replace(/[^0-9]/g, '')) || 99;
           const rb = parseInt(String(rankRow[b.key] ?? '99').replace(/[^0-9]/g, '')) || 99;
           return ra - rb;
         })
-      : productCols;
-    const sortedColKeysStr = sortedProductCols.map(c => c.key).join(',');
+        : productCols;
+      const sortedColKeysStr = sortedProductCols.map(c => c.key).join(',');
 
-    // 새로 추가된 행/열만 구분해서 하이라이트하기 위한 상태 (CriteriaMap의 animatingKeys와 동일한 목적)
-    const [animatingRowKeys, setAnimatingRowKeys] = useState<Set<string>>(new Set());
-    const [animatingColKeys, setAnimatingColKeys] = useState<Set<string>>(new Set());
-    // 표 전체가 처음 생성되는 순간에만 켜지는 플래그 — 개별 행/열 대신 표 전체를 감싸서 하이라이트한다.
-    const [justCreated, setJustCreated] = useState(false);
-    const tableRef = useRef<HTMLTableElement>(null);
-    // 열의 마지막 측정 위치(px) — 새 열 추가가 아니라 "기존 열의 순위가 바뀌어 자리가 이동"할 때
-    // FLIP(First-Last-Invert-Play) 기법으로 이동을 보여주기 위해 이전 위치를 기억해둔다.
-    const prevColRectsRef = useRef<Map<string, number>>(new Map());
+      // 새로 추가된 행/열만 구분해서 하이라이트하기 위한 상태 (CriteriaMap의 animatingKeys와 동일한 목적)
+      const [animatingRowKeys, setAnimatingRowKeys] = useState<Set<string>>(new Set());
+      const [animatingColKeys, setAnimatingColKeys] = useState<Set<string>>(new Set());
+      // 표 전체가 처음 생성되는 순간에만 켜지는 플래그 — 개별 행/열 대신 표 전체를 감싸서 하이라이트한다.
+      const [justCreated, setJustCreated] = useState(false);
+      const tableRef = useRef<HTMLTableElement>(null);
+      // 열의 마지막 측정 위치(px) — 새 열 추가가 아니라 "기존 열의 순위가 바뀌어 자리가 이동"할 때
+      // FLIP(First-Last-Invert-Play) 기법으로 이동을 보여주기 위해 이전 위치를 기억해둔다.
+      const prevColRectsRef = useRef<Map<string, number>>(new Map());
 
-    useEffect(() => {
-      if (!isTransposed) return;
-      if (transposedDataRows.length === 0 && transposedProductCols.length === 0) {
-        globalSeenRows.clear();
-        globalSeenCols.clear();
-        setAnimatingRowKeys(new Set());
-        setAnimatingColKeys(new Set());
-        return;
-      }
-      // 표가 통째로 처음 채워지는 시점엔 "새로 추가됨"으로 보지 않는다(전부 애니메이션되는 것 방지).
-      // 대신 표 전체를 한 번만 감싸는 하이라이트를 보여준다.
-      const isFirstPopulation = globalSeenRows.size === 0 && globalSeenCols.size === 0;
-
-      const newRowKeys = new Set<string>();
-      for (const r of transposedDataRows) {
-        const key = String(r.criterion ?? '');
-        if (key && !globalSeenRows.has(key)) { newRowKeys.add(key); globalSeenRows.add(key); }
-      }
-      const newColKeys = new Set<string>();
-      for (const c of transposedProductCols) {
-        if (!globalSeenCols.has(c.key)) { newColKeys.add(c.key); globalSeenCols.add(c.key); }
-      }
-
-      if (isFirstPopulation) {
-        setJustCreated(true);
-        const t = setTimeout(() => setJustCreated(false), 2000);
-        return () => clearTimeout(t);
-      } else {
-        if (newRowKeys.size > 0) setAnimatingRowKeys(prev => new Set([...prev, ...newRowKeys]));
-        if (newColKeys.size > 0) setAnimatingColKeys(prev => new Set([...prev, ...newColKeys]));
-      }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [rowsColsKey, isTransposed]);
-
-    // FLIP: 새 열이 아니라 기존 열의 순위가 바뀌어 자리만 이동할 때(예: 2위였던 제품이 1위가 됨)도
-    // "정렬됐다"는 게 눈에 보이도록, 이전 위치 → 새 위치로 슬라이드하는 모션을 준다.
-    useLayoutEffect(() => {
-      if (!isTransposed || !tableRef.current) return;
-      const table = tableRef.current;
-      const prevRects = prevColRectsRef.current;
-      const currentRects = new Map<string, number>();
-      const movedKeys: string[] = [];
-
-      for (const key of sortedColKeysStr ? sortedColKeysStr.split(',') : []) {
-        const th = table.querySelector<HTMLElement>(`th[data-col-key="${key}"]`);
-        if (!th) continue;
-        const left = th.getBoundingClientRect().left;
-        currentRects.set(key, left);
-        const prevLeft = prevRects.get(key);
-        if (prevLeft !== undefined && Math.abs(prevLeft - left) > 1) {
-          const delta = prevLeft - left;
-          const cells = table.querySelectorAll<HTMLElement>(`[data-col-key="${key}"]`);
-          cells.forEach(cell => {
-            cell.style.transition = 'none';
-            cell.style.transform = `translateX(${delta}px)`;
-          });
-          movedKeys.push(key);
+      useEffect(() => {
+        if (!isTransposed) return;
+        if (transposedDataRows.length === 0 && transposedProductCols.length === 0) {
+          globalSeenRows.clear();
+          globalSeenCols.clear();
+          setAnimatingRowKeys(new Set());
+          setAnimatingColKeys(new Set());
+          return;
         }
-      }
+        // 표가 통째로 처음 채워지는 시점엔 "새로 추가됨"으로 보지 않는다(전부 애니메이션되는 것 방지).
+        // 대신 표 전체를 한 번만 감싸는 하이라이트를 보여준다.
+        const isFirstPopulation = globalSeenRows.size === 0 && globalSeenCols.size === 0;
 
-      if (movedKeys.length > 0) {
-        requestAnimationFrame(() => {
+        const newRowKeys = new Set<string>();
+        for (const r of transposedDataRows) {
+          const key = String(r.criterion ?? '');
+          if (key && !globalSeenRows.has(key)) { newRowKeys.add(key); globalSeenRows.add(key); }
+        }
+        const newColKeys = new Set<string>();
+        for (const c of transposedProductCols) {
+          if (!globalSeenCols.has(c.key)) { newColKeys.add(c.key); globalSeenCols.add(c.key); }
+        }
+
+        if (isFirstPopulation) {
+          setJustCreated(true);
+          const t = setTimeout(() => setJustCreated(false), 2000);
+          return () => clearTimeout(t);
+        } else {
+          if (newRowKeys.size > 0) setAnimatingRowKeys(prev => new Set([...prev, ...newRowKeys]));
+          if (newColKeys.size > 0) setAnimatingColKeys(prev => new Set([...prev, ...newColKeys]));
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [rowsColsKey, isTransposed]);
+
+      // FLIP: 새 열이 아니라 기존 열의 순위가 바뀌어 자리만 이동할 때(예: 2위였던 제품이 1위가 됨)도
+      // "정렬됐다"는 게 눈에 보이도록, 이전 위치 → 새 위치로 슬라이드하는 모션을 준다.
+      useLayoutEffect(() => {
+        if (!isTransposed || !tableRef.current) return;
+        const table = tableRef.current;
+        const prevRects = prevColRectsRef.current;
+        const currentRects = new Map<string, number>();
+        const movedKeys: string[] = [];
+
+        for (const key of sortedColKeysStr ? sortedColKeysStr.split(',') : []) {
+          const th = table.querySelector<HTMLElement>(`th[data-col-key="${key}"]`);
+          if (!th) continue;
+          const left = th.getBoundingClientRect().left;
+          currentRects.set(key, left);
+          const prevLeft = prevRects.get(key);
+          if (prevLeft !== undefined && Math.abs(prevLeft - left) > 1) {
+            const delta = prevLeft - left;
+            const cells = table.querySelectorAll<HTMLElement>(`[data-col-key="${key}"]`);
+            cells.forEach(cell => {
+              cell.style.transition = 'none';
+              cell.style.transform = `translateX(${delta}px)`;
+            });
+            movedKeys.push(key);
+          }
+        }
+
+        if (movedKeys.length > 0) {
           requestAnimationFrame(() => {
-            movedKeys.forEach(key => {
-              const cells = table.querySelectorAll<HTMLElement>(`[data-col-key="${key}"]`);
-              cells.forEach(cell => {
-                cell.style.transition = 'transform 0.5s cubic-bezier(0.16, 1, 0.3, 1)';
-                cell.style.transform = '';
+            requestAnimationFrame(() => {
+              movedKeys.forEach(key => {
+                const cells = table.querySelectorAll<HTMLElement>(`[data-col-key="${key}"]`);
+                cells.forEach(cell => {
+                  cell.style.transition = 'transform 0.5s cubic-bezier(0.16, 1, 0.3, 1)';
+                  cell.style.transform = '';
+                });
               });
             });
           });
-        });
-      }
+        }
 
-      prevColRectsRef.current = currentRects;
-    }, [isTransposed, sortedColKeysStr]);
+        prevColRectsRef.current = currentRects;
+      }, [isTransposed, sortedColKeysStr]);
 
-    if (isTransposed) {
-      const dataRows = transposedDataRows;
-      const rankReasoning: string = p._rankReasoning || '';
+      if (isTransposed) {
+        const dataRows = transposedDataRows;
+        const rankReasoning: string = p._rankReasoning || '';
 
-      return (
-        <div className={`w-full${justCreated ? ' animate-highlight-wrap' : ''}`}>
-          <div className="overflow-x-auto pb-2">
-            <table ref={tableRef} className="w-full text-[13px] border-collapse">
-              <thead>
-                <tr>
-                  {/* 비교 항목 헤더 */}
-                  <th className="align-top text-left px-3 py-2.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wide border-b border-slate-100 w-[120px]">
-                    {rawColumns[0]?.label ?? t.criterionColumn}
-                  </th>
-                  {sortedProductCols.map((col, ci) => {
-                    const rank = rankRow ? String(rankRow[col.key] ?? '') : '';
-                    const isFirst = rank === '1위' || rank === '#1';
-                    // 이름이 길면 여러 줄로 줄바꿈되면서 그 컬럼만 셀 높이가 커지고(테이블 기본
-                    // vertical-align: middle 때문에) 다른 컬럼의 순위 라벨이 아래로 밀려
-                    // "튀어나온" 것처럼 보인다. align-top(위에서 처리)으로 정렬을 고정하고,
-                    // 여기서는 긴 이름의 글자 크기를 줄여 애초에 줄바꿈 자체를 줄인다.
-                    const nameSizeClass = col.label.length > 14 ? 'text-[10px]' : col.label.length > 9 ? 'text-[11px]' : 'text-[12px]';
-                    const isColNew = animatingColKeys.has(col.key);
+        return (
+          <div className="w-full">
+            <div className={`overflow-x-auto pb-2${justCreated ? ' animate-highlight-wrap' : ''}`}>
+              <table ref={tableRef} className="w-full text-[13px] border-collapse">
+                <thead>
+                  <tr>
+                    {/* 비교 항목 헤더 */}
+                    <th className="align-top text-left px-3 py-2.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wide border-b border-slate-100 w-[120px]">
+                      {rawColumns[0]?.label ?? t.criterionColumn}
+                    </th>
+                    {sortedProductCols.map((col, ci) => {
+                      const rank = rankRow ? String(rankRow[col.key] ?? '') : '';
+                      const isFirst = rank === '1위' || rank === '#1';
+                      // 이름이 길면 여러 줄로 줄바꿈되면서 그 컬럼만 셀 높이가 커지고(테이블 기본
+                      // vertical-align: middle 때문에) 다른 컬럼의 순위 라벨이 아래로 밀려
+                      // "튀어나온" 것처럼 보인다. align-top(위에서 처리)으로 정렬을 고정하고,
+                      // 여기서는 긴 이름의 글자 크기를 줄여 애초에 줄바꿈 자체를 줄인다.
+                      const nameSizeClass = col.label.length > 14 ? 'text-[10px]' : col.label.length > 9 ? 'text-[11px]' : 'text-[12px]';
+                      const isColNew = animatingColKeys.has(col.key);
+                      return (
+                        <th
+                          key={col.key}
+                          data-col-key={col.key}
+                          className={`align-top px-3 py-2.5 border-b border-slate-100 text-center ${isFirst ? 'bg-white' : ''}${isColNew ? ' animate-highlight-wrap' : ''}`}
+                          onAnimationEnd={(e) => {
+                            if (isColNew && e.animationName === 'highlight-wrap') {
+                              setAnimatingColKeys(prev => { const next = new Set(prev); next.delete(col.key); return next; });
+                            }
+                          }}
+                        >
+                          {rank && <div className="text-[10px] text-slate-400 font-semibold mb-1">{rank}</div>}
+                          {col.imageUrl && (
+                            <div className="flex justify-center mb-3">
+                              <img
+                                src={proxyImg(col.imageUrl)}
+                                alt={col.label}
+                                className="w-12 h-12 object-contain rounded-lg bg-white border border-slate-100"
+                                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                              />
+                            </div>
+                          )}
+                          <div
+                            className={`${nameSizeClass} font-semibold text-slate-700 leading-tight`}
+                            style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}
+                            title={col.label}
+                          >
+                            {col.label}
+                          </div>
+                        </th>
+                      );
+                    })}
+                  </tr>
+                </thead>
+                <tbody>
+                  {dataRows.map((row, ri) => {
+                    const isRowNew = animatingRowKeys.has(String(row.criterion ?? ''));
                     return (
-                      <th
-                        key={col.key}
-                        data-col-key={col.key}
-                        className={`align-top px-3 py-2.5 border-b border-slate-100 text-center ${isFirst ? 'bg-white' : ''}${isColNew ? ' animate-highlight-wrap' : ''}`}
+                      <tr
+                        key={row.criterion ?? ri}
+                        className={`border-b border-slate-50 last:border-0 hover:bg-slate-50/50 transition-colors${isRowNew ? ' animate-highlight-wrap' : ''}`}
                         onAnimationEnd={(e) => {
-                          if (isColNew && e.animationName === 'highlight-wrap') {
-                            setAnimatingColKeys(prev => { const next = new Set(prev); next.delete(col.key); return next; });
+                          if (isRowNew && e.animationName === 'highlight-wrap') {
+                            setAnimatingRowKeys(prev => { const next = new Set(prev); next.delete(String(row.criterion ?? '')); return next; });
                           }
                         }}
                       >
-                        {rank && <div className="text-[10px] text-slate-400 font-semibold mb-1">{rank}</div>}
-                        {col.imageUrl && (
-                          <div className="flex justify-center mb-3">
-                            <img
-                              src={proxyImg(col.imageUrl)}
-                              alt={col.label}
-                              className="w-12 h-12 object-contain rounded-lg bg-white border border-slate-100"
-                              onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                            />
-                          </div>
-                        )}
+                        <td className="px-3 py-2.5 text-[12px] font-semibold text-slate-700">{row.criterion}</td>
+                        {sortedProductCols.map((col, ci) => {
+                          const val = String(row[col.key] ?? '-');
+                          const rankVal = rankRow ? String(rankRow[col.key] ?? '') : '';
+                          const isFirst = rankVal === '1위' || rankVal === '#1';
+                          return (
+                            <td key={col.key} data-col-key={col.key} className={`px-3 py-2.5 text-center text-[13px] font-medium text-slate-700 ${isFirst ? 'bg-slate-50/60' : ''}`}>
+                              {val === '-' ? <span className="text-[11px] text-slate-300 font-medium">{t.notFound}</span> : val}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {rankReasoning && (
+              <div className="mt-3 px-3 py-2.5 bg-white rounded-[8px] border border-slate-100">
+                <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1">{t.whyRecommended}</p>
+                <p className="text-[12.5px] text-slate-600 leading-relaxed">{rankReasoning}</p>
+              </div>
+            )}
+          </div>
+        );
+      }
+      // ── END TRANSPOSED ──────────────────────────────────────────────────────
+
+
+      const cellBadges: { row: string; column: string; label: string; type: string }[] =
+        Array.isArray(p.cellBadges) ? p.cellBadges : [];
+
+      const criteriaFromBindings: { name: string; min?: string; priority: string }[] =
+        Array.isArray(allProps.bindings?.droppedCriteria) ? allProps.bindings.droppedCriteria : [];
+      const savedItems: { name: string; price?: string; description?: string; specs?: string[]; link?: string }[] =
+        Array.isArray(allProps.bindings?.savedItems) ? allProps.bindings.savedItems : [];
+
+      // allColumns: 한 번이라도 추가된 컬럼 전체 (데이터 보존)
+      const hasRank = rawColumns.some(c => c.key === 'rank');
+      const initialColumns: { key: string; label: string }[] = hasRank
+        ? rawColumns
+        : [{ key: 'rank', label: 'Rank' }, ...rawColumns];
+      const [allColumns, setAllColumns] = useState<{ key: string; label: string }[]>(initialColumns);
+      // hiddenColumnKeys: 현재 숨겨진 컬럼 key 집합
+      const [hiddenColumnKeys, setHiddenColumnKeys] = useState<Set<string>>(new Set());
+      // visibleColumns: 실제 테이블에 표시되는 컬럼 (derived)
+      const visibleColumns = allColumns.filter(c => !hiddenColumnKeys.has(c.key));
+
+      const [extraRows, setExtraRows] = useState<Record<string, any>[]>([]);
+      const [fetchedSpecs, setFetchedSpecs] = useState<Record<string, Record<string, string>>>({});
+      const [loadingColumns, setLoadingColumns] = useState<Set<string>>(new Set());
+      const [loadingCells, setLoadingCells] = useState<Set<string>>(new Set());
+      const [showColumnsPanel, setShowColumnsPanel] = useState(false);
+      const columnsPanelRef = useRef<HTMLDivElement>(null);
+
+      // Column resize state
+      const [colWidths, setColWidths] = useState<Record<string, number>>({});
+      const colDragRef = useRef<{ key: string; startX: number; startWidth: number } | null>(null);
+
+      // 공백을 제거한 normalized 값으로도 비교 (예: "저장 공간" vs "저장공간")
+      const normalize = (s: string) => s.toLowerCase().replace(/\s+/g, '');
+      // expandableOptions: allColumns에 없는 criteria만 (숨긴 컬럼도 제외)
+      const expandableOptions = criteriaFromBindings
+        .filter(c => {
+          const parenMatches = c.name.match(/\(([^)]+)\)/g)?.map((m: string) => m.slice(1, -1)) ?? [];
+          const baseName = c.name.replace(/\s*\([^)]+\)/g, '').trim();
+          const variants = [c.name, baseName, ...parenMatches].map((v: string) => v.toLowerCase()).filter(Boolean);
+          const variantsNorm = variants.map(normalize);
+          return !allColumns.some(col => {
+            const keyNorm = col.key.toLowerCase();
+            const labelNorm = col.label.toLowerCase();
+            const keyNoSpace = normalize(col.key);
+            const labelNoSpace = normalize(col.label);
+            return variants.some((v: string) =>
+              keyNorm === v || labelNorm === v ||
+              labelNorm.includes(v) || v.includes(labelNorm) ||
+              keyNorm.includes(v) || v.includes(keyNorm)
+            ) || variantsNorm.some((v: string) =>
+              keyNoSpace === v || labelNoSpace === v ||
+              labelNoSpace.includes(v) || v.includes(labelNoSpace) ||
+              keyNoSpace.includes(v) || v.includes(keyNoSpace)
+            );
+          });
+        })
+        .map(c => ({ key: c.name, label: c.name }));
+
+
+
+
+      const addColumn = async (col: { key: string; label: string }) => {
+        // 이미 allColumns에 있지만 숨겨진 경우 → 그냥 보이게만
+        if (allColumns.some(c => c.key === col.key)) {
+          setHiddenColumnKeys(prev => { const s = new Set(prev); s.delete(col.key); return s; });
+          return;
+        }
+
+        setAllColumns(prev => [...prev, col]);
+
+        const firstColKey = 'product';
+        const allCurrentRows = [...rows, ...extraRows];
+        const products = allCurrentRows
+          .map(row => {
+            const name = String(row.product ?? row[firstColKey] ?? '');
+            // Priority for link:
+            // 1. _link embedded in the row (set by UI Agent from DATA CONTEXT)
+            // 2. link from savedItems (My Items — set when user saves a product)
+            // 3. Danawa search URL as fallback (fetch-spec will extract pcode if possible)
+            let link = String(row._link ?? '');
+            // Link priority:
+            // 1. _link from existing table rows (set by UI Agent from Danawa scraping — most reliable)
+            // 2. _link from row data directly
+            // 3. savedItems.link (saved when user clicked heart on ProductCard)
+            // 4. Danawa search URL as last resort
+            if (!link) {
+              const rowMatch = allCurrentRows.find(r => {
+                const rn = String(r[firstColKey] ?? '').toLowerCase();
+                const nn = name.toLowerCase();
+                return rn === nn || rn.includes(nn) || nn.includes(rn);
+              });
+              link = rowMatch?._link ?? '';
+            }
+            if (!link) {
+              const savedMatch = savedItems.find(item => {
+                const a = item.name.toLowerCase(); const b = name.toLowerCase();
+                return a === b || a.includes(b) || b.includes(a);
+              });
+              link = savedMatch?.link ?? '';
+            }
+            if (!link && name) {
+              link = `https://search.danawa.com/dsearch.php?query=${encodeURIComponent(name)}&limit=1&sort=pd`;
+            }
+            console.log(`[addColumn] resolved link for "${name}": ${link.slice(0, 60)}`);
+            return { name, link };
+          })
+          .filter(p => p.name);
+
+        if (products.length === 0) return;
+
+        setLoadingColumns(prev => new Set([...prev, col.key]));
+        try {
+          const res = await fetch('/api/fetch-spec', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ products, criteria: col.key, locale }),
+          });
+          const data = await res.json() as Record<string, string>;
+          setFetchedSpecs(prev => ({ ...prev, [col.key]: data }));
+
+        } catch (err) {
+          console.error('[Table] fetch-spec failed:', err);
+        } finally {
+          setLoadingColumns(prev => { const s = new Set(prev); s.delete(col.key); return s; });
+        }
+      };
+
+      const removeColumn = (key: string) => {
+        if (key === allColumns[0]?.key) return; // 첫 컬럼(제품명)은 제거 불가
+        setHiddenColumnKeys(prev => new Set([...prev, key]));
+      };
+
+      const toggleColumn = (col: { key: string; label: string }) => {
+        const isInAll = allColumns.some(c => c.key === col.key);
+        const isHidden = hiddenColumnKeys.has(col.key);
+
+        if (isInAll) {
+          // 데이터 보존: visible 여부만 토글
+          if (isHidden) {
+            setHiddenColumnKeys(prev => { const s = new Set(prev); s.delete(col.key); return s; });
+          } else {
+            setHiddenColumnKeys(prev => new Set([...prev, col.key]));
+          }
+        } else {
+          // 새 컬럼: fetch 포함해서 추가
+          addColumn(col);
+        }
+      };
+
+      const firstColKey = 'product';
+      const allRows = [...rows, ...extraRows];
+      const [hiddenRowKeys, setHiddenRowKeys] = useState<Set<string>>(new Set());
+      const [showRowsPanel, setShowRowsPanel] = useState(false);
+      const visibleRows = allRows.filter(row => !hiddenRowKeys.has(String(row[firstColKey] ?? '')));
+      const currentProductNames = allRows.map(row => String(row[firstColKey] ?? '').toLowerCase());
+      // 이름이 완전히 일치하지 않을 수 있으므로 부분 매칭으로 비교
+      // (LLM이 생성한 짧은 이름 vs My Items의 전체 이름)
+      const isAlreadyInTable = (itemName: string) => {
+        const itemLower = itemName.toLowerCase();
+        return currentProductNames.some(tableName =>
+          tableName === itemLower ||
+          tableName.includes(itemLower) ||
+          itemLower.includes(tableName)
+        );
+      };
+      const addableItems = savedItems.filter(item => !isAlreadyInTable(item.name));
+
+      const addItemAsRow = async (item: { name: string; price?: string; link?: string }) => {
+        console.log(`[addItemAsRow] called for "${item.name}"`);
+        const newRow: Record<string, any> = { [firstColKey]: item.name };
+        if (item.price) newRow['price'] = item.price;
+        setExtraRows(prev => [...prev, newRow]);
+
+        // 새로 추가된 제품에 대해서만 기존 컬럼들의 값을 fetch
+        // (기존 제품들은 이미 값이 있으므로 건드리지 않음)
+        const columnsToFetch = visibleColumns.slice(1).filter(col => col.key !== 'price');
+
+        if (columnsToFetch.length === 0) {
+
+          return;
+        }
+
+        // Link priority for the new row's product:
+        // 1. _link from an existing table row with matching name (highest quality — from Danawa scraping)
+        // 2. item.link from savedItems (saved when user clicked heart)
+        // 3. Danawa search URL fallback (fetch-spec will try to extract pcode from results)
+        let resolvedLink = item.link ?? '';
+        if (!resolvedLink) {
+          const existingRowMatch = [...rows, ...extraRows].find(r => {
+            const rn = String(r[firstColKey] ?? '').toLowerCase();
+            const itemLower = item.name.toLowerCase();
+            return rn === itemLower || rn.includes(itemLower) || itemLower.includes(rn);
+          });
+          resolvedLink = existingRowMatch?._link ?? '';
+        }
+        if (!resolvedLink) {
+          resolvedLink = `https://search.danawa.com/dsearch.php?query=${encodeURIComponent(item.name)}&limit=1&sort=pd`;
+        }
+        const product = { name: item.name, link: resolvedLink };
+        console.log(`[addItemAsRow] fetching ${columnsToFetch.length} columns for "${item.name}" (link: ${resolvedLink.slice(0, 70)})`);
+
+        // 새 제품의 모든 셀을 로딩 상태로 표시
+        setLoadingCells(prev => {
+          const next = new Set(prev);
+          columnsToFetch.forEach(col => next.add(`${item.name}__${col.key}`));
+          return next;
+        });
+
+        // Accumulate fetched values to pass to reevaluateWinners
+        const newSpecValues: Record<string, Record<string, string>> = {};
+
+        await Promise.all(
+          columnsToFetch.map(async col => {
+            const cellKey = `${item.name}__${col.key}`;
+            try {
+              const res = await fetch('/api/fetch-spec', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ products: [product], criteria: col.key, locale }),
+              });
+              const data = await res.json() as Record<string, string>;
+              console.log(`[Table] addItemAsRow "${col.key}" for "${item.name}":`, data);
+              newSpecValues[col.key] = { ...(fetchedSpecs[col.key] ?? {}), ...data };
+              setFetchedSpecs(prev => ({
+                ...prev,
+                [col.key]: { ...(prev[col.key] ?? {}), ...data },
+              }));
+            } catch (err) {
+              console.error(`[Table] addItemAsRow fetch-spec failed for "${col.key}":`, err);
+            } finally {
+              setLoadingCells(prev => { const s = new Set(prev); s.delete(cellKey); return s; });
+            }
+          })
+        );
+
+
+      };
+
+
+      const renderCell = (row: Record<string, any>, col: { key: string; label: string }, ci: number) => {
+        const productName = String(row[firstColKey] ?? '');
+
+        // 셀 단위 로딩: 새로 추가된 제품의 해당 셀만 스피너 표시
+        if (ci > 0 && loadingCells.has(`${productName}__${col.key}`)) {
+          return <span className="inline-block w-4 h-4 border-2 border-slate-200 border-t-slate-500 rounded-full animate-spin" />;
+        }
+        // 컬럼 단위 로딩: addColumn으로 추가된 컬럼 전체 로딩
+        if (ci > 0 && loadingColumns.has(col.key)) {
+          return <span className="inline-block w-4 h-4 border-2 border-slate-200 border-t-slate-500 rounded-full animate-spin" />;
+        }
+
+        // Use fetched spec value if available (from /api/fetch-spec)
+        const fetchedValue = fetchedSpecs[col.key]?.[productName];
+        const rawValue = fetchedValue !== undefined ? fetchedValue : row[col.key];
+        const displayValue = rawValue != null ? String(rawValue) : '—';
+
+        // Check for explicit badge
+        const badge = cellBadges.find(b => b.row === productName && b.column === col.key);
+        if (badge) {
+          const badgeStyle =
+            badge.type === 'warning'
+              ? 'bg-red-50 text-red-500 border border-red-100'
+              : badge.type === 'success'
+                ? 'bg-green-50 text-green-600 border border-green-100'
+                : 'bg-slate-50 text-slate-600 border border-slate-100';
+          return (
+            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${badgeStyle}`}>
+              {badge.label}
+            </span>
+          );
+        }
+
+
+        return displayValue;
+      };
+
+
+      // allColumns(rank/product 제외) + expandableOptions 합쳐서 패널에 표시
+      const allManageableColumns = [
+        ...allColumns.filter(c => c.key !== 'rank' && c.key !== 'product'),
+        ...expandableOptions,
+      ];
+
+      return (
+        <div className="w-full animate-highlight-wrap">
+          {/* Table header row */}
+          <div className="flex items-center justify-between mb-2">
+            <div />
+          </div>
+
+          <div className="overflow-x-auto pb-4">
+            <table className="w-full min-w-[500px] text-[13px] border-collapse">
+              <thead>
+                <tr className="border-b border-slate-100">
+                  {visibleColumns.map((col, ci) => {
+                    const korNums = ['한', '두', '세', '네', '다섯', '여섯', '일곱', '여덟', '아홉', '열'];
+                    const currentNum = korNums[allRows.length - 1] ?? `${allRows.length}개`;
+                    const relNote = (col as any).relevanceNote as string | undefined;
+                    const dynamicNote = relNote?.replace(
+                      /[한두세네다섯여섯일곱여덟아홉열]\s*제품/g,
+                      `${currentNum} 제품`
+                    );
+
+
+                    return (
+                      <th
+                        key={col.key}
+                        className="relative text-left text-[11px] font-semibold tracking-wide uppercase px-3 py-2.5 text-slate-400"
+                        style={colWidths[col.key] ? { width: colWidths[col.key], minWidth: colWidths[col.key] } : { whiteSpace: 'nowrap' }}
+                      >
+                        <span>{col.label}</span>
+                        {/* Column resize handle */}
                         <div
-                          className={`${nameSizeClass} font-semibold text-slate-700 leading-tight`}
-                          style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}
-                          title={col.label}
+                          className="absolute top-0 right-0 bottom-0 w-3 cursor-col-resize flex items-center justify-center group/cr select-none z-10"
+                          onPointerDown={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            const th = e.currentTarget.parentElement as HTMLTableCellElement;
+                            const startWidth = th.getBoundingClientRect().width;
+                            colDragRef.current = { key: col.key, startX: e.clientX, startWidth };
+                            e.currentTarget.setPointerCapture(e.pointerId);
+                          }}
+                          onPointerMove={(e) => {
+                            const d = colDragRef.current;
+                            if (!d || d.key !== col.key) return;
+                            const newWidth = Math.max(60, d.startWidth + (e.clientX - d.startX));
+                            setColWidths(prev => ({ ...prev, [col.key]: newWidth }));
+                          }}
+                          onPointerUp={() => { colDragRef.current = null; }}
                         >
-                          {col.label}
+                          <div className="w-[2px] h-4 rounded-full bg-slate-200/0 group-hover/cr:bg-slate-300 transition-colors" />
                         </div>
                       </th>
                     );
@@ -802,434 +1184,56 @@ export const manualRegistry: Record<string, any> = {
                 </tr>
               </thead>
               <tbody>
-                {dataRows.map((row, ri) => {
-                  const isRowNew = animatingRowKeys.has(String(row.criterion ?? ''));
-                  return (
-                  <tr
-                    key={row.criterion ?? ri}
-                    className={`border-b border-slate-50 last:border-0 hover:bg-slate-50/50 transition-colors${isRowNew ? ' animate-highlight-wrap' : ''}`}
-                    onAnimationEnd={(e) => {
-                      if (isRowNew && e.animationName === 'highlight-wrap') {
-                        setAnimatingRowKeys(prev => { const next = new Set(prev); next.delete(String(row.criterion ?? '')); return next; });
-                      }
-                    }}
-                  >
-                    <td className="px-3 py-2.5 text-[12px] font-semibold text-slate-700">{row.criterion}</td>
-                    {sortedProductCols.map((col, ci) => {
-                      const val = String(row[col.key] ?? '-');
-                      const rankVal = rankRow ? String(rankRow[col.key] ?? '') : '';
-                      const isFirst = rankVal === '1위' || rankVal === '#1';
+                {visibleRows.map((row, i) => (
+                  <tr key={i} className="border-b border-slate-50 hover:bg-slate-50/50 transition-colors">
+                    {visibleColumns.map((col, ci) => {
+                      const isRankCol = col.key === "rank";
+                      const isProductCol = col.key === "product";
+                      const rankVal = isRankCol ? String(row["rank"] ?? i + 1) : null;
                       return (
-                        <td key={col.key} data-col-key={col.key} className={`px-3 py-2.5 text-center text-[13px] font-medium text-slate-700 ${isFirst ? 'bg-slate-50/60' : ''}`}>
-                          {val === '-' ? <span className="text-[11px] text-slate-300 font-medium">{t.unverified}</span> : val}
+                        <td
+                          key={col.key}
+                          className={`py-2.5 text-slate-700 ${isRankCol ? 'px-2 w-10 text-center' : 'px-3'} ${isProductCol ? 'font-semibold text-slate-900' : 'font-normal'}`}
+                          style={colWidths[col.key] ? { width: colWidths[col.key], minWidth: colWidths[col.key] } : undefined}
+                        >
+                          {isRankCol ? (
+                            <span className="inline-flex items-center justify-center w-6 h-6 rounded-full text-[11px] font-bold bg-slate-100 text-slate-500">
+                              {rankVal}
+                            </span>
+                          ) : (
+                            renderCell(row, col, ci)
+                          )}
                         </td>
                       );
                     })}
+                    {/* Trailing empty td to match phantom resizer th */}
+                    <td className="w-3 min-w-[12px] p-0" />
                   </tr>
-                  );
-                })}
+                ))}
               </tbody>
             </table>
           </div>
-          {rankReasoning && (
-            <div className="mt-3 px-3 py-2.5 bg-white rounded-[8px] border border-slate-100">
-              <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1">{t.whyRecommended}</p>
-              <p className="text-[12.5px] text-slate-600 leading-relaxed">{rankReasoning}</p>
+
+          {p.emptyMessage && rows.length === 0 && (
+            <p className="text-center text-[12px] text-slate-400 py-6">{p.emptyMessage}</p>
+          )}
+
+          {p._rankReasoning && visibleRows.length > 0 && (
+            <div className="mt-4 p-4 rounded-[12px] bg-white border border-slate-100 animate-highlight-wrap">
+              <div className="flex items-center gap-1.5 mb-2">
+                <Sparkles className="w-[14px] h-[14px] text-slate-400 shrink-0" />
+                <span className="text-[12.5px] font-bold text-slate-800">{t.whyRecommended}</span>
+              </div>
+              <p className="text-[12px] text-slate-600 leading-relaxed font-medium">
+                {p._rankReasoning}
+              </p>
             </div>
           )}
+
+
+
         </div>
       );
-    }
-    // ── END TRANSPOSED ──────────────────────────────────────────────────────
-
-
-    const cellBadges: { row: string; column: string; label: string; type: string }[] =
-      Array.isArray(p.cellBadges) ? p.cellBadges : [];
-
-    const criteriaFromBindings: { name: string; min?: string; priority: string }[] =
-      Array.isArray(allProps.bindings?.droppedCriteria) ? allProps.bindings.droppedCriteria : [];
-    const savedItems: { name: string; price?: string; description?: string; specs?: string[]; link?: string }[] =
-      Array.isArray(allProps.bindings?.savedItems) ? allProps.bindings.savedItems : [];
-
-    // allColumns: 한 번이라도 추가된 컬럼 전체 (데이터 보존)
-    const hasRank = rawColumns.some(c => c.key === 'rank');
-    const initialColumns: { key: string; label: string }[] = hasRank
-      ? rawColumns
-      : [{ key: 'rank', label: 'Rank' }, ...rawColumns];
-    const [allColumns, setAllColumns] = useState<{ key: string; label: string }[]>(initialColumns);
-    // hiddenColumnKeys: 현재 숨겨진 컬럼 key 집합
-    const [hiddenColumnKeys, setHiddenColumnKeys] = useState<Set<string>>(new Set());
-    // visibleColumns: 실제 테이블에 표시되는 컬럼 (derived)
-    const visibleColumns = allColumns.filter(c => !hiddenColumnKeys.has(c.key));
-
-    const [extraRows, setExtraRows] = useState<Record<string, any>[]>([]);
-    const [fetchedSpecs, setFetchedSpecs] = useState<Record<string, Record<string, string>>>({});
-    const [loadingColumns, setLoadingColumns] = useState<Set<string>>(new Set());
-    const [loadingCells, setLoadingCells] = useState<Set<string>>(new Set());
-    const [showColumnsPanel, setShowColumnsPanel] = useState(false);
-    const columnsPanelRef = useRef<HTMLDivElement>(null);
-
-    // Column resize state
-    const [colWidths, setColWidths] = useState<Record<string, number>>({});
-    const colDragRef = useRef<{ key: string; startX: number; startWidth: number } | null>(null);
-
-    // 공백을 제거한 normalized 값으로도 비교 (예: "저장 공간" vs "저장공간")
-    const normalize = (s: string) => s.toLowerCase().replace(/\s+/g, '');
-    // expandableOptions: allColumns에 없는 criteria만 (숨긴 컬럼도 제외)
-    const expandableOptions = criteriaFromBindings
-      .filter(c => {
-        const parenMatches = c.name.match(/\(([^)]+)\)/g)?.map((m: string) => m.slice(1, -1)) ?? [];
-        const baseName = c.name.replace(/\s*\([^)]+\)/g, '').trim();
-        const variants = [c.name, baseName, ...parenMatches].map((v: string) => v.toLowerCase()).filter(Boolean);
-        const variantsNorm = variants.map(normalize);
-        return !allColumns.some(col => {
-          const keyNorm = col.key.toLowerCase();
-          const labelNorm = col.label.toLowerCase();
-          const keyNoSpace = normalize(col.key);
-          const labelNoSpace = normalize(col.label);
-          return variants.some((v: string) =>
-            keyNorm === v || labelNorm === v ||
-            labelNorm.includes(v) || v.includes(labelNorm) ||
-            keyNorm.includes(v) || v.includes(keyNorm)
-          ) || variantsNorm.some((v: string) =>
-            keyNoSpace === v || labelNoSpace === v ||
-            labelNoSpace.includes(v) || v.includes(labelNoSpace) ||
-            keyNoSpace.includes(v) || v.includes(keyNoSpace)
-          );
-        });
-      })
-      .map(c => ({ key: c.name, label: c.name }));
-
-
-
-
-    const addColumn = async (col: { key: string; label: string }) => {
-      // 이미 allColumns에 있지만 숨겨진 경우 → 그냥 보이게만
-      if (allColumns.some(c => c.key === col.key)) {
-        setHiddenColumnKeys(prev => { const s = new Set(prev); s.delete(col.key); return s; });
-        return;
-      }
-
-      setAllColumns(prev => [...prev, col]);
-
-      const firstColKey = 'product';
-      const allCurrentRows = [...rows, ...extraRows];
-      const products = allCurrentRows
-        .map(row => {
-          const name = String(row.product ?? row[firstColKey] ?? '');
-          // Priority for link:
-          // 1. _link embedded in the row (set by UI Agent from DATA CONTEXT)
-          // 2. link from savedItems (My Items — set when user saves a product)
-          // 3. Danawa search URL as fallback (fetch-spec will extract pcode if possible)
-          let link = String(row._link ?? '');
-          // Link priority:
-          // 1. _link from existing table rows (set by UI Agent from Danawa scraping — most reliable)
-          // 2. _link from row data directly
-          // 3. savedItems.link (saved when user clicked heart on ProductCard)
-          // 4. Danawa search URL as last resort
-          if (!link) {
-            const rowMatch = allCurrentRows.find(r => {
-              const rn = String(r[firstColKey] ?? '').toLowerCase();
-              const nn = name.toLowerCase();
-              return rn === nn || rn.includes(nn) || nn.includes(rn);
-            });
-            link = rowMatch?._link ?? '';
-          }
-          if (!link) {
-            const savedMatch = savedItems.find(item => {
-              const a = item.name.toLowerCase(); const b = name.toLowerCase();
-              return a === b || a.includes(b) || b.includes(a);
-            });
-            link = savedMatch?.link ?? '';
-          }
-          if (!link && name) {
-            link = `https://search.danawa.com/dsearch.php?query=${encodeURIComponent(name)}&limit=1&sort=pd`;
-          }
-          console.log(`[addColumn] resolved link for "${name}": ${link.slice(0, 60)}`);
-          return { name, link };
-        })
-        .filter(p => p.name);
-
-      if (products.length === 0) return;
-
-      setLoadingColumns(prev => new Set([...prev, col.key]));
-      try {
-        const res = await fetch('/api/fetch-spec', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ products, criteria: col.key, locale }),
-        });
-        const data = await res.json() as Record<string, string>;
-        setFetchedSpecs(prev => ({ ...prev, [col.key]: data }));
-
-      } catch (err) {
-        console.error('[Table] fetch-spec failed:', err);
-      } finally {
-        setLoadingColumns(prev => { const s = new Set(prev); s.delete(col.key); return s; });
-      }
-    };
-
-    const removeColumn = (key: string) => {
-      if (key === allColumns[0]?.key) return; // 첫 컬럼(제품명)은 제거 불가
-      setHiddenColumnKeys(prev => new Set([...prev, key]));
-    };
-
-    const toggleColumn = (col: { key: string; label: string }) => {
-      const isInAll = allColumns.some(c => c.key === col.key);
-      const isHidden = hiddenColumnKeys.has(col.key);
-
-      if (isInAll) {
-        // 데이터 보존: visible 여부만 토글
-        if (isHidden) {
-          setHiddenColumnKeys(prev => { const s = new Set(prev); s.delete(col.key); return s; });
-        } else {
-          setHiddenColumnKeys(prev => new Set([...prev, col.key]));
-        }
-      } else {
-        // 새 컬럼: fetch 포함해서 추가
-        addColumn(col);
-      }
-    };
-
-    const firstColKey = 'product';
-    const allRows = [...rows, ...extraRows];
-    const [hiddenRowKeys, setHiddenRowKeys] = useState<Set<string>>(new Set());
-    const [showRowsPanel, setShowRowsPanel] = useState(false);
-    const visibleRows = allRows.filter(row => !hiddenRowKeys.has(String(row[firstColKey] ?? '')));
-    const currentProductNames = allRows.map(row => String(row[firstColKey] ?? '').toLowerCase());
-    // 이름이 완전히 일치하지 않을 수 있으므로 부분 매칭으로 비교
-    // (LLM이 생성한 짧은 이름 vs My Items의 전체 이름)
-    const isAlreadyInTable = (itemName: string) => {
-      const itemLower = itemName.toLowerCase();
-      return currentProductNames.some(tableName =>
-        tableName === itemLower ||
-        tableName.includes(itemLower) ||
-        itemLower.includes(tableName)
-      );
-    };
-    const addableItems = savedItems.filter(item => !isAlreadyInTable(item.name));
-
-    const addItemAsRow = async (item: { name: string; price?: string; link?: string }) => {
-      console.log(`[addItemAsRow] called for "${item.name}"`);
-      const newRow: Record<string, any> = { [firstColKey]: item.name };
-      if (item.price) newRow['price'] = item.price;
-      setExtraRows(prev => [...prev, newRow]);
-
-      // 새로 추가된 제품에 대해서만 기존 컬럼들의 값을 fetch
-      // (기존 제품들은 이미 값이 있으므로 건드리지 않음)
-      const columnsToFetch = visibleColumns.slice(1).filter(col => col.key !== 'price');
-
-      if (columnsToFetch.length === 0) {
-
-        return;
-      }
-
-      // Link priority for the new row's product:
-      // 1. _link from an existing table row with matching name (highest quality — from Danawa scraping)
-      // 2. item.link from savedItems (saved when user clicked heart)
-      // 3. Danawa search URL fallback (fetch-spec will try to extract pcode from results)
-      let resolvedLink = item.link ?? '';
-      if (!resolvedLink) {
-        const existingRowMatch = [...rows, ...extraRows].find(r => {
-          const rn = String(r[firstColKey] ?? '').toLowerCase();
-          const itemLower = item.name.toLowerCase();
-          return rn === itemLower || rn.includes(itemLower) || itemLower.includes(rn);
-        });
-        resolvedLink = existingRowMatch?._link ?? '';
-      }
-      if (!resolvedLink) {
-        resolvedLink = `https://search.danawa.com/dsearch.php?query=${encodeURIComponent(item.name)}&limit=1&sort=pd`;
-      }
-      const product = { name: item.name, link: resolvedLink };
-      console.log(`[addItemAsRow] fetching ${columnsToFetch.length} columns for "${item.name}" (link: ${resolvedLink.slice(0, 70)})`);
-
-      // 새 제품의 모든 셀을 로딩 상태로 표시
-      setLoadingCells(prev => {
-        const next = new Set(prev);
-        columnsToFetch.forEach(col => next.add(`${item.name}__${col.key}`));
-        return next;
-      });
-
-      // Accumulate fetched values to pass to reevaluateWinners
-      const newSpecValues: Record<string, Record<string, string>> = {};
-
-      await Promise.all(
-        columnsToFetch.map(async col => {
-          const cellKey = `${item.name}__${col.key}`;
-          try {
-            const res = await fetch('/api/fetch-spec', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ products: [product], criteria: col.key, locale }),
-            });
-            const data = await res.json() as Record<string, string>;
-            console.log(`[Table] addItemAsRow "${col.key}" for "${item.name}":`, data);
-            newSpecValues[col.key] = { ...(fetchedSpecs[col.key] ?? {}), ...data };
-            setFetchedSpecs(prev => ({
-              ...prev,
-              [col.key]: { ...(prev[col.key] ?? {}), ...data },
-            }));
-          } catch (err) {
-            console.error(`[Table] addItemAsRow fetch-spec failed for "${col.key}":`, err);
-          } finally {
-            setLoadingCells(prev => { const s = new Set(prev); s.delete(cellKey); return s; });
-          }
-        })
-      );
-
-
-    };
-
-
-    const renderCell = (row: Record<string, any>, col: { key: string; label: string }, ci: number) => {
-      const productName = String(row[firstColKey] ?? '');
-
-      // 셀 단위 로딩: 새로 추가된 제품의 해당 셀만 스피너 표시
-      if (ci > 0 && loadingCells.has(`${productName}__${col.key}`)) {
-        return <span className="inline-block w-4 h-4 border-2 border-slate-200 border-t-slate-500 rounded-full animate-spin" />;
-      }
-      // 컬럼 단위 로딩: addColumn으로 추가된 컬럼 전체 로딩
-      if (ci > 0 && loadingColumns.has(col.key)) {
-        return <span className="inline-block w-4 h-4 border-2 border-slate-200 border-t-slate-500 rounded-full animate-spin" />;
-      }
-
-      // Use fetched spec value if available (from /api/fetch-spec)
-      const fetchedValue = fetchedSpecs[col.key]?.[productName];
-      const rawValue = fetchedValue !== undefined ? fetchedValue : row[col.key];
-      const displayValue = rawValue != null ? String(rawValue) : '—';
-
-      // Check for explicit badge
-      const badge = cellBadges.find(b => b.row === productName && b.column === col.key);
-      if (badge) {
-        const badgeStyle =
-          badge.type === 'warning'
-            ? 'bg-red-50 text-red-500 border border-red-100'
-            : badge.type === 'success'
-              ? 'bg-green-50 text-green-600 border border-green-100'
-              : 'bg-slate-50 text-slate-600 border border-slate-100';
-        return (
-          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${badgeStyle}`}>
-            {badge.label}
-          </span>
-        );
-      }
-
-
-      return displayValue;
-    };
-
-
-    // allColumns(rank/product 제외) + expandableOptions 합쳐서 패널에 표시
-    const allManageableColumns = [
-      ...allColumns.filter(c => c.key !== 'rank' && c.key !== 'product'),
-      ...expandableOptions,
-    ];
-
-    return (
-      <div className="w-full animate-highlight-wrap">
-        {/* Table header row */}
-        <div className="flex items-center justify-between mb-2">
-          <div />
-        </div>
-
-        <div className="overflow-x-auto pb-4">
-          <table className="w-full min-w-[500px] text-[13px] border-collapse">
-            <thead>
-              <tr className="border-b border-slate-100">
-                {visibleColumns.map((col, ci) => {
-                  const korNums = ['한', '두', '세', '네', '다섯', '여섯', '일곱', '여덟', '아홉', '열'];
-                  const currentNum = korNums[allRows.length - 1] ?? `${allRows.length}개`;
-                  const relNote = (col as any).relevanceNote as string | undefined;
-                  const dynamicNote = relNote?.replace(
-                    /[한두세네다섯여섯일곱여덟아홉열]\s*제품/g,
-                    `${currentNum} 제품`
-                  );
-
-
-                  return (
-                    <th
-                      key={col.key}
-                      className="relative text-left text-[11px] font-semibold tracking-wide uppercase px-3 py-2.5 text-slate-400"
-                      style={colWidths[col.key] ? { width: colWidths[col.key], minWidth: colWidths[col.key] } : { whiteSpace: 'nowrap' }}
-                    >
-                      <span>{col.label}</span>
-                      {/* Column resize handle */}
-                      <div
-                        className="absolute top-0 right-0 bottom-0 w-3 cursor-col-resize flex items-center justify-center group/cr select-none z-10"
-                        onPointerDown={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          const th = e.currentTarget.parentElement as HTMLTableCellElement;
-                          const startWidth = th.getBoundingClientRect().width;
-                          colDragRef.current = { key: col.key, startX: e.clientX, startWidth };
-                          e.currentTarget.setPointerCapture(e.pointerId);
-                        }}
-                        onPointerMove={(e) => {
-                          const d = colDragRef.current;
-                          if (!d || d.key !== col.key) return;
-                          const newWidth = Math.max(60, d.startWidth + (e.clientX - d.startX));
-                          setColWidths(prev => ({ ...prev, [col.key]: newWidth }));
-                        }}
-                        onPointerUp={() => { colDragRef.current = null; }}
-                      >
-                        <div className="w-[2px] h-4 rounded-full bg-slate-200/0 group-hover/cr:bg-slate-300 transition-colors" />
-                      </div>
-                    </th>
-                  );
-                })}
-              </tr>
-            </thead>
-            <tbody>
-              {visibleRows.map((row, i) => (
-                <tr key={i} className="border-b border-slate-50 hover:bg-slate-50/50 transition-colors">
-                  {visibleColumns.map((col, ci) => {
-                    const isRankCol = col.key === "rank";
-                    const isProductCol = col.key === "product";
-                    const rankVal = isRankCol ? String(row["rank"] ?? i + 1) : null;
-                    return (
-                      <td
-                        key={col.key}
-                        className={`py-2.5 text-slate-700 ${isRankCol ? 'px-2 w-10 text-center' : 'px-3'} ${isProductCol ? 'font-semibold text-slate-900' : 'font-normal'}`}
-                        style={colWidths[col.key] ? { width: colWidths[col.key], minWidth: colWidths[col.key] } : undefined}
-                      >
-                        {isRankCol ? (
-                          <span className="inline-flex items-center justify-center w-6 h-6 rounded-full text-[11px] font-bold bg-slate-100 text-slate-500">
-                            {rankVal}
-                          </span>
-                        ) : (
-                          renderCell(row, col, ci)
-                        )}
-                      </td>
-                    );
-                  })}
-                  {/* Trailing empty td to match phantom resizer th */}
-                  <td className="w-3 min-w-[12px] p-0" />
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {p.emptyMessage && rows.length === 0 && (
-          <p className="text-center text-[12px] text-slate-400 py-6">{p.emptyMessage}</p>
-        )}
-
-        {p._rankReasoning && visibleRows.length > 0 && (
-          <div className="mt-4 p-4 rounded-[12px] bg-white border border-slate-100 animate-highlight-wrap">
-            <div className="flex items-center gap-1.5 mb-2">
-              <Sparkles className="w-[14px] h-[14px] text-slate-400 shrink-0" />
-              <span className="text-[12.5px] font-bold text-slate-800">{t.whyRecommended}</span>
-            </div>
-            <p className="text-[12px] text-slate-600 leading-relaxed font-medium">
-              {p._rankReasoning}
-            </p>
-          </div>
-        )}
-
-
-
-      </div>
-    );
     };
   })(),
 
@@ -1238,7 +1242,8 @@ export const manualRegistry: Record<string, any> = {
     const p = allProps?.props || allProps || {};
     const tr = T[resolveLocale(allProps)]; // named `tr` — `t` below is already used for a setTimeout handle
     const delay = p._animationDelay || 0;
-    const isUnconfirmed = !!(p._unconfirmed || (Array.isArray(p._unconfirmedCriteria) && p._unconfirmedCriteria.length > 0));
+    const notFoundCriteria: string[] = Array.isArray(p._notFoundCriteria) ? p._notFoundCriteria : [];
+    const isUnconfirmed = !!(p._unconfirmed || (Array.isArray(p._unconfirmedCriteria) && p._unconfirmedCriteria.length > 0) || notFoundCriteria.length > 0);
     const unconfirmedCriteria: string[] = Array.isArray(p._unconfirmedCriteria) && p._unconfirmedCriteria.length > 0
       ? p._unconfirmedCriteria
       : (p._unconfirmed ? [tr.unverified] : []);
@@ -1324,11 +1329,19 @@ export const manualRegistry: Record<string, any> = {
           {(Array.isArray(p.specs) && p.specs.length > 0 || isUnconfirmed) && (
             <div className="flex flex-wrap gap-1">
               {unconfirmedCriteria.map((criterionName: string) => (
-              <span
-                  key={criterionName}
-                  className="inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-medium bg-slate-50 text-slate-300 border border-slate-100"
+                <span
+                  key={`u-${criterionName}`}
+                  className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-medium text-[#666666] bg-[#F5F5F5]"
                 >
                   {criterionName === tr.unverified ? tr.unverified : tr.unverifiedFor(criterionName)}
+                </span>
+              ))}
+              {notFoundCriteria.map((criterionName: string) => (
+                <span
+                  key={`n-${criterionName}`}
+                  className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-medium text-[#666666] bg-[#F5F5F5]"
+                >
+                  {tr.notFoundFor(criterionName)}
                 </span>
               ))}
               {Array.isArray(p.specs) && p.specs.length > 0 && (
@@ -1390,7 +1403,7 @@ export const manualRegistry: Record<string, any> = {
           }, 2000); // highlight-wrap 애니메이션 길이(2s)와 맞춤
           return () => clearTimeout(t);
         }
-      // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [cardNamesKey]);
 
       return (

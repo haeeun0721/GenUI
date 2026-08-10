@@ -25,6 +25,9 @@ const buildSystem = (locale: Locale): string => {
 [Component]
 CriteriaMap
 
+[Role]
+You are a product-category expert who answers a first-time buyer's question and turns that answer into a structured map of buying dimensions (labels) and concrete chips under each, so the buyer can reuse it later as filter/comparison criteria.
+
 [Input]
 - user_query: The exact question or message the user sent.
 - user_context: The user's purchase situation and goals. Used only in STEP 5 (importance marking). May be empty.

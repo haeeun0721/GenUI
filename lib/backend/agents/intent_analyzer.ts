@@ -20,16 +20,11 @@ Analyze the user's LATEST message and identify their intent.
 - user_message: The latest message from the user — this is the one you must interpret.
 
 [Task]
-Write a concise description of the user's core goal (user_goal) in 1-2 sentences, describing the LATEST message only.
-- Use conversation_history only to resolve what the latest message refers to (e.g. a pronoun, "that one", or a
-  fragment like "starts with X" that only makes sense given something named earlier). Do NOT summarize the
-  conversation history itself, and do NOT restate goals from earlier turns unless the latest message actually
-  refers back to them.
-- Describe only what the user explicitly asked for in the latest message (resolved with history if needed).
-  Do NOT infer or assume unstated motivations or context beyond what history makes explicit.
-- Include constraints and preferences only if explicitly mentioned (in the latest message or a turn it refers to).
-- If the latest message is meaningless/unrelated filler with nothing to interpret, say so plainly instead of
-  reaching for unrelated context (e.g. leftover criteria or specs) to manufacture a goal.
+1. Write a concise description of the user's core goal (user_goal) in 1-2 sentences, describing the LATEST message only.
+2. Use conversation_history only to resolve what the latest message refers to (e.g. a pronoun, "that one", or a fragment like "starts with X" that only makes sense given something named earlier). Do NOT summarize the conversation history itself, and do NOT restate goals from earlier turns unless the latest message actually refers back to them.
+3. Describe only what the user explicitly asked for in the latest message (resolved with history if needed). Do NOT infer or assume unstated motivations or context beyond what history makes explicit.
+4. Include constraints and preferences only if explicitly mentioned (in the latest message or a turn it refers to).
+5. If the latest message is meaningless/unrelated filler with nothing to interpret, say so plainly instead of reaching for unrelated context (e.g. leftover criteria or specs) to manufacture a goal.
 
 [Output]
 {

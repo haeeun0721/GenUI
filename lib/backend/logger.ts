@@ -24,6 +24,13 @@ export function writeCompTableLog(
   productLogs: ProductLog[],
   decisionCriteria: string[]
 ): void {
+  // Vercel 등 서버리스 배포 환경은 /tmp 말고는 파일시스템이 읽기 전용이라 이 쓰기가 항상
+  // 실패한다 — 매 요청마다 시도-실패를 반복하지 않도록 아예 건너뛴다. 로컬 개발 환경(진단용
+  // 마크다운 로그가 실제로 쓸모 있는 유일한 곳)에서는 그대로 동작한다.
+  if (process.env.VERCEL) {
+    console.log("[CompTable Log] 서버리스 환경 — 파일 로그 생략");
+    return;
+  }
   try {
     const dataDir = join(process.cwd(), "data");
     if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });

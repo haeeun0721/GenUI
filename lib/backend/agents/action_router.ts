@@ -78,7 +78,6 @@ export async function routeAction(
   const { object } = await generateObject({
     model: openai(ROUTER_MODEL),
     schema: ActionRouteSchema,
-    mode: "json",
     system: buildRouterPrompt(),
     prompt: promptText,
     temperature: 0,

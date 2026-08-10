@@ -19,10 +19,15 @@ import { lookupProductSpec } from "../services/spec-lookup";
  * 동일한 building block(lookupProductSpec)을 재사용하되, update-table/route.ts 자체는
  * 건드리지 않는다 — 그 경로는 Decision Criteria 패널 변경 시에도 여전히 그대로 동작해야 하기 때문.
  *
- * 셀 값 조회는 전부 lookupProductSpec(공유 캐시 → 로컬 DB → Tavily 3단계 + judgeCell 검증 +
- * SiblingGuard)로 통일했다. 예전엔 이 파일이 findProductSpecInDB/tavilySearch/judgeCell을
- * 직접 조합해서 auto-enrich/fetch-spec이 쓰는 더 정교한 파이프라인과 따로 놀았는데, 그러다보니
- * 개선(SiblingGuard 등)이 한쪽에만 적용되는 문제가 있었다.
+ * 셀 값 조회는 전부 lookupProductSpec(로컬 DB → Tavily 검색 + judgeCell 검증 + SiblingGuard)로
+ * 통일했다. 예전엔 이 파일이 findProductSpecInDB/tavilySearch/judgeCell을 직접 조합해서
+ * auto-enrich/fetch-spec이 쓰는 더 정교한 파이프라인과 따로 놀았는데, 그러다보니 개선
+ * (SiblingGuard 등)이 한쪽에만 적용되는 문제가 있었다.
+ *
+ * 주의: 여기(채팅으로 Table을 직접 mutate하는 경로)는 app/api/update-table/route.ts의
+ * STRATEGY A와 달리 Option List 쪽 auto-enrich 결과를 넘겨받지 않는다 — 즉 캐시가 없으므로
+ * 동일 제품×기준을 이 경로와 Option List 경로가 각각 건드리면 독립적인 실시간 검색이 되어
+ * 값이 갈릴 수 있다(캐시를 두지 않기로 한 이유는 update-table/route.ts 상단 주석 참고).
  *
  * product(열) add는 mutateSurface(Option List add)와 동일하게 RAG(ragSearch)로 제품을 찾는다.
  * 단일 셀 재조회(특정 제품 × 특정 기준 하나만 갱신)는 여전히 범위 밖이다.
@@ -107,8 +112,8 @@ Only use when [CURRENT_COMPARISON_TABLE] is present. Cannot re-check a single ce
           productCols.map(async (col: any) => {
             const fullName = fullNameMap.get(col.label) ?? col.label;
             const result = await lookupProductSpec(fullName, criterion, currentProductCategory, currentLocale);
-            newRow[col.key] = result.uncertain ? "-" : result.value;
-            console.log(`[mutateComparisonTable] "${fullName}" × "${criterion}" → "${newRow[col.key]}" (source=${result.source}${result.uncertain ? ", 불확실→폐기" : ""})`);
+            newRow[col.key] = result.uncertain && result.value !== "-" ? `${result.value} (추정)` : result.value;
+            console.log(`[mutateComparisonTable] "${fullName}" × "${criterion}" → "${newRow[col.key]}" (source=${result.source}${result.uncertain ? ", 불확실" : ""})`);
           })
         );
 
@@ -183,8 +188,8 @@ Only use when [CURRENT_COMPARISON_TABLE] is present. Cannot re-check a single ce
           criterionRows.map(async (row: any) => {
             const criterion = String(row.criterion ?? "");
             const result = await lookupProductSpec(prod.name, criterion, currentProductCategory, currentLocale);
-            row[newKey] = result.uncertain ? "-" : result.value;
-            console.log(`[mutateComparisonTable/add_product] "${prod.name}" × "${criterion}" → "${row[newKey]}" (source=${result.source}${result.uncertain ? ", 불확실→폐기" : ""})`);
+            row[newKey] = result.uncertain && result.value !== "-" ? `${result.value} (추정)` : result.value;
+            console.log(`[mutateComparisonTable/add_product] "${prod.name}" × "${criterion}" → "${row[newKey]}" (source=${result.source}${result.uncertain ? ", 불확실" : ""})`);
           })
         );
         console.log(`[mutateComparisonTable/add_product] 새 제품 컬럼 추가: "${prod.name}"`);

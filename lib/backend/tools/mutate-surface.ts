@@ -249,11 +249,14 @@ Only use when [CURRENT_OPTION_LIST] is present. For new product searches, use re
       result.new_cards = newCards;
 
       // ── field_updates 처리 (add op에 통합) ───────────────────────────────
-      // lookupProductSpec(캐시→DB→Tavily 3단계+judgeCell 검증+SiblingGuard)을 제품마다
+      // lookupProductSpec(로컬 DB→Tavily 검색+judgeCell 검증+SiblingGuard)을 제품마다
       // 개별 호출한다. 예전엔 DB에 없는 제품들을 모아 스니펫 하나씩만 가져온 뒤 Claude
       // 배치 호출 1번으로 값을 뽑았는데(검증 없음), 이제는 auto-enrich/fetch-spec/
       // ComparisonTable과 동일한 검증된 파이프라인을 쓴다 — 그만큼 제품 수만큼 호출이
-      //늘어나지만(병렬 처리), 형제 SKU 오염 방지 등 다른 경로와 동일한 안전장치를 받는다.
+      // 늘어나지만(병렬 처리), 형제 SKU 오염 방지 등 다른 경로와 동일한 안전장치를 받는다.
+      // 캐시는 없다 — 이 경로(채팅으로 Option List를 직접 mutate)와 update-table/route.ts의
+      // STRATEGY A가 동시에 같은 제품×기준을 건드리면 독립적인 실시간 검색이 되어 값이
+      // 갈릴 수 있다(이유는 update-table/route.ts 상단 주석 참고).
       const fieldUpdatesRaw = args.field_updates ?? [];
       if (fieldUpdatesRaw.length > 0) {
         const results = await Promise.all(
@@ -264,16 +267,20 @@ Only use when [CURRENT_OPTION_LIST] is present. For new product searches, use re
         );
 
         const resolvedUpdates = results
-          .filter(({ lookup }) => lookup.value !== "-" && !lookup.uncertain)
+          .filter(({ lookup }) => lookup.value !== "-")
           .map(({ product_name, field_key, lookup }) => ({
             product_name,
             field_key,
-            spec_phrase: buildSpecPhrase(field_key, lookup.value),
+            spec_phrase: lookup.uncertain
+              ? `${buildSpecPhrase(field_key, lookup.value)} (추정)`
+              : buildSpecPhrase(field_key, lookup.value),
           }));
 
         for (const { product_name, field_key, lookup } of results) {
-          if (lookup.value === "-" || lookup.uncertain) {
-            console.warn(`[mutateSurface/add] ❌ "${product_name}" × "${field_key}" 해결 실패${lookup.uncertain ? " (불확실)" : ""}`);
+          if (lookup.value === "-") {
+            console.warn(`[mutateSurface/add] ❌ "${product_name}" × "${field_key}" 해결 실패`);
+          } else if (lookup.uncertain) {
+            console.log(`[mutateSurface/add] ⚠️  "${product_name}" × "${field_key}" → "${lookup.value}" (추정)`);
           }
         }
 

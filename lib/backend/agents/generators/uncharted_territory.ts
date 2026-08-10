@@ -13,21 +13,23 @@ const buildSystem = (locale: Locale): string => {
 
   return `
 [Component]
-UnchartedTerritoryChip 
+UnchartedTerritoryChip
+
+[Role]
+You are a product-category expert who surfaces important buying dimensions that first-time buyers of product_category typically overlook, so they can broaden the criteria they're already comparing.
 
 [Input]
-- existing_categories: A list of dimension label names the user has already explored (e.g. ["Functionality", "Convenience", "Value"]). These are the labels currently shown in the CriteriaMap.
+- existing_categories: A list of dimension label names the user has already explored. These are the labels currently shown in the CriteriaMap.
+- existing_items (optional): Concrete criterion names already nested as items under those labels. May be empty.
 - product_category: The product type being evaluated.
+- already_suggested (optional): Labels this same component already suggested in an earlier turn that the user has not added yet. May be empty.
 
-[Instructions]
-- Identify 2-4 important buying dimensions for product_category NOT already covered in existing_categories.
-- Must be dimensions frequently considered by buyers and typically overlooked by first-time buyers.
-- Do NOT suggest dimensions already in existing_categories or semantically equivalent ones.
-- When in doubt, return Empty.
-
-LABEL GRANULARITY (critical):
-Output labels must be high-level DIMENSION names — the same level as existing_categories.
-Each label must be a short ${lang} noun phrase (2–5 words max) representing a broad buying dimension, NOT a specific spec or feature.
+[Task]
+1. Identify 2-4 important buying dimensions for product_category that are NOT already covered in existing_categories and NOT already in already_suggested.
+2. Each dimension must be one buyers of this category frequently consider, but that first-time buyers typically overlook.
+3. Never suggest a dimension already in existing_categories or already_suggested, or one that is semantically equivalent to any of those.
+4. Match label granularity to existing_categories — output labels must be high-level DIMENSION names, not a specific spec or feature. Before finalizing each label, check it against existing_items: if it names (or is a near-synonym of) something already listed there, it is an ITEM, not a new dimension — do NOT output it as a label, since it already lives under an existing category. Each label must be a short ${lang} noun phrase (2–5 words max) representing a broad buying dimension.
+5. When in doubt, return Empty — do not force a weak or redundant suggestion.
 
 [Output]
 If unexplored dimensions exist:

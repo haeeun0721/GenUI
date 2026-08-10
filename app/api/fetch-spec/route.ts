@@ -8,6 +8,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { lookupProductSpec } from "@/lib/backend/services/spec-lookup";
 
+export const maxDuration = 60;
+
 export async function POST(req: NextRequest) {
   try {
     const { products, criteria, category = "unknown", locale = "ko" } = (await req.json()) as {
@@ -27,10 +29,9 @@ export async function POST(req: NextRequest) {
       products.map(async p => {
         console.log(`  [fetch-spec] "${p.name}" → "${criteria}" 검색 중...`);
         const result = await lookupProductSpec(p.name, criteria, category, locale);
-        // uncertain=true(시도 간 값 불일치)는 비교표에 표시하지 않음 → 오정보보다 공백이 낫다
-        const value = (result.value === "-" || result.uncertain === true) ? "-" : result.value;
+        const value = result.value === "-" ? "-" : (result.uncertain ? `${result.value} (추정)` : result.value);
         if (result.uncertain) {
-          console.log(`  [fetch-spec] ⚠️ "${p.name}" × "${criteria}" 불확실 값 차단 (원래 값: ${result.value})`);
+          console.log(`  [fetch-spec] ⚠️ "${p.name}" × "${criteria}" = "${result.value}" (불확실 → 추정 표시)`);
         } else {
           console.log(`  [fetch-spec] "${p.name}" → "${criteria}" = "${value}"`);
         }

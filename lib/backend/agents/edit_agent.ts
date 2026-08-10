@@ -113,14 +113,14 @@ never know about "templates". Your only job is to decide WHICH surface to change
 Write ALL free-text output (op_summary, sort_by, field_key, criteria_to_add, category_label, item_names,
 and any other natural-language field in the schema) in ${locale === "en" ? "English" : "Korean"} — regardless
 of what language the example phrases below happen to be written in. The example signal phrases under
-[optionList ops]/[comparisonTable ops]/[criteriaMap ops] are shown in Korean for illustration only; recognize
-the same underlying intent when the user writes in a different language.
+[optionList ops]/[comparisonTable ops]/[criteriaMap ops] illustrate intent only; recognize the same
+underlying intent when the user writes in Korean or any other language.
 
 [Input]
 - user_message: the user's latest raw request.
 - intent_analysis: the user's interpreted goal.
-- product_category: the product type being shopped for (e.g. 로봇청소기, 카메라, 유모차).
-- user_context (optional): the user's stated situation/needs (e.g. "반려동물 있음, 신혼부부").
+- product_category: the product type being shopped for (e.g. robot vacuum, camera, stroller).
+- user_context (optional): the user's stated situation/needs (e.g. "has pets, newlywed couple").
 - decision_criteria (optional): buying criteria the user has flagged as important, in priority order.
 - current_optionList (optional): [{id, name, priceNum, priceStr, specs}...] products currently shown as
   cards, if any. id is the stable identifier — name is just human-readable text.
@@ -133,7 +133,7 @@ Only surfaces that are actually present in the input may be targeted. Never targ
 
 [Task]
 1. Decide target_surface — ground your choice in which surface the user's language actually refers to
-   (e.g. "표에서 빼줘" → comparisonTable, "목록에서 빼줘" / no table exists → optionList).
+   (e.g. "remove it from the table" → comparisonTable, "remove it from the list" / no table exists → optionList).
 2. Decide op and that surface's own parameters only, using ONLY the schema for target_surface below.
 3. For optionList/comparisonTable: NEVER invent product data (spec values, prices). Output only what
    needs to be looked up (field_key / criterion label / product name) — a downstream system resolves
@@ -146,58 +146,58 @@ Only surfaces that are actually present in the input may be targeted. Never targ
    yet (products_to_add, criteria_to_add, add_item's item_names) are plain text, not ids.
 
 [optionList ops]
-- "filter": narrow down to a subset already shown. Signals explicitly restrict to the CURRENT set: "이 중에서",
-  "가장 저렴한 거", "소음 낮은 순으로 골라줘", "반려동물 있는 집에 맞는 것만", "나한테 맞는 것만 골라줘".
+- "filter": narrow down to a subset already shown. Signals explicitly restrict to the CURRENT set: "among these",
+  "the cheapest one", "sort by lowest noise", "only ones suitable for a home with pets", "just pick the ones that fit me".
   → result_card_names = the matching cards' 'id's to keep, in final order. For an OBJECTIVE criterion
-  stated in a card's own price/specs (가격, 소음, 흡입력, ...), pick by reading those values directly.
-  For a SUBJECTIVE/holistic criterion ("나한테 맞는 것", "반려동물 키우기 좋은 것") with no single matching
+  stated in a card's own price/specs (price, noise, suction power, ...), pick by reading those values directly.
+  For a SUBJECTIVE/holistic criterion ("the one that fits me", "good for a pet-owning household") with no single matching
   spec field, REASON over each card's price/specs against user_context and decision_criteria yourself and
   decide which ones qualify — do not leave this empty just because no spec literally names the criterion.
-  Never use "filter" just because the user wants MORE items matching a criterion (e.g. "여러 개 추천해줘",
-  "많이 보여줘") — that is "add", not "filter", even without the word "더". Only use "filter" when the
-  request is clearly about the EXISTING cards specifically (referencing "이 중에서", "지금 나온 것 중",
-  or an action like "골라줘"/"빼줘"/"정렬" on what's already shown). A card's spec text being vague
-  (e.g. "강력한 흡입력" instead of a number) is NOT grounds to silently drop that card via filter — if you
+  Never use "filter" just because the user wants MORE items matching a criterion (e.g. "recommend several more",
+  "show me a lot") — that is "add", not "filter", even without the word "more". Only use "filter" when the
+  request is clearly about the EXISTING cards specifically (referencing "among these", "among the ones currently shown",
+  or an action like "pick"/"remove"/"sort" on what's already shown). A card's spec text being vague
+  (e.g. "powerful suction" instead of a number) is NOT grounds to silently drop that card via filter — if you
   can't verify a numeric criterion from the shown text, leave the card in rather than excluding it.
-- "sort": reorder the existing list. Signals: "가격순", "소음 낮은 순으로 정렬", "나한테 제일 잘 맞는 순서로 정렬해줘",
-  "추천 순으로 정렬".
-  → For an OBJECTIVE field that exists in the cards' own price/specs (가격, 무게, 소음, 흡입력, ...):
-    sort_by = that Korean field name, sort_order = 'asc'|'desc' (default 'asc'). Leave result_card_names null.
-  → For a SUBJECTIVE/holistic request ("잘 맞는 순서", "추천 순", "종합적으로 좋은 순") with no single matching
+- "sort": reorder the existing list. Signals: "by price", "sort by lowest noise", "sort by what fits me best",
+  "sort by recommendation".
+  → For an OBJECTIVE field that exists in the cards' own price/specs (price, weight, noise, suction power, ...):
+    sort_by = that ${locale === "en" ? "English" : "Korean"} field name, sort_order = 'asc'|'desc' (default 'asc'). Leave result_card_names null.
+  → For a SUBJECTIVE/holistic request ("best fit order", "recommended order", "overall best order") with no single matching
     spec field: do NOT invent a sort_by field name (it won't match anything and the sort will silently do
     nothing). Instead REASON over every card's price/specs against user_context and decision_criteria
     yourself, and set result_card_names = ALL current card ids, best-fit-first. Leave sort_by null.
 - "add": expand with new products not currently shown, OR look up a spec field for existing cards.
-  Signals: "더 추천해줘", "다른 브랜드", "각 제품 배터리 수명도 보여줘", "여러 개 추천해줘", "몇 개 더", "많이 보여줘",
-  or any plain recommendation request ("추천해줘"/"보여줘") that doesn't explicitly restrict to the cards
-  already on screen.
+  Signals: "recommend more", "a different brand", "show battery life for each product too", "recommend several more",
+  "a few more", "show me a lot", or any plain recommendation request ("recommend"/"show me") that doesn't explicitly
+  restrict to the cards already on screen.
   → products_to_add and/or field_updates. Always pass original_query if the user had prior search constraints.
 
 [comparisonTable ops] (single-cell re-verification is out of scope — see schema note)
-- "add_criteria": add one or more new criterion rows to compare. Signals: "이 기준도 비교해줘", "직배수 기능도 넣어서 봐줘".
+- "add_criteria": add one or more new criterion rows to compare. Signals: "compare this criterion too", "also check the direct-drain feature".
   → criteria_to_add.
-- "remove_criteria": remove one or more existing criterion rows. Signals: "이 기준은 빼줘".
+- "remove_criteria": remove one or more existing criterion rows. Signals: "remove this criterion".
   → criteria_to_remove = the matching row's 'id' (e.g. "crit_1") from current_comparisonTable.criteria — NOT its label.
-- "add_product": add one or more new products as columns to compare. Signals: "샤오미 제품도 넣어서 비교해줘", "로보락 S9도 같이 봐줘".
+- "add_product": add one or more new products as columns to compare. Signals: "add Xiaomi products to the comparison too", "also look at the Roborock S9".
   → products_to_add = product names/brands to search for (a downstream system resolves the actual product via search — do not invent specs).
-- "remove_product": remove one or more existing product columns. Signals: "이 제품은 표에서 빼줘".
+- "remove_product": remove one or more existing product columns. Signals: "remove this product from the table".
   → products_to_remove = the matching column's 'key' (e.g. "prod_1") from current_comparisonTable.products — NOT its label.
 
 [criteriaMap ops]
 - "add_item": three request shapes all map here:
-  (a) Adding a NAMED item the user already specified. Signals: "이 항목 아래에 ~도 추가해줘".
+  (a) Adding a NAMED item the user already specified. Signals: "add ~ under this category too".
       → item_names = that item, verbatim.
   (b) Asking YOU to suggest what else is worth considering — this is the common "add" case.
-      Signals: "성능 측면에서 또 뭘 고려할 수 있을까?", "이런 기준도 알려줘", "더 알려줘".
+      Signals: "what else should I consider in terms of performance?", "tell me criteria like this too", "tell me more".
       → You must actively GENERATE 2-4 concrete, real criterion names from your own product knowledge
       of product_category — the same way you would when writing a buying guide. Do NOT leave this as an
       empty string and do NOT return a placeholder; if you cannot think of a genuinely new, non-duplicate
       item, set item_names to null instead (and briefly say why in op_summary).
-      Each name must be a short concrete noun phrase for a SPECIFIC dimension (e.g. for 로봇청소기 성능:
-      "먼지통 용량", "주행 시간", "매핑 정확도" — NOT vague restatements like "기타 성능" or "추가 항목").
+      Each name must be a short concrete noun phrase for a SPECIFIC dimension (e.g. for robot vacuum performance:
+      "dustbin capacity", "runtime", "mapping accuracy" — NOT vague restatements like "other performance" or "additional item").
       Never repeat an item name that already exists under category_label in current_criteriaMap.
 - "remove_item": the user wants existing items, or an entire category, gone.
-  Signals: "~는 빼줘", "~ 정보 삭제해줘", "~ 카테고리 지워줘".
+  Signals: "remove ~", "delete ~ info", "delete the ~ category".
   → category_label = the matching category's 'id' from current_criteriaMap — NOT its label.
   → item_names = the matching items' 'id's from current_criteriaMap under that category — NOT their
     names. If the user means the whole category, list every current item id under it.
@@ -230,7 +230,7 @@ export async function planEdit(
 
   if (screen.optionList && screen.optionList.length > 0) {
     promptParts.push(
-      `current_optionList (id | name | 가격 | 스펙):\n${screen.optionList
+      `current_optionList (id | name | price | specs):\n${screen.optionList
         .map(p => `- ${p.id} | ${p.name}${p.priceNum != null ? ` | ${p.priceNum.toLocaleString()}원` : ''}${p.specs.length > 0 ? ` | ${p.specs.join(', ')}` : ''}`)
         .join('\n')}`
     );
