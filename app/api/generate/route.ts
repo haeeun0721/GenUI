@@ -219,10 +219,17 @@ export async function POST(req: Request) {
   const optionListMatch = latestText.match(/\[CURRENT_OPTION_LIST[^\]]*\]\n([\s\S]*?)(?=\n\[|$)/);
   interface CurrentProduct { id: string; name: string; priceNum: number | null; priceStr: string; specs: string[]; }
   let currentProducts: CurrentProduct[] = [];
+  // 이 Option List를 만들 때 썼던 원래 검색 제약(예: "흡입력 4,500pa 이상") — page.tsx가
+  // {cards, searchQuery} 형태로 같이 보낸다. Edit Agent가 대화 히스토리를 못 보므로, 후속
+  // "add" 요청에서 이 제약을 유지하려면 이 값을 그대로 전달해줘야 한다.
+  let currentOptionListSearchQuery = "";
   if (hasOptionList && optionListMatch) {
     try {
       const parsed = JSON.parse(optionListMatch[1].trim());
-      currentProducts = (Array.isArray(parsed) ? parsed : []).map((c: any, i: number) => {
+      // 구형 프로토콜(카드 배열을 그대로 보냄) 호환 — 둘 다 지원.
+      const cardsArr = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.cards) ? parsed.cards : []);
+      if (!Array.isArray(parsed)) currentOptionListSearchQuery = String(parsed?.searchQuery ?? "").trim();
+      currentProducts = cardsArr.map((c: any, i: number) => {
         const priceStr = String(c.price ?? '');
         const priceMatch = priceStr.match(/(\d[\d,]*)/);
         const priceNum = priceMatch ? parseInt(priceMatch[1].replace(/,/g, '')) : null;
@@ -272,6 +279,29 @@ export async function POST(req: Request) {
   const hasComparisonTable = comparisonTableProducts.length > 0 || comparisonTableCriteria.length > 0;
   const hasCriteriaMap = parsedCriteriaMap.length > 0;
 
+  // Action Router/Template Selector는 screen_state(boolean) 또는 제품명 목록 정도만 보고
+  // 판단해왔는데, 그 정도로는 "이미 화면에 있는 구체적인 내용"이 필요한 요청(예: "왜 이
+  // 제품을 추천한거야?")을 제대로 분류하지 못했다 — 화면에 뭐가 있는지 실제로는 모르는
+  // 채로 판단했기 때문. 여기서 한 번만 만들어서 두 에이전트에 공통으로 넘긴다.
+  const screenSummaryParts: string[] = [];
+  if (currentProducts.length > 0) {
+    screenSummaryParts.push(`Option List: ${currentProducts.length} products currently shown — ${currentProductNames.join(', ')}`);
+  }
+  if (hasComparisonTable) {
+    screenSummaryParts.push(
+      `Comparison Table: ${comparisonTableProducts.length} products (${comparisonTableProducts.map(p => p.label).join(', ') || 'none'}) ` +
+      `× ${comparisonTableCriteria.length} criteria (${comparisonTableCriteria.map(c => c.label).join(', ') || 'none'})`
+    );
+  }
+  if (hasCriteriaMap) {
+    screenSummaryParts.push(
+      `Criteria Map: ${parsedCriteriaMap.map(cat => `${cat.label} (${(cat.items ?? []).map(i => i.name).join(', ')})`).join(' | ')}`
+    );
+  }
+  const screenSummary = screenSummaryParts.length > 0
+    ? screenSummaryParts.join('\n')
+    : '(nothing on screen yet)';
+
   // ─── Criteria-Only Pre-filter ──────────────────────────────────────────────
   const strippedLatest = latestText
     .replace(/\[CURRENT_CRITERIA_MAP\][\s\S]*$/, '') // always the trailing tag; strip to end-of-string first
@@ -292,6 +322,59 @@ export async function POST(req: Request) {
     return new Response('', { status: 200, headers: { 'Content-Type': 'text/plain' } });
   }
 
+  // ─── 요청 컨텍스트 통합 ─────────────────────────────────────────────────────
+  // 각 에이전트 호출부가 위에서 파싱된 변수들 중 필요한 걸 그때그때 골라 넘기다 보니,
+  // 새 호출부를 추가하거나 기존 걸 고칠 때 특정 필드(예: screenSummary) 하나를 빠뜨려도
+  // 타입 에러 없이 조용히 통과한다 — Chat Agent가 화면 상태를 못 받던 버그가 그 경우였다.
+  // 이번 요청에서 파생된 "현재 상태"를 한 객체로 모아두고, 아래 에이전트 호출은 전부 여기서 꺼내 쓴다.
+  interface RequestContext {
+    locale: "ko" | "en";
+    productCategory: string;
+    participantId: string;
+    hasOptionList: boolean;
+    hasComparisonTable: boolean;
+    hasCriteriaMap: boolean;
+    currentProducts: CurrentProduct[];
+    currentProductNames: string[];
+    currentOptionListSearchQuery: string;
+    currentComparisonTable: { props: { columns: any[]; rows: any[] } } | null;
+    comparisonTableProducts: { key: string; label: string }[];
+    comparisonTableCriteria: { id: string; label: string }[];
+    parsedCriteriaMap: Array<{ id?: string; label: string; items: Array<{ id?: string; name: string }> }>;
+    screenSummary: string;
+    screenDetail: string;
+    strippedLatest: string;
+    modelMessages: typeof modelMessages;
+  }
+
+  // screenSummary는 라우팅 판단용 요약이라 상품명만 담고 스펙/가격은 뺐다. "왜 이 순서야?" 같은
+  // 질문에 구체적으로 답하려면 Chat Agent에게는 스펙까지 필요해서 별도로 만든다.
+  const screenDetail = currentProducts.length > 0
+    ? currentProducts
+        .map(p => `- ${p.name}${p.priceStr ? ` (${p.priceStr})` : ""}: ${p.specs.length > 0 ? p.specs.join(", ") : "스펙 정보 없음"}`)
+        .join("\n")
+    : "";
+
+  const ctx: RequestContext = {
+    locale,
+    productCategory,
+    participantId,
+    hasOptionList,
+    hasComparisonTable,
+    hasCriteriaMap,
+    currentProducts,
+    currentProductNames,
+    currentOptionListSearchQuery,
+    currentComparisonTable,
+    comparisonTableProducts,
+    comparisonTableCriteria,
+    parsedCriteriaMap,
+    screenSummary,
+    screenDetail,
+    strippedLatest,
+    modelMessages,
+  };
+
   // ─── [1] Intent Agent Fast: 의도 분류 (text_reply 없음, ~0.5–1s) ────────────
   // stream은 분류 중 즉시 열려 TTFB 개선. Cat 1a/1b는 text reply를 generator와 병렬 생성.
   const stream = createUIMessageStream({
@@ -302,7 +385,7 @@ export async function POST(req: Request) {
       // 참가자 공유 메모리 로드 — 이전 턴들의 요약(마크다운). participantId 없거나 Redis 미설정이면 빈 문자열.
       // analyzeIntent/routeAction과 동시에 진행하고, 실제로 쓰이는 시점(CriteriaMap/InformationCard 생성,
       // none 잡담 응답)에만 await한다 — 그 시점이면 이미 두 LLM 호출이 끝난 뒤라 대개 즉시 resolve된다.
-      const memoryPromptBlock = loadMemory(participantId)
+      const memoryPromptBlock = loadMemory(ctx.participantId)
         .catch((err) => {
           console.error('[SessionMemory] load 실패:', err);
           return '';
@@ -318,7 +401,7 @@ export async function POST(req: Request) {
       try {
         // modelMessages already ends with this turn's (sanitized) user message, so pass everything
         // before it as history and let analyzeIntent append strippedLatest itself.
-        intentAnalysis = await analyzeIntent(strippedLatest, modelMessages.slice(0, -1));
+        intentAnalysis = await analyzeIntent(ctx.strippedLatest, ctx.modelMessages.slice(0, -1));
       } catch (err) {
         console.error('[Intent Analyzer] 실패:', err);
         writer.write({ type: "finish-step" } as any);
@@ -329,7 +412,7 @@ export async function POST(req: Request) {
       // ── [2] Action Router ───────────────────────────────────────────────────────────────
       let actionRoute;
       try {
-        actionRoute = await routeAction(intentAnalysis, { hasOptionList, hasComparisonTable, hasCriteriaMap });
+        actionRoute = await routeAction(intentAnalysis, ctx, ctx.screenSummary);
       } catch (err) {
         console.error('[Action Router] 실패:', err);
         writer.write({ type: "finish-step" } as any);
@@ -349,7 +432,7 @@ export async function POST(req: Request) {
       if (actionRoute.action === 'generate') {
         let templateSelection;
         try {
-          templateSelection = await selectTemplate(intentAnalysis, hasOptionList, currentProductNames);
+          templateSelection = await selectTemplate(intentAnalysis, ctx.hasOptionList, ctx.currentProductNames, ctx.screenSummary);
         } catch (err) {
           console.error('[Template Selector] 실패:', err);
           writer.write({ type: "finish-step" } as any);
@@ -371,29 +454,29 @@ export async function POST(req: Request) {
 
           if (template === 'CriteriaMap') {
             systemStr = [
-              buildCommonSystemInstructions(productCategory, locale),
-              buildCriteriaMapSystem(locale),
+              buildCommonSystemInstructions(ctx.productCategory, ctx.locale),
+              buildCriteriaMapSystem(ctx.locale),
               EDGE_CASES_SYSTEM,
             ].join("\n\n") + (await memoryPromptBlock);
-            userPrompt = buildCriteriaMapPrompt(strippedLatest, userContextStr, existingCriteriaCategories);
+            userPrompt = buildCriteriaMapPrompt(ctx.strippedLatest, userContextStr, existingCriteriaCategories);
           } else {
             systemStr = [
-              buildCommonSystemInstructions(productCategory, locale),
-              buildInformationCardSystem(locale),
+              buildCommonSystemInstructions(ctx.productCategory, ctx.locale),
+              buildInformationCardSystem(ctx.locale),
               EDGE_CASES_SYSTEM,
             ].join("\n\n") + (await memoryPromptBlock);
-            userPrompt = buildInformationCardPrompt(strippedLatest);
+            userPrompt = buildInformationCardPrompt(ctx.strippedLatest);
           }
 
           console.log(`\n\x1b[35m========== [3] UI Generator: ${template} ==========\x1b[0m`);
           if (template === 'CriteriaMap') {
-            console.log(`\x1b[90m[Input] user_query:\x1b[0m ${strippedLatest}`);
+            console.log(`\x1b[90m[Input] user_query:\x1b[0m ${ctx.strippedLatest}`);
             console.log(`\x1b[90m[Input] user_context:\x1b[0m ${userContextStr || '(없음)'}`);
           } else {
-            console.log(`\x1b[90m[Input] user_query:\x1b[0m ${strippedLatest}`);
+            console.log(`\x1b[90m[Input] user_query:\x1b[0m ${ctx.strippedLatest}`);
           }
 
-          const extendedMessages = [...modelMessages, { role: 'user', content: userPrompt }];
+          const extendedMessages = [...ctx.modelMessages, { role: 'user', content: userPrompt }];
 
           const { textStream } = streamText({
             model: openai(UI_AGENT_MODEL),
@@ -496,13 +579,14 @@ export async function POST(req: Request) {
       } else if (actionRoute.action === 'edit') {
         let editPlan;
         try {
-          editPlan = await planEdit(strippedLatest || intentAnalysis.user_goal, intentAnalysis, {
-            optionList: hasOptionList ? currentProducts : undefined,
-            comparisonTable: hasComparisonTable
-              ? { products: comparisonTableProducts, criteria: comparisonTableCriteria }
+          editPlan = await planEdit(ctx.strippedLatest || intentAnalysis.user_goal, intentAnalysis, {
+            optionList: ctx.hasOptionList ? ctx.currentProducts : undefined,
+            optionListSearchQuery: ctx.hasOptionList ? ctx.currentOptionListSearchQuery : undefined,
+            comparisonTable: ctx.hasComparisonTable
+              ? { products: ctx.comparisonTableProducts, criteria: ctx.comparisonTableCriteria }
               : undefined,
-            criteriaMap: hasCriteriaMap ? parsedCriteriaMap : undefined,
-          }, locale);
+            criteriaMap: ctx.hasCriteriaMap ? ctx.parsedCriteriaMap : undefined,
+          }, ctx.locale);
         } catch (err) {
           console.error('[Edit Agent] 실패:', err);
           writer.write({ type: "finish-step" } as any);
@@ -522,7 +606,7 @@ export async function POST(req: Request) {
         }
 
         if (editPlan.target_surface === 'optionList') {
-          if (editPlan.op === 'filter' && !hasOptionList) {
+          if (editPlan.op === 'filter' && !ctx.hasOptionList) {
             // filter로 판단됐지만 화면에 리스트가 없는 방어적 케이스 → fresh 검색으로 전환
             console.log('[Route] filter op + no existing list → renderToOptionList로 전환');
             const filterQuery = editPlan.original_query ?? intentAnalysis.user_goal;
@@ -539,6 +623,7 @@ export async function POST(req: Request) {
               result_card_names: editPlan.result_card_names,
               products_to_add: editPlan.products_to_add,
               field_updates: editPlan.field_updates,
+              current_cards: ctx.currentProducts.map(p => ({ id: p.id, name: p.name })),
               original_query: editPlan.original_query,
               sort_by: editPlan.sort_by,
               sort_order: editPlan.sort_order,
@@ -546,13 +631,13 @@ export async function POST(req: Request) {
           }
 
         } else if (editPlan.target_surface === 'comparisonTable') {
-          if (!currentComparisonTable) {
+          if (!ctx.currentComparisonTable) {
             console.warn('[Route] target_surface=comparisonTable이지만 지원 범위를 벗어남(현재 테이블 없음) — edit 스킵');
           } else {
             await (mutateComparisonTable as any).execute({
               surface: 'comparisonTable',
               op: editPlan.op,
-              current_table: currentComparisonTable,
+              current_table: ctx.currentComparisonTable,
               criteria_to_add: editPlan.criteria_to_add ?? undefined,
               criteria_to_remove: editPlan.criteria_to_remove ?? undefined,
               products_to_add: editPlan.products_to_add ?? undefined,
@@ -580,7 +665,7 @@ export async function POST(req: Request) {
       } else {
         writer.write({ type: "data-action-type", data: { action: "none" } } as any);
         writer.write({ type: "text-start", id: textId } as any);
-        const { textStream: noneStream } = streamChatReply(locale, await memoryPromptBlock, modelMessages as any);
+        const { textStream: noneStream } = streamChatReply(ctx.locale, await memoryPromptBlock, ctx.modelMessages as any, ctx.screenDetail);
         let noneReplyText = "";
         for await (const delta of noneStream) {
           noneReplyText += delta;
@@ -632,19 +717,19 @@ export async function POST(req: Request) {
 
       // ── 공유 메모리 반영 ──────────────────────────────────────────────────────
       // 실패해도 이번 턴 응답 자체에는 영향을 주지 않는다 (best-effort).
-      if (participantId) {
-        await appendMemoryTurn(participantId, {
+      if (ctx.participantId) {
+        await appendMemoryTurn(ctx.participantId, {
           turn: uiMessages.length,
-          userText: strippedLatest,
+          userText: ctx.strippedLatest,
           action: actionRoute.action,
           template: generatedTemplate,
           note: turnMemoryNote,
         }).catch((err) => console.error('[SessionMemory] append 실패:', err));
 
         await logChatTurn({
-          participantId,
+          participantId: ctx.participantId,
           turnIndex: uiMessages.length,
-          userText: strippedLatest,
+          userText: ctx.strippedLatest,
           action: actionRoute.action,
           template: generatedTemplate,
           editTarget: editTargetSurface,

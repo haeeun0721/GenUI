@@ -2,14 +2,15 @@
  * spec-lookup.ts — 공통 스펙 조회 서비스
  *
  * auto-enrich (Option List) 와 fetch-spec (Comp Table) 양쪽에서 호출.
- * DB 조회 → Tavily 3단계 검색 → 4가지 결과 검증을 하나의 파이프라인으로 제공.
+ * DB 조회 → Tavily 검색(실패 시 스펙표 도메인으로 좁혀 재시도) → extractCellValueLight로
+ * 값 추출을 하나의 파이프라인으로 제공.
  */
 
 import * as fs from "fs";
 import * as path from "path";
 import {
   tavilySearch,
-  judgeCell,
+  extractCellValueLight,
   getSiblingExcludeTokens,
   parseSpecEntry,
   toDisplayValue,
@@ -140,6 +141,18 @@ function cleanSpecValue(raw: string): string {
   return cleaned || raw; // 모두 지워진 경우 원본 반환
 }
 
+/**
+ * extractCellValueLight는 CompTable의 넓은 셀 기준으로 최대 5개 항목까지 허용하는데,
+ * Option List 카드는 칩 하나에 들어가는 좁은 공간이라 그 정도로도 카드 전체를 뒤덮는다.
+ * 카드에 붙일 문구를 만들 때만 한 번 더 짧게 줄인다 — CompTable로 넘어가는 원본 value는
+ * 그대로 두고 이 함수의 리턴값(카드 칩 문구)에만 적용된다.
+ */
+function capForCard(value: string, maxItems = 2): string {
+  const parts = value.split(/\s*[,/]\s*/).filter(Boolean);
+  if (parts.length <= maxItems) return value;
+  return parts.slice(0, maxItems).join(", ") + " 등";
+}
+
 export function buildSpecPhrase(fieldKey: string, value: string): string {
   const v = cleanSpecValue(value); // 마케팅 수식어 제거
   // 이미 "[기준]: 값" 형태면 기준명 중복 방지를 위해 그대로 둔다
@@ -151,10 +164,10 @@ export function buildSpecPhrase(fieldKey: string, value: string): string {
   }
   if (v === "X") {
     if (/연동|호환|연결/.test(fieldKey)) return `${fieldKey}: 불가`;
-    return `${fieldKey}: 없음`;
+    return `${fieldKey}: 지원 안함`;
   }
   // value 타입 — 숫자든 텍스트/목록이든 항상 "[기준]: 값" 형식으로 통일
-  return `${fieldKey}: ${v}`;
+  return `${fieldKey}: ${capForCard(v)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -163,27 +176,22 @@ export function buildSpecPhrase(fieldKey: string, value: string): string {
 
 /**
  * 제품 × 스펙 필드에 대한 값을 조회한다.
- * 우선순위: 로컬 DB → Tavily 1차(advanced, 전체 도메인, 결과 다다익선) → judgeCell 검증
- * → (1차 실패 시에만) Tavily 2차(다른 문구 + 스펙표 도메인 한정) → judgeCell 재검증.
+ * 우선순위: 로컬 DB → Tavily 검색 1번(advanced, answer 합성 포함) → extractCellValueLight
+ * LLM 호출 1번. 재시도 없음 — test-tavily-lightweight.ts 실험과 동일하게 셀 하나당
+ * 네트워크 호출을 Tavily 1번 + LLM 1번으로 고정한다.
  *
- * 예전엔 Tavily를 문구만 바꿔가며 매번 최대 3번 순차 재시도했는데, 재시도끼리 사실상 같은
- * 검색이었고(끝 문구만 다름) 성공하는 대부분의 경우에도 매번 왕복 비용을 치러 느렸다.
- * 대신 1차는 advanced 모드로 더 많은 결과(max_results)와 URL당 여러 스니펫
- * (chunks_per_source)을 한 번에 가져오고, 정말 실패한 경우에만(=재시도가 실제로 의미
- * 있는 경우에만) 다른 문구 + 신뢰할 수 있는 스펙표 도메인(다나와/에누리/컴퓨존)으로
- * 좁힌 2차 검색을 추가로 시도한다 — 성공 케이스의 지연시간은 그대로 두면서 실패 케이스의
- * 회수율만 끌어올린다.
- *
- * 안전장치는 judgeCell의 Extractive QA + Evidence Verification + SiblingGuard와
- * Sanity Check(수치 범위 검증)로 건다 — 1차는 도메인을 배제하지 않고 근거가 명확한
- * 값만 통과시키는 쪽으로, 2차는 도메인 자체를 스펙표 중심으로 좁혀 형제 제품 혼동
- * 위험을 낮추는 쪽으로 신뢰도를 확보한다.
+ * extractCellValueLight는 judgeCell(Extractive QA + Evidence Verification +
+ * SiblingGuard + Sanity Check의 다단계 검증)을 대체한 경량 버전으로, Tavily가 합성한
+ * answer 텍스트 하나를 보고 LLM에게 한 번만 값을 물어본다 — siblingTokens는 프롬프트
+ * 경고 문구로만 전달되고, judgeCell처럼 거리 기반으로 코드가 재검증하지는 않는다.
  */
 export async function lookupProductSpec(
   productName: string,
   fieldKey: string,
   category: string,
-  locale: string = "ko"
+  locale: string = "ko",
+  formatHint?: string,
+  canonicalUnit?: string | null
 ): Promise<SpecLookupResult> {
 
   // Step 1: 로컬 DB
@@ -192,13 +200,12 @@ export async function lookupProductSpec(
     return { value: dbSpec, source: "db" };
   }
 
-  // Step 2: Tavily 검색 → judgeCell
+  // Step 2: Tavily 검색 → extractCellValueLight
   const siblingTokens = getSiblingExcludeTokens(productName, category);
   const q1 = `${productName} ${fieldKey}`;
 
-  // ── Q1 실행 ──────────────────────────────────────────────────────────────
   const res1 = await tavilySearch(q1, "advanced", {
-    maxResults: 20, chunksPerSource: 5, includeAnswer: true,
+    maxResults: 20, chunksPerSource: 5, includeAnswer: "advanced",
   });
   const tavilyAnswer = res1.answer;
 
@@ -209,45 +216,17 @@ export async function lookupProductSpec(
     : [];
   const resultsWithAnswer = [...answerSegment, ...res1.results];
 
-  // ── judgeCell 한 번 ───────────────────────────────────────────────────────
   let judge: { value: string; sourceUrl?: string; usedSnippet?: string; uncertain?: boolean } | null = null;
   if (resultsWithAnswer.length > 0) {
-    const c1 = await judgeCell(productName, fieldKey, resultsWithAnswer, locale, undefined, [], siblingTokens);
+    const c1 = await extractCellValueLight(productName, fieldKey, resultsWithAnswer, locale, siblingTokens, formatHint, canonicalUnit);
     if (c1.value !== "-") judge = c1;
   }
 
-  // ── Q1 실패 시 2차 검색: 다른 문구 + 신뢰할 수 있는 스펙표 도메인으로 제한 ─────────
-  // 1차 쿼리가 실패하는 경우는 (a) 문구가 안 맞았거나 (b) 블로그/후기 글만 잡혀서
-  // 근거가 약했거나(SiblingGuard/Evidence Verification 탈락) 둘 중 하나가 많다.
-  // 다나와/에누리/컴퓨존처럼 모델코드 기준으로 정리된 스펙표는 형제 제품과 혼동될
-  // 여지가 적고 구조화돼 있어 재시도 성공률이 높다 — 모든 조회에 매번 걸지 않고
-  // 1차가 실패했을 때만 추가 비용을 쓴다.
   if (!judge) {
-    console.log(`⚠️  [1차 검색 실패] "${productName} × ${fieldKey}" → 2차 검색(스펙표 도메인 우선) 시도`);
-    const q2 = `${productName} 상세 스펙 사양표`;
-    const res2 = await tavilySearch(q2, "advanced", {
-      maxResults: 20, chunksPerSource: 5, includeAnswer: true,
-      includeDomains: ["danawa.com", "prod.danawa.com", "enuri.com", "compuzone.co.kr"],
-    });
-    const tavilyAnswer2 = res2.answer;
-    if (tavilyAnswer2) console.log(`💡 [Tavily Answer 2차] "${productName} × ${fieldKey}"\n   ${tavilyAnswer2.slice(0, 200)}`);
-
-    const answerSegment2 = tavilyAnswer2
-      ? [{ url: res2.results[0]?.url ?? "https://tavily.com", content: tavilyAnswer2, score: 999, title: "Tavily Answer" }]
-      : [];
-    const resultsWithAnswer2 = [...answerSegment2, ...res2.results];
-
-    if (resultsWithAnswer2.length > 0) {
-      const c2 = await judgeCell(productName, fieldKey, resultsWithAnswer2, locale, undefined, [], siblingTokens);
-      if (c2.value !== "-") judge = c2;
-    }
-  }
-
-  if (!judge) {
-    console.log(`❌ [judgeCell] "${productName} × ${fieldKey}" → 값 없음 (2차 검색 후에도)`);
+    console.log(`❌ [extractCellValueLight] "${productName} × ${fieldKey}" → 값 없음`);
     return { value: "-", source: "none" };
   }
-  console.log(`${judge.uncertain ? "⚠️ " : "✅"} [judgeCell] "${productName} × ${fieldKey}" → ${judge.value}${judge.uncertain ? " (추정)" : ""}`);
+  console.log(`${judge.uncertain ? "⚠️ " : "✅"} [extractCellValueLight] "${productName} × ${fieldKey}" → ${judge.value}${judge.uncertain ? " (추정)" : ""}`);
 
   const finalResult: SpecLookupResult = {
     value: judge.value,

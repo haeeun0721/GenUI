@@ -38,7 +38,7 @@ function buildEditPlanSchema(locale: Locale) {
     z.object({
       target_surface: z.literal("optionList"),
       ...opSummaryField,
-      op: z.enum(["filter", "sort", "add"]),
+      op: z.enum(["filter", "sort", "add", "remove_field"]),
       result_card_names: z.array(z.string()).nullable()
         .describe("filter/sort: the matching cards' `id`s (not names) copied from CURRENT_OPTION_LIST, in final order to keep/show."),
       products_to_add: z.array(z.string()).nullable()
@@ -48,8 +48,8 @@ function buildEditPlanSchema(locale: Locale) {
       sort_order: z.enum(["asc", "desc"]).nullable(),
       field_updates: z.array(z.object({
         product_name: z.string().describe("The matching card's `id` (not name) copied from CURRENT_OPTION_LIST."),
-        field_key: z.string().describe(`Short ${lang} spec keyword, e.g. ${locale === "en" ? "'weight', 'battery'" : "'무게', '배터리'"}. Never a value — system looks up the real value.`),
-      })).nullable().describe("add: spec fields to look up for existing cards."),
+        field_key: z.string().describe(`Short ${lang} spec keyword, e.g. ${locale === "en" ? "'weight', 'battery'" : "'무게', '배터리'"}. For "add" this is looked up; for "remove_field" it identifies which existing spec line to delete — never a value either way.`),
+      })).nullable().describe("add: spec fields to look up for existing cards. remove_field: spec fields to delete from existing cards (no lookup — just removes the matching spec line)."),
       original_query: z.string().nullable()
         .describe(`add: original search constraints (e.g. ${locale === "en" ? "'suction power 4500pa or higher'" : "'흡입력 4500pa 이상'"}) to hard-filter newly added products.`),
     }),
@@ -94,6 +94,10 @@ export type EditPlan = z.infer<ReturnType<typeof buildEditPlanSchema>>;
 
 export interface EditAgentScreen {
   optionList?: Array<{ id: string; name: string; priceNum: number | null; priceStr: string; specs: string[] }>;
+  // 지금 Option List를 만들 때 썼던 원래 검색 제약(예: "흡입력 4,500pa 이상") — 이 값을
+  // 히스토리 없이도 그대로 복사해서 "add"의 original_query에 넣을 수 있게 한다. 안 그러면
+  // 한 턴만 지나도 이 제약을 기억할 방법이 없다(Edit Agent는 대화 히스토리를 안 받음).
+  optionListSearchQuery?: string;
   // products/criteria carry both the stable id (key/id) the LLM must copy back for remove ops,
   // and the human-readable label used only to understand what the user is referring to.
   comparisonTable?: {
@@ -124,6 +128,9 @@ underlying intent when the user writes in Korean or any other language.
 - decision_criteria (optional): buying criteria the user has flagged as important, in priority order.
 - current_optionList (optional): [{id, name, priceNum, priceStr, specs}...] products currently shown as
   cards, if any. id is the stable identifier — name is just human-readable text.
+- option_list_search_query (optional): the original search constraints used to build the CURRENT option
+  list (e.g. "흡입력 4,500pa 이상"). You have no memory of earlier turns, so this is your only way to know
+  what constraint the currently-shown cards were already filtered by.
 - current_comparisonTable (optional): { products: [{key, label}...], criteria: [{id, label}...] } currently shown, if any.
   key/id are stable identifiers — label is just the human-readable text for you to understand intent.
 - current_criteriaMap (optional): [{ id, label, items: [{id, name}...] }...] currently shown, if any.
@@ -171,7 +178,16 @@ Only surfaces that are actually present in the input may be targeted. Never targ
   Signals: "recommend more", "a different brand", "show battery life for each product too", "recommend several more",
   "a few more", "show me a lot", or any plain recommendation request ("recommend"/"show me") that doesn't explicitly
   restrict to the cards already on screen.
-  → products_to_add and/or field_updates. Always pass original_query if the user had prior search constraints.
+  → products_to_add and/or field_updates. If option_list_search_query is given, copy it into original_query
+  VERBATIM (don't paraphrase or drop it) so newly added products still respect it — the current cards were
+  already filtered by it and the user has no reason to expect that constraint to silently disappear just
+  because this request doesn't repeat it. Only omit it if the current request explicitly changes/removes
+  that constraint (e.g. "이제 가격 상관없이 보여줘").
+- "remove_field": delete an existing spec field/line from the cards. Signals: "remove the release-year info",
+  "get rid of the battery life line", "이 정보 지워줘", "삭제해줘" targeting a specific spec that is already
+  shown on the cards (not the cards themselves — that's a different request, out of scope for this op set).
+  → field_updates = one entry per card that currently shows that field, with product_name = that card's id and
+  field_key = the same short keyword used to identify it. No lookup happens for this op — do not confuse with "add".
 
 [comparisonTable ops] (single-cell re-verification is out of scope — see schema note)
 - "add_criteria": add one or more new criterion rows to compare. Signals: "compare this criterion too", "also check the direct-drain feature".
@@ -234,6 +250,9 @@ export async function planEdit(
         .map(p => `- ${p.id} | ${p.name}${p.priceNum != null ? ` | ${p.priceNum.toLocaleString()}원` : ''}${p.specs.length > 0 ? ` | ${p.specs.join(', ')}` : ''}`)
         .join('\n')}`
     );
+    if (screen.optionListSearchQuery?.trim()) {
+      promptParts.push(`option_list_search_query: "${screen.optionListSearchQuery.trim()}"`);
+    }
   }
   if (screen.comparisonTable && (screen.comparisonTable.products.length > 0 || screen.comparisonTable.criteria.length > 0)) {
     promptParts.push(`current_comparisonTable: ${JSON.stringify(screen.comparisonTable)}`);

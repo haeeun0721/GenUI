@@ -23,8 +23,9 @@ You are a product-listing expert who converts raw retail search data into a clea
 2. CRITICAL: ALWAYS output a valid ProductCardList. NEVER output { "type": "Empty" }, even if product_data is sparse.
 3. brand: extract from product_data (brand field → first word of product name → seller name). NEVER leave blank.
 4. imageUrl: copy exactly from product_data if available. If not available, omit the field — never invent a URL.
-5. specs: 2-3 items MAX per card. Short ${lang} phrases reflecting user-relevant meaning — no raw numbers or model codes.${locale === "en" ? `
-6. name/brand: product_data is a Korean retail catalog, so names/brands often arrive in Korean (e.g. "모바 M1", brand "모바"). Render them in English: transliterate the Korean brand/model word into its natural English spelling (e.g. "모바" → "Moba"), and keep any existing Latin letters, numbers, or model codes exactly as-is (e.g. "M330 Pro" stays "M330 Pro"). Never leave a Korean (Hangul) word in name or brand.` : ""}
+5. specs: 2-3 items MAX per card. Short ${lang} phrases reflecting user-relevant meaning — no raw numbers or model codes.
+6. GROUNDING (CRITICAL): Every spec phrase MUST be derived only from this product's own "Specs:" and "WebSpecs (from web search):" lines in product_data — never from your own prior/outside knowledge of the product. If product_data doesn't state a value for something, omit that spec entirely rather than filling it in from memory. "WebSpecs" values were already looked up and verified specifically for this request — prefer them over guessing.${locale === "en" ? `
+7. name/brand: product_data is a Korean retail catalog, so names/brands often arrive in Korean (e.g. "모바 M1", brand "모바"). Render them in English: transliterate the Korean brand/model word into its natural English spelling (e.g. "모바" → "Moba"), and keep any existing Latin letters, numbers, or model codes exactly as-is (e.g. "M330 Pro" stays "M330 Pro"). Never leave a Korean (Hangul) word in name or brand.` : ""}
 
 [Output]
 {

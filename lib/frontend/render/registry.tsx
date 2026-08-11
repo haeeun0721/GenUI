@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useLayoutEffect, Fragment } from "react";
 import { ChevronDown, Heart, Check, AlertTriangle, Lightbulb, ArrowRight, Columns3, LayoutList, Sparkles, X } from "lucide-react";
+import { motion, AnimatePresence } from "motion/react";
 
 // danuri.io / danawa.com 이미지는 hotlink protection이 걸려 있어 서버 프록시를 통해 로드
 const PROXY_DOMAINS = ["img.danuri.io", "img.danawa.com", "prod.danawa.com"];
@@ -823,8 +824,12 @@ export const manualRegistry: Record<string, any> = {
                           const val = String(row[col.key] ?? '-');
                           const rankVal = rankRow ? String(rankRow[col.key] ?? '') : '';
                           const isFirst = rankVal === '1위' || rankVal === '#1';
+                          // "배터리 수명: EVF 680장 / LCD 740장 / ..." 처럼 항목이 여러 개 나열된
+                          // 값은 그대로 두면 셀을 뒤덮으므로, 헤더의 nameSizeClass와 같은 방식으로
+                          // 길이에 따라 글씨를 줄여 한 셀 안에 더 자연스럽게 들어가게 한다.
+                          const valSizeClass = val.length > 40 ? 'text-[11px]' : val.length > 22 ? 'text-[12px]' : 'text-[13px]';
                           return (
-                            <td key={col.key} data-col-key={col.key} className={`px-3 py-2.5 text-center text-[13px] font-medium text-slate-700 ${isFirst ? 'bg-slate-50/60' : ''}`}>
+                            <td key={col.key} data-col-key={col.key} className={`px-3 py-2.5 text-left font-medium text-slate-700 ${valSizeClass} ${isFirst ? 'bg-slate-50/60' : ''}`}>
                               {val === '-' ? <span className="text-[11px] text-slate-300 font-medium">{t.notFound}</span> : val}
                             </td>
                           );
@@ -1408,17 +1413,27 @@ export const manualRegistry: Record<string, any> = {
 
       return (
         <div className={`grid grid-cols-2 gap-3 w-full min-w-0 px-6${justCreated ? ' animate-highlight-wrap' : ''}`}>
-          {cards.map((card: any, idx: number) => {
-            const cardKey = card.name || card.id || `card-${idx}`;
-            return (
-              <div key={cardKey}>
-                <manualRegistry.ProductCard
-                  {...allProps}
-                  props={{ ...card, _animationDelay: idx * 0.1, _justAdded: newCardNames.has(cardKey) }}
-                />
-              </div>
-            );
-          })}
+          {/* popLayout: 카드가 삭제되면 그 카드만 페이드아웃하며 flow에서 빠지고,
+              남은 카드들은 layout 애니메이션으로 새 위치까지 부드럽게 이동한다.
+              정렬(sort)로 순서만 바뀔 때도 같은 layout 애니메이션이 재사용된다. */}
+          <AnimatePresence mode="popLayout" initial={false}>
+            {cards.map((card: any, idx: number) => {
+              const cardKey = card.name || card.id || `card-${idx}`;
+              return (
+                <motion.div
+                  key={cardKey}
+                  layout
+                  exit={{ opacity: 0, scale: 0.9 }}
+                  transition={{ layout: { duration: 0.4, ease: [0.16, 1, 0.3, 1] }, opacity: { duration: 0.25 } }}
+                >
+                  <manualRegistry.ProductCard
+                    {...allProps}
+                    props={{ ...card, _animationDelay: idx * 0.1, _justAdded: newCardNames.has(cardKey) }}
+                  />
+                </motion.div>
+              );
+            })}
+          </AnimatePresence>
         </div>
       );
     };

@@ -37,6 +37,9 @@ your only job is to decide which of three downstream processes should run next t
 [Input]
 - intent_analysis: the user's interpreted goal (from the Intent Analyzer).
 - screen_state: which UI surfaces currently exist on screen (hasOptionList / hasComparisonTable / hasCriteriaMap).
+- screen_summary: what those surfaces actually CONTAIN right now (product names, table criteria/products,
+  criteria map categories) — ground your decision in this, not just the booleans above. A request that
+  references or depends on specific items only makes sense if you can see they're actually there.
 
 [Task]
 Choose exactly one action:
@@ -52,9 +55,16 @@ Choose exactly one action:
 
 - "none": The message needs only a conversational reply — no UI surface should be created or changed.
   e.g. small talk, a yes/no clarification, or a question already answered by content on screen.
+  This also covers asking WHY an already-shown recommendation/list/table looks the way it does
+  ("왜 이 제품을 추천한거야?", "why did you suggest these?", "이 순서인 이유가 뭐야?") — the answer is a
+  prose explanation grounded in the specific items already on screen, not a request to understand a
+  general concept. Do not route this to "generate" just because the intent mentions "understand"/"why" —
+  check FIRST whether it's asking about something general (→ generate) vs. about the specific
+  already-displayed set (→ none).
 
 Decision rule when ambiguous: ask "does this request make sense as a full re-generation, or does it only make sense
-as a change applied ON TOP of something already visible?" — the latter is always "edit".
+as a change applied ON TOP of something already visible?" — the latter is always "edit". If it doesn't need any
+UI change at all — including "explain why you showed me this" — that's "none", not "generate".
 
 [Output]
 Respond with ONLY a JSON object:
@@ -63,15 +73,18 @@ Respond with ONLY a JSON object:
 
 export async function routeAction(
   intentAnalysis: IntentAnalysis,
-  screenState: ScreenState
+  screenState: ScreenState,
+  screenSummary: string = ""
 ): Promise<ActionRoute> {
   console.log(`\n\x1b[36m========== [2] Action Router ==========\x1b[0m`);
   console.log(`\x1b[90m[Input] IntentAnalysis:\x1b[0m ${JSON.stringify(intentAnalysis)}`);
   console.log(`\x1b[90m[Input] ScreenState:\x1b[0m ${JSON.stringify(screenState)}`);
+  console.log(`\x1b[90m[Input] ScreenSummary:\x1b[0m ${screenSummary || "(none)"}`);
 
   const promptText = [
     `intent_analysis: "${intentAnalysis.user_goal}"`,
     `screen_state: ${JSON.stringify(screenState)}`,
+    `screen_summary:\n${screenSummary || "(nothing on screen yet)"}`,
     "Choose the action.",
   ].join("\n");
 

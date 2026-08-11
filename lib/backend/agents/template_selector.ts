@@ -22,7 +22,9 @@ whether to generate at all, and you never modify an existing UI surface.
 
 [Input]
 - intent_analysis: The user's interpreted goal.
-- CURRENT_OPTION_LIST (optional): products currently shown, if relevant context for the choice below.
+- screen_summary (optional): what's actually shown on screen right now (option list products, comparison
+  table products/criteria, criteria map categories) — use this to avoid picking a template whose content
+  would just duplicate or conflict with what's already there.
 
 [Task]
 Choose the template to generate.
@@ -102,21 +104,18 @@ Respond with ONLY a JSON object:
 export async function selectTemplate(
   intentAnalysis: IntentAnalysis,
   hasOptionList: boolean,
-  currentProductNames: string[] = []
+  currentProductNames: string[] = [],
+  screenSummary: string = ""
 ): Promise<TemplateSelection> {
   console.log(`\n\x1b[33m========== [3] Template Selector ==========\x1b[0m`);
   console.log(`\x1b[90m[Input] hasOptionList:\x1b[0m ${hasOptionList}`);
   console.log(`\x1b[90m[Input] currentProductNames:\x1b[0m [${currentProductNames.join(', ')}]`);
+  console.log(`\x1b[90m[Input] screenSummary:\x1b[0m ${screenSummary || "(none)"}`);
   console.log(`\x1b[90m[Input] IntentAnalysis:\x1b[0m ${JSON.stringify(intentAnalysis, null, 2)}`);
-
-  // CURRENT_OPTION_LIST는 이름만 넘긴다 — 템플릿 선택은 카테고리 판단이라 가격/스펙까지는 불필요.
-  const productListForPrompt = hasOptionList && currentProductNames.length > 0
-    ? `CURRENT_OPTION_LIST: ${currentProductNames.join(', ')}`
-    : '';
 
   const promptText = [
     `intent_analysis: "${intentAnalysis.user_goal}"`,
-    productListForPrompt,
+    screenSummary ? `screen_summary:\n${screenSummary}` : '',
     "Select the appropriate template.",
   ].filter(Boolean).join('\n');
 

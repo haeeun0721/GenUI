@@ -1,10 +1,9 @@
-import { tool, generateText } from "ai";
+import { tool, generateText, generateObject } from "ai";
 import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
 import * as cheerio from "cheerio";
 import * as fs from "fs";
 import * as path from "path";
-import { embedQuery, embedBatch, cosineSimilarity } from "../rag/search";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -529,17 +528,11 @@ export type TavilyResult = { title: string; url: string; content: string; score:
 // ---------------------------------------------------------------------------
 
 export type LookupDiscardStage =
-  | "db_hit"             // 성공 — 로컬 DB에서 찾음
-  | "tavily_empty"       // Tavily 검색 결과 0건
-  | "no_segments"        // 스니펫은 있지만 키워드 창에서 인용 가능한 구절이 안 나옴
-  | "llm_parse_error"     // LLM 응답이 JSON으로 파싱 안 됨
-  | "extractive_qa_null" // LLM이 "명시적으로 이 값이라고 말하는 구절 없음"으로 판단
-  | "evidence_missing"   // LLM이 값은 냈지만 segmentId가 없거나 범위 밖 — 폐기 대신 uncertain=true로 값 유지
-  | "sibling_guard"      // 값이 타겟 제품보다 형제 제품(Slim/직배수 등)에 압도적으로 가깝게 위치해 폐기
-  | "sibling_guard_uncertain" // 형제 제품 토큰이 있지만 격차가 압도적이지 않음/binding 불명 — 폐기 대신 uncertain=true로 값 유지
-  | "echo_guard"         // 추출값이 기준명/유의어 자체를 되풀이한 것이라 폐기 (value 타입만)
-  | "sanity_check"       // 수치가 물리적으로 불가능한 범위라 폐기
-  | "tavily_hit";        // 성공 — Tavily + judgeCell 검증 통과
+  | "db_hit"              // 성공 — 로컬 DB에서 찾음
+  | "tavily_empty"        // Tavily 검색 결과 0건
+  | "llm_parse_error"     // LLM 응답 파싱 실패
+  | "light_extract_hit"   // 성공 — 경량 파이프라인(Tavily answer + 단일 LLM 질문) 추출
+  | "light_extract_empty"; // 경량 파이프라인이 명확한 값을 찾지 못함
 
 export interface LookupTrace {
   stage: LookupDiscardStage;
@@ -555,8 +548,13 @@ export interface TavilySearchOptions {
   excludeDomains?: string[];
   /** 이 도메인들로만 검색 범위를 좁힘 — 1차 검색 실패 후 신뢰 도메인 재검색에 사용 */
   includeDomains?: string[];
-  /** true 시 Tavily가 검색 결과를 AI로 합성한 answer를 함께 반환 — judgeCell 이전 fast-path로 활용 */
-  includeAnswer?: boolean;
+  /**
+   * Tavily가 검색 결과를 AI로 합성한 answer를 함께 반환 — extractCellValueLight가 이 answer
+   * 하나만 보고 값을 추출하므로 반드시 "advanced"를 써야 한다. "advanced"는 더 많은 소스를
+   * 훑어 더 길고 상세한 answer를 만들어서, 소음 수준처럼 덜 두드러진 필드도 answer에 실릴
+   * 확률이 올라간다 — true(=basic)는 answer가 짧아 요청한 필드가 아예 빠지기 쉽다.
+   */
+  includeAnswer?: boolean | "advanced";
 }
 
 export async function tavilySearch(
@@ -574,7 +572,7 @@ export async function tavilySearch(
   if (searchDepth === "advanced" && options.chunksPerSource) body.chunks_per_source = options.chunksPerSource;
   if (options.excludeDomains?.length) body.exclude_domains = options.excludeDomains;
   if (options.includeDomains?.length) body.include_domains = options.includeDomains;
-  if (options.includeAnswer) body.include_answer = true;
+  if (options.includeAnswer) body.include_answer = options.includeAnswer;
 
   const res = await fetch("https://api.tavily.com/search", {
     method: "POST",
@@ -668,8 +666,11 @@ export function hasUnitDimensionMismatch(label: string, rawValue: string): boole
   const labelRule = UNIT_RULES.find(r => r.pattern.test(label));
   if (!labelRule) return false;
 
-  const match = rawValue.match(/^([\d,]+(?:\.\d+)?)\s*([^\d\s].*)?$/);
-  const unitPart = (match?.[2] ?? "").trim();
+  // "6400mAh"처럼 값이 숫자로 시작하는 경우
+  const leading = rawValue.match(/^([\d,]+(?:\.\d+)?)\s*([^\d\s].*)?$/);
+  // "NP-FZ100(2280mAh)"처럼 모델명 뒤 괄호 안에 수치+단위가 붙는 경우
+  const parenthesized = rawValue.match(/\(([\d,]+(?:\.\d+)?)\s*([^\d\s)]+)\)/);
+  const unitPart = (leading?.[2] ?? parenthesized?.[2] ?? "").trim();
   if (!unitPart) return false;
 
   const valueRule = UNIT_RULES.find(r => r.units.some(([unitPattern]) => unitPattern.test(unitPart)));
@@ -685,26 +686,43 @@ export function hasUnitDimensionMismatch(label: string, rawValue: string): boole
  */
 function normalizeUnitValue(value: string, fieldKey: string, canonicalUnit?: string | null): string {
   if (!value || value === "-" || value === "○" || value === "X") return value;
-  if (value.includes(":")) return value;
 
   const rule = UNIT_RULES.find(r => r.pattern.test(fieldKey));
   if (rule) {
-    const match = value.match(/^([\d,]+(?:\.\d+)?)\s*([^\d\s].*)?$/);
-    if (!match) return value;
-    const unitPart = (match[2] ?? "").trim();
-    if (!unitPart) return value;
+    let working = value;
+    let mutated = false;
 
-    const found = rule.units.find(([unitPattern]) => unitPattern.test(unitPart));
-    if (!found) return value; // 인식 못하는 단위 표기 → 원본 유지
+    // "3시간10분"처럼 큰 단위+작은 단위가 붙어 하나의 값을 이루는 복합 표기는, 조각을
+    // 각각 따로 변환하면 "180분10분"처럼 그냥 이어붙여져 버린다 — 반드시 합산한 총량
+    // 하나로 먼저 치환해야 한다. (UNIT_RULES 중 이 패턴이 나오는 건 시간류(분) 규칙뿐.)
+    if (rule.canonical === "분") {
+      working = working.replace(/([\d,]+)\s*시간\s*([\d,]+)?\s*분/g, (whole, hourStr: string, minStr?: string) => {
+        const hours = parseFloat(hourStr.replace(/,/g, ""));
+        if (isNaN(hours)) return whole;
+        const mins = minStr ? parseFloat(minStr.replace(/,/g, "")) : 0;
+        const total = hours * 60 + (isNaN(mins) ? 0 : mins);
+        mutated = true;
+        return `${total.toLocaleString("en-US")}분`;
+      });
+    }
 
-    const [, factor] = found;
-    const num = parseFloat(match[1].replace(/,/g, ""));
-    const converted = num * factor;
-    const formatted = Number.isInteger(converted)
-      ? converted.toLocaleString("en-US")
-      : String(Math.round(converted * 100) / 100);
-
-    return `${formatted}${rule.canonical}`;
+    // 값 전체가 "숫자+단위" 하나만은 아닐 수 있다 — "본체 7.95cm / 도크 30cm"처럼
+    // 라벨이 붙은 복합 값도 흔하므로, 문자열 전체를 매칭하려 하지 않고 "숫자+단위"
+    // 조각을 전역으로 찾아 각각 변환한다.
+    const result = working.replace(/([\d,]+(?:\.\d+)?)\s*([a-zA-Z가-힣]+)/g, (whole, numStr: string, unitToken: string) => {
+      const found = rule.units.find(([unitPattern]) => unitPattern.test(unitToken));
+      if (!found) return whole; // 이 조각의 단위가 이 규칙 소관이 아니면 그대로 둔다 (예: "장", "회")
+      const [, factor] = found;
+      const num = parseFloat(numStr.replace(/,/g, ""));
+      if (isNaN(num)) return whole;
+      const val = num * factor;
+      const formatted = Number.isInteger(val)
+        ? val.toLocaleString("en-US")
+        : String(Math.round(val * 100) / 100);
+      mutated = true;
+      return `${formatted}${rule.canonical}`;
+    });
+    return mutated ? result : value;
   }
 
   // UNIT_RULES에 매칭되는 하드코딩 규칙이 없는 기준 → expandCriterionMeta()가 LLM으로 준
@@ -724,7 +742,7 @@ export function toDisplayValue(rawValue: string, fieldKey?: string): string {
   if (rawValue === "○") return "○";
   // 명시적 부재 표현 → "X"
   if (/없음|미지원|해당없음|불가/.test(rawValue)) return "X";
-  const normalized = rawValue;
+  const normalized = fieldKey ? normalizeUnitValue(rawValue, fieldKey) : rawValue;
   // 15자 초과 시 앞부분 자르기
   return normalized.length > 15 ? normalized.slice(0, 15) : normalized;
 }
@@ -843,346 +861,163 @@ export function detectCriterionType(criterion: string): "value" | "boolean" {
   return VALUE_KEYWORDS.some(k => lower.includes(k)) ? "value" : "boolean";
 }
 
-export function extractKeywordWindow(content: string, keywords: string[], windowSize = 300): string {
-  if (!content) return "";
-  const lower = content.toLowerCase();
-  const kwLower = keywords.map(k => k.toLowerCase()).filter(k => k.length >= 2);
-  let bestStart = 0, bestScore = -1;
-  for (let i = 0; i <= Math.max(0, content.length - windowSize); i += 50) {
-    const window = lower.slice(i, i + windowSize);
-    const score = kwLower.reduce((acc, kw) => acc + (window.includes(kw) ? 1 : 0), 0);
-    if (score > bestScore) { bestScore = score; bestStart = i; }
-  }
-  return content.slice(bestStart, bestStart + windowSize).trim();
-}
-
-/** 기준명/유의어 비교용 정규화 (공백·구두점·대소문자 제거) */
-function normalizeTerm(s: string): string {
-  return s.toLowerCase().replace(/[\s\-·,()\[\].\/]/g, "");
-}
-
-/** 기준명 뒤에 붙어도 정보량이 0인 범용 확인 단어 — "원산지 지원"처럼 기준명+이 단어뿐이면 값이 아니라 되풀이다. */
-const GENERIC_CONFIRM_SUFFIXES = ["지원", "가능", "제공", "있음", "됨", "지원함", "지원됨", "가능함", "제공됨"];
-
 /**
- * 추출된 값이 기준명/유의어를 그대로 되풀이한 것인지 판별.
- * 검색 쿼리가 "<제품명> <기준명>"처럼 포괄적일 때, LLM이 스니펫에 등장하는
- * 기준명 자체를 "값"으로 착각해 반환하는 것을 기준(criterion)과 무관하게 범용적으로 차단한다.
- * 완전 일치("원산지" == "원산지")뿐 아니라, 기준명 뒤에 "지원"처럼 정보량 없는 확인 단어만
- * 붙은 경우("원산지지원")도 같은 취급 — "원산지: 지원합니다" 같은 원문에서 국가명 대신
- * 이 접미어를 값으로 잘못 추출하는 경우가 실제로 관찰됐다.
+ * judgeCell(세그먼트 분할 → 임베딩 재랭킹 → 인용 구절 기반 추출 → SiblingGuard/EchoGuard/
+ * Sanity Check)을 대체하는 경량 버전. Tavily 스니펫(및 answer, 호출자가 이미 합쳐서 넘김)을
+ * 그대로 LLM에 보여주고 "이 기준 값이 뭐야?"를 한 번만 물어본다 — 다단계 검증은 없다.
+ *
+ * 형제 제품 구분(siblingExcludeTokens)과 단위/형식 힌트(formatHint/canonicalUnit)는
+ * 호출자가 이미 계산해둔 값이라 프롬프트에 얹는 비용이 거의 없어 그대로 살렸지만,
+ * judgeCell의 인용 번호 검증·거리 기반 SiblingGuard 같은 별도 검증 단계는 없다 — 즉
+ * "형제 제품과 헷갈리지 마라"는 지시만 있고, 실제로 안 헷갈렸는지 코드로 재확인하지는 않는다.
  */
-function isLiteralEcho(rawValue: string, criterion: string, synonyms: string[]): boolean {
-  const normVal = normalizeTerm(rawValue);
-  if (!normVal) return false;
-  const terms = [criterion, ...synonyms].map(normalizeTerm).filter(t => t.length >= 2);
-  if (terms.some(t => t === normVal)) return true;
-  return terms.some(t => {
-    if (!normVal.startsWith(t)) return false;
-    const rest = normVal.slice(t.length);
-    return rest === "" || GENERIC_CONFIRM_SUFFIXES.includes(rest);
-  });
-}
-
-/**
- * 스니펫 텍스트를 인용 가능한 짧은 단위(문장/스펙 나열 구절)로 쪼갠다.
- * 다나와식 스펙은 완결된 문장이 아니라 "항목 / 항목 / 항목" 나열이 많아서,
- * 마침표뿐 아니라 줄바꿈·"/"·"·" 도 구절 경계로 취급한다.
- */
-function splitIntoSegments(text: string): string[] {
-  return text
-    .split(/[\n]+|(?<=[.!?])\s+|[/·]+/)
-    .map(s => s.trim())
-    .filter(s => s.length >= 4);
-}
-
-export async function judgeCell(
+export async function extractCellValueLight(
   productName: string,
   criterion: string,
   snippets: TavilyResult[],
   locale: string,
-  criterionType: "boolean" | "value" = detectCriterionType(criterion),
-  synonyms: string[] = [],
   siblingExcludeTokens: string[] = [],
-  /** expandCriterionMeta()가 준 형식 힌트 — 혼동되기 쉬운 다른 스펙과 구분하도록 프롬프트에 삽입 */
   formatHint?: string,
-  /** expandCriterionMeta()가 준 정규 단위 — UNIT_RULES에 없는 기준의 단위 표기 통일에 사용 */
   canonicalUnit?: string | null
 ): Promise<{ value: string; sourceUrl?: string; usedSnippet?: string; uncertain?: boolean; trace: LookupTrace }> {
   if (snippets.length === 0) {
-    return { value: "-", trace: { stage: "tavily_empty", detail: "snippets array empty at judgeCell entry" } };
+    return { value: "-", trace: { stage: "tavily_empty", detail: "snippets array empty at extractCellValueLight entry" } };
   }
 
-  // ── 1. 제품명 사전 필터: 차단이 아니라 매칭률로 재정렬만 한다 ─────────────
-  // 예전엔 토큰 매칭 50% 미만 스니펫을 통째로 버렸는데, 다나와/에누리 같은 스펙표는
-  // 문서 상단에 모델코드만 있고 본문에 전체 제품명이 반복되지 않는 경우가 많아
-  // 정답이 담긴 스니펫이 이 컷오프에 걸려 사라지는 역설이 있었다. 대신 매칭률로
-  // 정렬만 해서 관련도 높은 스니펫을 앞쪽(뒤에서 후보 100개로 잘릴 때 유리한 자리)에
-  // 두고, "명시적 값만 인정"하는 아래 LLM Extractive QA가 2차 필터 역할을 하게 둔다.
-  const productTokens = productName.split(/\s+/).filter(w => w.length >= 2);
-  const matchRatio = (r: TavilyResult) => {
-    const hits = productTokens.filter(t => r.content.toLowerCase().includes(t.toLowerCase()));
-    return hits.length / Math.max(productTokens.length, 1);
-  };
-  const usableSnippets = [...snippets].sort((a, b) => matchRatio(b) - matchRatio(a));
-  // 이후 어느 단계에서 discard되든 trace.detail에 같이 실어서, 옛 50% 기준으로 봤을 때
-  // 얼마나 통과했을지를 진단용으로 남긴다(실제 필터링에는 더 이상 안 쓰임).
-  const productFilterInfo = `productFilter=rerank-only(구컷오프 기준 ${snippets.filter(r => matchRatio(r) >= 0.5).length}/${snippets.length}matched)`;
+  const answerSource = snippets[0];
+  const answerText = answerSource.content.slice(0, 2000);
 
-  const keywords = [
-    criterion, ...synonyms, ...criterion.split(/\s+/), productName, ...productTokens,
-  ].filter(w => w.length >= 2);
-
-  // ── 2. 스니펫을 번호 매긴 구절 단위로 쪼갬 ─────────────────────────────────
-  // LLM이 인용문을 직접 타이핑하게 하는 대신 "몇 번 구절"인지만 고르게 해서,
-  // 근거 텍스트가 항상 원문 그대로가 되도록 한다 — 사후에 fuzzy 대조로 검증하는 게
-  // 아니라,애초에 LLM이 텍스트를 왜곡할 수 있는 경로 자체를 없앤다.
-  // 300자였던 창을 500자로 넓힘 — 스펙표에서 원하는 항목이 다른 키워드 없이 혼자
-  // 뚝 떨어져 있으면 좁은 창 밖으로 밀려나 판단 재료 자체가 없어지는 경우가 있었다.
-  //
-  // 예전엔 여기서 usableSnippets 중 앞 8개(Tavily 자체 관련도 순서일 뿐 이 기준과의
-  // 관련도는 아님)만 썼다 — lookupProductSpec이 advanced+20개를 받아오는데도 나머지
-  // 60%가 LLM에게 보여지지도 못한 채 버려졌다. 이제 받아온 스니펫 전체에서 구절을
-  // 뽑은 뒤, "제품명+기준"과의 임베딩 유사도로 재랭킹해 상위 TOP_SEGMENTS만 LLM에
-  // 넘긴다 — 뒤쪽 결과에 있던 정답도 살아남고, 동시에 LLM이 한 번에 봐야 하는 구절
-  // 수는 오히려 줄어든다(예전에 128개 구절을 통째로 던져 근거 인용을 놓친 사례 있음).
-  // Google batchEmbedContents는 한 번에 최대 100개 요청까지만 허용한다.
-  const MAX_CANDIDATE_SEGMENTS = 100;
-  const TOP_SEGMENTS = 30;
-
-  const allSegments: { text: string; url: string }[] = [];
-  usableSnippets.forEach((r) => {
-    const window = extractKeywordWindow(r.content, keywords, 1000);
-    splitIntoSegments(window).forEach((seg) => allSegments.push({ text: seg, url: r.url }));
-  });
-
-  if (allSegments.length === 0) {
-    return { value: "-", trace: { stage: "no_segments", detail: `${productFilterInfo}, usableSnippets=${usableSnippets.length}` } };
-  }
-
-  const candidateSegments = allSegments.length > MAX_CANDIDATE_SEGMENTS
-    ? allSegments.slice(0, MAX_CANDIDATE_SEGMENTS)
-    : allSegments;
-
-  let segments = candidateSegments;
-  let rerankInfo = "no_rerank(within_top_limit)";
-  if (candidateSegments.length > TOP_SEGMENTS) {
-    const [queryVec, docVecs] = await Promise.all([
-      embedQuery(`${productName} ${criterion}`),
-      embedBatch(candidateSegments.map((s) => s.text)),
-    ]);
-    if (docVecs) {
-      segments = candidateSegments
-        .map((seg, i) => ({ seg, score: cosineSimilarity(queryVec, docVecs[i]) }))
-        .sort((a, b) => b.score - a.score)
-        .slice(0, TOP_SEGMENTS)
-        .map((r) => r.seg);
-      rerankInfo = `reranked(${allSegments.length}→${candidateSegments.length}→${segments.length})`;
-    } else {
-      segments = candidateSegments.slice(0, TOP_SEGMENTS);
-      rerankInfo = `rerank_failed_fallback(${allSegments.length}→${segments.length})`;
-    }
-  }
-  console.log(`\x1b[90m[SegmentRerank] "${productName}" × "${criterion}": ${rerankInfo}\x1b[0m`);
-
-  // JSON 직렬화 불가 제어 문자 제거 — 웹 콘텐츠(YouTube·Reddit·Amazon 등)에
-  // null byte(\u0000)나 \x01~\x1F 같은 제어 문자가 섞이면 OpenAI API가 400을 반환.
-  const sanitize = (t: string) => t.replace(/[\u0000-\u001F\u007F]/g, " ").replace(/\s+/g, " ").trim();
-  const snippetText = segments.map((s, i) => `[${i + 1}] ${sanitize(s.text)}`).join("\n");
-
-  // ── 3. Extractive QA 프롬프트 ─────────────────────────────────────────────
-  const hintLine = formatHint
-    ? `\n- IMPORTANT format guidance for this specific criterion: ${formatHint}`
+  const siblingNote = siblingExcludeTokens.length > 0
+    ? `\nCAUTION: do not confuse this with sibling/variant models such as: ${siblingExcludeTokens.join(", ")}. Only use the text if it is clearly about "${productName}" itself.`
     : "";
-
-  const systemPrompt = criterionType === "value"
-    ? `You are a product spec extractor using extractive QA.
-Given numbered text segments, find the value for the criterion ONLY if explicitly stated in one segment.
-Respond with ONLY a JSON object:
-{ "value": "<extracted value or null>", "segmentId": <1-based segment number that states this value, or null> }
-Rules:
-- value: specific measurable value (e.g., "75dB", "약 200분", "6,400mAh"). Max 15 chars. Prices in "000,000원" format.
-- UNIT NORMALIZATION — always convert to these standard units before returning:
-  · Battery capacity → mAh  (e.g. 6.4Ah → "6400mAh", 3200mAh stays "3200mAh")
-  · Noise → dB  (e.g. "65데시벨" → "65dB")
-  · Suction → Pa  (e.g. "4.5kPa" → "4500Pa")
-  · Weight → kg  (e.g. "3500g" → "3.5kg")
-  · Length/height/width → cm  (e.g. "92mm" → "9.2cm")
-  · Runtime/charge time → 분  (e.g. "3시간" → "180분", "1시간 30분" → "90분")
-  · Water tank/dustbin capacity → L  (e.g. "350ml" → "0.35L")
-- SANITY CHECK — if the numeric value is physically impossible for that criterion (e.g. noise > 120dB, suction < 10Pa or > 100000Pa, battery < 50mAh or > 30000mAh, weight > 50kg), set all fields to null.
-- segmentId: MUST be the number of the segment that explicitly states this value. Never invent a number.
-- If the segment is about a DIFFERENT model than the specified product, set all fields to null.
-- CRITICAL — sibling variant check: the exact product name above may share almost all of its name with a
-  DIFFERENT sibling model in the same product line (e.g. a "직배수"/direct-drain version, "Ultra", "Slim",
-  "Pro", or a different trailing model code). If the segment you would cite names such a variant/suffix that
-  is NOT part of the exact product name given above, that text is about the SIBLING model, not this one —
-  set all fields to null even if the rest of the segment looks relevant. Never carry a sibling model's spec
-  over to this product just because most of the name matches.
-- If the value is not explicitly stated in any segment, set all fields to null.
-- Write "value" in ${locale === "en" ? "English" : "Korean"} — translate faithfully from the source segment if it is in a different language. Numbers/units stay as normalized above.${hintLine}`
-    : `You are a product spec verifier using extractive QA.
-Given numbered text segments, determine if the product explicitly has or lacks the specified feature/criterion, and extract concrete detail if named.
-Respond with ONLY a JSON object:
-{ "value": "<see rules>", "segmentId": <1-based segment number this is based on, or null> }
-Rules for "value":
-- If any segment names concrete, specific sub-features, actions, or functions (e.g. "AI 장애물 회피", "원격제어", "홈캠", "가구 인식", "사람 감지"), return them as a short comma-separated list, max 40 chars total. Only include items explicitly named in the text.
-- Prefer FUNCTIONAL descriptions (what the feature actually DOES) over a bare marketing/brand name for the underlying technology (e.g. "Reactive AI 3.0", "PreciSense", "LDS 라이다 X1"). A brand/product name alone does not tell the user what it does. If a segment only names such a brand/product name WITHOUT explaining its function, and no other segment states the function, treat this the same as finding no specific sub-feature — return "○" instead of the bare brand name.
-- If a segment only confirms the feature/criterion exists in general terms, WITHOUT naming any specific sub-feature or function, return "○".
-- If a segment explicitly says the feature is absent, return "X".
-- NEVER return the criterion name itself, a generic category label or head noun, a bare acronym that just restates the criterion (e.g. "AI" for criterion "AI 기능", "센서" for criterion "센서 기능"), or a synonym of the criterion as the value — none of these add information beyond the criterion itself. If that is all you can find, use "○" instead.
-- If the criterion is a broad umbrella category (e.g. "편의 기능", "스마트 기능"), actively scan ALL segments for an enumerated list of the actual named sub-features before giving up and returning "○" — don't settle for a generic confirmation if a specific list is stated anywhere in the segments.
-- segmentId: MUST be the number of the segment that supports this "value". Never invent a number.
-- If no segment is about this product, or nothing relevant is stated, set all fields to null.
-- CRITICAL — sibling variant check: the exact product name above may share almost all of its name with a
-  DIFFERENT sibling model in the same product line (e.g. a "직배수"/direct-drain version, "Ultra", "Slim",
-  "Pro", or a different trailing model code). If the segment you would cite names such a variant/suffix that
-  is NOT part of the exact product name given above, that text is about the SIBLING model, not this one —
-  set all fields to null even if the rest of the segment looks relevant. Never carry a sibling model's
-  feature over to this product just because most of the name matches.
-- When "value" is a feature list (not the bare "○"/"X" symbols), write it in ${locale === "en" ? "English" : "Korean"} — translate faithfully from the source segment if it is in a different language.${hintLine}`;
-
-  const { text } = await generateText({
-    model: openai("gpt-4o-mini"),
-    system: systemPrompt,
-    prompt: `Product: ${productName}\nCriterion: ${criterion} (Synonyms/Related terms: ${synonyms.join(", ")})\n\nText segments:\n${snippetText}`,
-    temperature: 0,
-  });
+  const hintNote = formatHint ? `\nFormat guidance for this field: ${formatHint}` : "";
+  const unitNote = canonicalUnit ? `\nIf the value is a numeric measurement, express it in ${canonicalUnit}.` : "";
 
   try {
-    const match = text.match(/\{[\s\S]*?\}/);
-    const result = match ? JSON.parse(match[0]) : {};
-    const rawValue: string | null = result.value ?? null;
-    const segId: number | null = result.segmentId ?? null;
+    const { object } = await generateObject({
+      model: openai("gpt-4o-mini"),
+      schema: z.object({
+        value: z.string().describe(
+          `The "${criterion}" value for "${productName}" as explicitly stated in the answer text. Strip filler ` +
+          `words and don't restate the question or write a full sentence — but if the text names specific ` +
+          `items (modes, numbers, standards, options, etc.), list them verbatim/concisely (comma-separated if ` +
+          `there are several) — do NOT summarize a concrete list into a vague word like "여러" or "지원". ` +
+          `Cap it at the 4-5 most notable/distinguishing items — if the text names many more than that (e.g. ` +
+          `a long marketing bullet list of "smart features"), do NOT dump the entire list; pick just the ` +
+          `handful that best differentiate this product, not generic filler. If the values come from DIFFERENT ` +
+          `conditions/modes (e.g. viewfinder vs LCD screen, photo count vs video recording time, normal vs ` +
+          `power-saving mode), prefix EACH value with a short label naming that condition (e.g. "EVF 550장 / ` +
+          `LCD 570장 / 동영상 95분") instead of a bare comma-separated list of numbers — a reader must be able ` +
+          `to tell which number belongs to which condition. Only return "○" when the text confirms the ` +
+          `feature is present WITHOUT naming any specific modes/numbers/options at all. If the text explicitly ` +
+          `states it is NOT present or NOT supported, return "X" (a clear negative answer is still a value). ` +
+          `Use "-" ONLY if the answer text does not address this field at all for this exact product.`
+        ),
+      }),
+      system: `You are given a short answer text about "${productName}". Answer using ONLY what's stated in that text — do not use outside knowledge or guess. ` +
+        `Cut filler words and never restate the question or answer in a full sentence — but if the text names specific items (modes, numbers, standards, options, etc.) for "${criterion}", list them, comma-separated (e.g. "진공 전용, 물걸레 전용, 진공+물걸레 동시"). ` +
+        `Cap it at 4-5 items max — if the text names a long marketing-style list (e.g. a dozen+ "smart features"), don't dump all of them; pick only the handful that best differentiate this product from competitors. ` +
+        `If the values come from different conditions/modes (e.g. viewfinder vs LCD, photo count vs video time, normal vs power-saving mode), prefix each value with a short condition label instead of listing bare numbers (e.g. "EVF 550장 / LCD 570장 / 동영상 95분") — the reader must be able to tell which number belongs to which condition. ` +
+        `Never collapse a concrete list into a vague summary word like "여러" or "지원" — only use "○" when the text confirms "${criterion}" is present but names no specific modes/numbers/options at all. ` +
+        `If the text explicitly says this product does NOT have/support "${criterion}", that is a real answer — respond with "X", not "-". ` +
+        `Only respond with "-" when the text simply never mentions "${criterion}" for this product at all. ` +
+        `Write the value in ${locale === "en" ? "English" : "Korean"}.${siblingNote}${hintNote}${unitNote}`,
+      prompt: `Answer text:\n${answerText}\n\nFollow-up question: What is the "${criterion}" for "${productName}" mentioned in this text?`,
+      temperature: 0,
+    });
 
-    if (!rawValue) {
-      console.log(`\x1b[31m[ExtractiveQA] FAILED — "${productName}" × "${criterion}": LLM이 ${segments.length}개 구절 중 명시적 값을 찾지 못함 (null)\x1b[0m`);
-      segments.forEach((s, i) => {
-        console.log(`\x1b[90m  [${i + 1}] (${s.url}) ${s.text}\x1b[0m`);
-      });
-      return { value: "-", trace: { stage: "extractive_qa_null", detail: `${segments.length} segments considered, ${productFilterInfo}` } };
+    if (!object.value || object.value === "-") {
+      return { value: "-", trace: { stage: "light_extract_empty", detail: "no clear value in answer text" } };
     }
 
-    // ── 4. Evidence Verification ───────────────────────────────────────────
-    // 예전엔 LLM이 다시 타이핑한 evidence_quote를 원문과 fuzzy 토큰 대조했는데,
-    // 이제 LLM은 번호만 고르므로 그 번호가 실존하는지만 확인하면 된다 — 확률적 대조가
-    // 아니라 "근거가 있다/없다"가 확정적으로 갈린다. 번호가 없거나 범위를 벗어나면
-    // 근거 없는 값으로 간주해 폐기한다(값은 있는데 근거를 못 대는 경우도 포함).
-    let evidenceSeg = (segId != null && segId >= 1 && segId <= segments.length)
-      ? segments[segId - 1]
-      : null;
-
-    if (!evidenceSeg) {
-      // 값은 냈는데 인용 번호를 못 댄 경우 — 그 값(또는 "○"/"X"처럼 원문에 그대로 없는
-      // 기호라면 기준/유의어)이 실제로 들어있는 세그먼트가 있는지 코드 레벨로 다시
-      // 찾아본다. LLM의 판단을 그냥 믿는 게 아니라 여전히 원문에 그 텍스트가 실제로
-      // 있어야만 통과시키므로 grounding 원칙은 그대로 두고, 번호 인용 서식 실수만 구제한다.
-      const needles = [rawValue, criterion, ...synonyms, ...keywords].filter((t) => t.length >= 2);
-      evidenceSeg = segments.find((s) =>
-        needles.some((n) => s.text.toLowerCase().includes(n.toLowerCase()))
-      ) ?? null;
-      if (evidenceSeg) {
-        console.log(`\x1b[33m[EvidenceCheck] 번호 인용 실패 → 텍스트 매치로 구제: "${evidenceSeg.text.slice(0, 60)}"\x1b[0m`);
-      }
+    // 프롬프트가 "4-5개까지만"이라고 지시해도 "렌즈 종류"처럼 원문에 항목이 수십 개
+    // 나열된 필드에서는 LLM이 종종 다 베껴온다 — 셀이 안 잘리게 코드로 한 번 더 강제한다.
+    let finalValue = object.value.trim();
+    const parts = finalValue.split(/,\s*/);
+    if (parts.length > 5) {
+      finalValue = parts.slice(0, 5).join(", ") + " 등";
     }
 
-    if (!evidenceSeg) {
-      console.log(`\x1b[33m[EvidenceCheck] 근거 segmentId 없음/범위 밖, 텍스트 매치도 실패 → "${rawValue}" (추정)으로 표시\x1b[0m`);
-      return { value: rawValue, uncertain: true, trace: { stage: "evidence_missing", detail: `rawValue="${rawValue}", segId=${segId}` } };
-    }
-    console.log(`\x1b[32m[EvidenceCheck] PASSED (segment #${segId ?? "text-match"}): "${evidenceSeg.text.slice(0, 60)}"\x1b[0m`);
+    return {
+      value: finalValue,
+      sourceUrl: answerSource.url,
+      usedSnippet: answerText.slice(0, 200),
+      trace: { stage: "light_extract_hit", detail: "answer-based extraction" },
+    };
+  } catch (err) {
+    return { value: "-", trace: { stage: "llm_parse_error", detail: String(err) } };
+  }
+}
 
-    const evidenceQuote = evidenceSeg.text;
+/**
+ * 같은 기준(criterion)의 여러 제품 값을 한 번에 놓고 비교해 (1) 단위를 하나로 통일하고
+ * (2) 그 기준과 무관한 값(예: "청소기 높이" 기준에 섞여 들어온 도크/베이스 높이)을 제거한다.
+ * extractCellValueLight/lookupCellValue는 제품 하나씩 독립적으로 값을 뽑기 때문에, 다른
+ * 제품과 나란히 놓고 비교해야만 드러나는 이상치(단위 불일치, 엉뚱한 부속품 수치)를 스스로
+ * 걸러내지 못한다 — 이 함수가 행(criterion) 단위로 한 번 더 묶어서 봐야만 그 판단이 가능하다.
+ */
+export async function normalizeCriterionRowAcrossProducts(
+  criterion: string,
+  entries: Array<{ colKey: string; label: string; value: string }>,
+  locale: string
+): Promise<Record<string, string>> {
+  if (entries.length < 2) return {};
 
-    // ── 4.5 Sibling Guard ───────────────────────────────────────────────────
-    // 형제 제품 토큰이 근거 구절에 "같이 언급"된다고 그 값이 형제 제품 것이란 뜻은
-    // 아니다 — "S10 MaxV Ultra has a height of 79.8mm, unlike the Slim..." 같은
-    // 비교 구문에서는 값이 명백히 target(Ultra)에 귀속된다. 단순 co-occurrence
-    // 대신, 값 위치에서 가장 가까운 제품 토큰이 target인지 sibling인지(binding)로
-    // 판단한다 — 값과 제품명 사이의 거리가 "누구 얘기인지"의 신호다. (대소문자 구분 +
-    // 단어 경계 매칭도 함께 적용 — "Ultra"(모델명)와 "ultra-slim"의 "ultra"(형용사)를
-    // 구분하기 위함)
-    if (siblingExcludeTokens.length > 0) {
-      const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const findAllIndices = (text: string, token: string): number[] => {
-        // JS \b는 \w(=[A-Za-z0-9_]) 기준이라 한글에는 경계가 전혀 안 잡힌다 —
-        // "\\b직배수\\b"가 "직배수 모델을"에서 매치 0건이 되는 실제 버그였다.
-        // \p{L}/\p{N}(유니코드 레터/숫자, 한글 포함) 기준 lookaround로 대체해
-        // 한글·영문 토큰 모두에서 실제 단어 경계로 동작하게 한다.
-        const re = new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegex(token)}(?![\\p{L}\\p{N}])`, "gu");
-        const indices: number[] = [];
-        let m: RegExpExecArray | null;
-        while ((m = re.exec(text)) !== null) indices.push(m.index);
-        return indices;
-      };
+  const lang = locale === "en" ? "English" : "Korean";
+  const rawJson = Object.fromEntries(entries.map(e => [e.colKey, e.value]));
+  const lines = entries.map(e => `${e.colKey} (${e.label}): ${e.value}`).join("\n");
 
-      const siblingHitIdx = siblingExcludeTokens.flatMap((t) => findAllIndices(evidenceQuote, t));
+  try {
+    const { object } = await generateObject({
+      model: openai("gpt-4o"),
+      schema: z.object({
+        values: z.array(z.object({
+          key: z.string().describe("The exact product key as given (must match one of the input keys)."),
+          value: z.string().describe(
+            `The "${criterion}" value for that product, converted to the SAME unit as the others (so they ` +
+            `become directly comparable), and containing ONLY the measurement that actually answers ` +
+            `"${criterion}" — if a raw value bundles in a number for a different part/accessory/mode than ` +
+            `what the other products report (e.g. a dock/base/accessory measurement mixed in with the ` +
+            `device's own measurement), drop that irrelevant part and keep only the part comparable to the ` +
+            `others. Never invent a number that isn't in the raw value. If this product's raw value reports ` +
+            `a DIFFERENT metric than what most other products report (e.g. it only gives video recording ` +
+            `time while the others give still-shot count), do NOT blank it to "-" and do NOT convert/estimate ` +
+            `it into the other metric — keep its own value as-is, clearly labeled with what it actually ` +
+            `measures, so it reads as real-but-not-directly-comparable rather than missing. Only use "-" when ` +
+            `there is truly no usable number left after removing an irrelevant bundled part.`
+          ),
+        })).describe("One entry per given product key — return ALL of them, in any order."),
+      }),
+      system: `You are comparing the already-extracted "${criterion}" values of several products, listed ` +
+        `below (one raw value per product — each was extracted independently, so they may use different ` +
+        `units, or may bundle in a measurement that isn't really about "${criterion}" itself). ` +
+        `Your job is ONLY to reformat what's already given — never invent or look up new numbers: ` +
+        `(1) pick one consistent unit and convert every value to it so they become directly comparable, ` +
+        `(2) if a value contains a number for something other than "${criterion}" itself (e.g. an ` +
+        `accessory/dock/base measured separately from the main product), remove that number and keep only ` +
+        `the part that matches what the other products are reporting for this same criterion, ` +
+        `(3) if a product's raw value is simply measured under a different metric than the majority (not a ` +
+        `bundled-in irrelevant number, but its ONLY reported figure for this criterion), keep that product's ` +
+        `value and label as-is — don't erase real information just because it isn't directly comparable, and ` +
+        `never invent/convert a number to make it look comparable. ` +
+        `Return one entry per product key, using the EXACT keys given. Write result values in ${lang}, ` +
+        `concise — no full sentences.`,
+      prompt: `Criterion: ${criterion}\n\nRaw values (one per product):\n${lines}\n\nkeys/values JSON:\n${JSON.stringify(rawJson, null, 2)}`,
+      temperature: 0,
+    });
 
-      if (siblingHitIdx.length > 0) {
-        const numMatch = rawValue.match(/[\d.]+/);
-        const valueIdx = evidenceQuote.indexOf(rawValue) !== -1
-          ? evidenceQuote.indexOf(rawValue)
-          : (numMatch ? evidenceQuote.indexOf(numMatch[0]) : -1);
-        const targetHitIdx = productTokens.flatMap((t) => findAllIndices(evidenceQuote, t));
-
-        // binding을 아예 판단할 수 없는 경우("값/target 위치 못 찾음")는 "틀렸다는 증거"가
-        // 아니라 "확인이 안 된다"는 뜻이라, 하드 폐기 대신 근거 인용 실패와 같은 레벨로
-        // 낮춘다(uncertain=true) — 값은 살리고 "(추정)"으로 표시한다.
-        if (valueIdx === -1 || targetHitIdx.length === 0) {
-          console.log(`\x1b[33m[SiblingGuard] 형제 제품 토큰 포함 + binding 판단 불가(값/target 위치 못 찾음) → uncertain 다운그레이드\x1b[0m`);
-          return { value: rawValue, uncertain: true, sourceUrl: evidenceSeg.url, usedSnippet: evidenceQuote, trace: { stage: "sibling_guard_uncertain", detail: "binding 판단 불가(값/target 위치 못 찾음)" } };
-        }
-
-        const nearestDist = (indices: number[]) => Math.min(...indices.map((i) => Math.abs(i - valueIdx)));
-        const distToSibling = nearestDist(siblingHitIdx);
-        const distToTarget = nearestDist(targetHitIdx);
-
-        // 거리 하나로 이진 판정하면, 값·제품명·형제모델이 한 줄에 촘촘히 붙어 나오는
-        // 스펙표 포맷에서 정답까지 같이 폐기되는 역설이 있었다. 그래서 거리 차이가
-        // 압도적일 때(형제 토큰이 값 바로 옆 5자 이내인데 타깃 토큰은 근처에 전혀 없음)만
-        // 하드 폐기로 남기고, 애매한 구간은 uncertain으로 살려서 "(추정)"과 함께 노출한다.
-        if (distToSibling <= distToTarget) {
-          const isOverwhelminglySibling = distToSibling <= 5 && distToTarget > 80;
-          if (isOverwhelminglySibling) {
-            console.log(`\x1b[31m[SiblingGuard] 값이 형제 제품에 압도적으로 가까움 (target ${distToTarget}자 vs sibling ${distToSibling}자) → 폐기\x1b[0m`);
-            return { value: "-", trace: { stage: "sibling_guard", detail: `target ${distToTarget}자 vs sibling ${distToSibling}자 (압도적)` } };
-          }
-          console.log(`\x1b[33m[SiblingGuard] 값이 형제 제품에 더 가깝게 위치하나 격차는 크지 않음 (target ${distToTarget}자 vs sibling ${distToSibling}자) → uncertain 다운그레이드\x1b[0m`);
-          return { value: rawValue, uncertain: true, sourceUrl: evidenceSeg.url, usedSnippet: evidenceQuote, trace: { stage: "sibling_guard_uncertain", detail: `target ${distToTarget}자 vs sibling ${distToSibling}자` } };
-        }
-        console.log(`\x1b[36m[SiblingGuard] 형제 토큰 존재하지만 값은 target에 더 가까움 (target ${distToTarget}자 vs sibling ${distToSibling}자) → 통과\x1b[0m`);
-      }
-    }
-
-    // ── 5. Echo Guard ───────────────────────────────────────────────────────
-    // 추출된 값이 기준명/유의어를 그대로 되풀이한 것이면(예: 기준 "스마트 기능" → 값 "스마트 기능")
-    // 정보 가치가 없으므로 폐기한다. 어떤 기준명이 오든 동일하게 적용되는 범용 가드.
-    let finalValue = rawValue;
-    if (isLiteralEcho(rawValue, criterion, synonyms)) {
-      if (criterionType === "boolean") {
-        // 근거 텍스트는 있으나 구체 항목이 아님 → "존재 확인"으로 다운그레이드
-        console.log(`\x1b[33m[EchoGuard] "${rawValue}" == 기준/유의어 → "○"로 대체\x1b[0m`);
-        finalValue = "○";
-      } else {
-        console.log(`\x1b[31m[EchoGuard] "${rawValue}" == 기준/유의어 → 폐기\x1b[0m`);
-        return { value: "-", trace: { stage: "echo_guard", detail: `rawValue="${rawValue}" echoes criterion/synonym` } };
-      }
-    }
-
-    // ── 6. 단위 정규화 → LLM 프롬프트로 통합
-    // judgeCell 프롬프트에 UNIT NORMALIZATION 지시가 있으므로 별도 후처리 불필요.
-
-    return { value: finalValue, sourceUrl: evidenceSeg.url, usedSnippet: evidenceQuote, trace: { stage: "tavily_hit" } };
-  } catch {
-    return { value: "-", trace: { stage: "llm_parse_error", detail: `raw="${text.slice(0, 120)}"` } };
+    return Object.fromEntries((object.values ?? []).map(v => [v.key, v.value]));
+  } catch (err) {
+    console.warn(`\x1b[33m[RowNormalize] "${criterion}" 행 정규화 실패, 원본 유지: ${err}\x1b[0m`);
+    return {};
   }
 }
 
 // ---------------------------------------------------------------------------
 // ComparisonTable 데이터 해석 (comp_table.ts STEP 1~2에서 이동)
 // 표 구조를 코드로 만들고(buildAndAssembleTable) DB 미커버/근거없는 셀을
-// Tavily+judgeCell로 채운다(enrichCompTableCells). comp_table.ts는 이 결과
-// (완성된 CompTableJson)를 받아 순위만 매긴다.
+// Tavily+extractCellValueLight로 채운다(enrichCompTableCells). comp_table.ts는
+// 이 결과(완성된 CompTableJson)를 받아 순위만 매긴다.
 // ---------------------------------------------------------------------------
 
 export type CompTableJson = {
@@ -1211,10 +1046,15 @@ function lookupCellValue(label: string, specs: string[]): string {
   const keywords   = label.toLowerCase().split(/\s+/).filter(w => w.length >= 2);
 
   // 1순위: 스펙 키 정규화 후 완전 포함 매칭
+  // 라벨이 기대하는 단위군과 값의 실제 단위군이 다르면(예: "배터리 수명"(분) vs
+  // "배터리: NP-FZ100(2280mAh)"(용량)) 키가 부분 포함되더라도 매칭에서 제외한다 —
+  // 2순위와 동일한 가드를 여기서도 적용해야 "배터리수명".includes("배터리") 같은
+  // 느슨한 포함 매칭이 서로 다른 물리량을 잘못 채가는 걸 막는다.
   for (const spec of specs) {
     const { key, rawValue } = parseSpecEntry(spec);
     const keyLower = key.toLowerCase().replace(/\s+/g, "");
     if (keyLower === labelLower || keyLower.includes(labelLower) || labelLower.includes(keyLower)) {
+      if (hasUnitDimensionMismatch(label, rawValue)) continue;
       return toDisplayValue(rawValue, label);
     }
   }
@@ -1410,6 +1250,37 @@ export async function enrichCompTableCells(
   for (const [crit, type] of rowTypeMap)
     console.log(`         "${crit}" → ${type}`);
 
+  // STEP 5(모든 채우기 완료 후 실행): "value" 행에 한해, 그 행의 모든 제품 값을 한 번에
+  // LLM에 보여줘서 단위 통일 + 무관 값(도크/베이스 등) 제거를 시킨다. 셀 채우기 경로가
+  // 어느 쪽이든(DB만으로 끝나든, Tavily까지 거치든) 항상 마지막에 한 번 돌려야 하므로
+  // 함수로 빼서 두 종료 지점(조기 return / 정상 종료) 모두에서 호출한다.
+  async function runRowNormalization(): Promise<void> {
+    const valueCriteria = [...rowTypeMap.entries()].filter(([, type]) => type === "value").map(([c]) => c);
+    if (valueCriteria.length === 0) return;
+
+    const rowsNow = tableJson.props?.rows ?? [];
+    console.log(`\n\x1b[35m[CompTable STEP 5] 기준별 교차 검증(단위 통일 + 무관 값 제거)...\x1b[0m`);
+    await Promise.all(
+      valueCriteria.map(async (criterion) => {
+        const row = rowsNow.find(r => r["criterion"] === criterion);
+        if (!row) return;
+        const entries = productCols
+          .map(col => ({ colKey: col.key, label: col.label, value: String((row as Record<string, string>)[col.key] ?? "-") }))
+          .filter(e => e.value && e.value !== "-" && e.value !== "○" && e.value !== "X");
+        if (entries.length < 2) return;
+
+        const updates = await normalizeCriterionRowAcrossProducts(criterion, entries, locale);
+        for (const e of entries) {
+          const updated = updates[e.colKey]?.trim();
+          if (updated && updated !== e.value) {
+            (row as Record<string, string>)[e.colKey] = updated;
+            console.log(`         \x1b[35m🔁 "${criterion}" × "${e.label}": "${e.value}" → "${updated}"\x1b[0m`);
+          }
+        }
+      })
+    );
+  }
+
   // STEP 2: 미확인 셀 + 근거 없는 셀 탐지
   console.log("\n\x1b[33m[CompTable STEP 2] 1차 표 분석:\x1b[0m");
   const missingCells = findMissingCells(tableJson);
@@ -1467,6 +1338,7 @@ export async function enrichCompTableCells(
 
   if (allCellsToVerify.length === 0) {
     console.log("\x1b[32m[CompTable STEP 2] 모든 셀 확인됨 → 웹 검색 생략\x1b[0m\n");
+    await runRowNormalization();
     return;
   }
 
@@ -1549,8 +1421,14 @@ export async function enrichCompTableCells(
         const synonyms = synonymMap[rowCriterion] ?? [];
         const terms = [cleanedCriterion, ...synonyms.slice(0, 2), "제원 사양표"].join(" ");
         const fullName = fullNameMap.get(productLabel) ?? productLabel;
-        const { results } = await tavilySearch(`${fullName} ${terms}`, "advanced");
-        searchResultMap.set(key, results);
+        const { results, answer } = await tavilySearch(`${fullName} ${terms}`, "advanced", { includeAnswer: "advanced" });
+        if (answer) console.log(`\x1b[36m💡 [Tavily Answer] "${fullName} × ${rowCriterion}"\n   ${answer.slice(0, 200)}\x1b[0m`);
+        // extractCellValueLight는 snippets[0]만 컨텍스트로 쓰므로, Tavily가 answer를
+        // 합성했다면 그걸 맨 앞에 세운다(spec-lookup.ts의 answerSegment 패턴과 동일).
+        const answerSegment = answer
+          ? [{ url: results[0]?.url ?? "https://tavily.com", content: answer, score: 999, title: "Tavily Answer" }]
+          : [];
+        searchResultMap.set(key, [...answerSegment, ...results]);
         // ── Tavily 원본 결과 상세 로그 ──────────────────────────────────
         console.log(`         🔍 "${fullName} × ${cleanedCriterion}" → ${results.length}개 결과`);
         results.forEach((r, idx) => {
@@ -1566,12 +1444,11 @@ export async function enrichCompTableCells(
       console.log(`\n\x1b[36m[CompTable STEP 3.5] Pre-enrich 셀 ${preEnrichedCells.length}개 직접 판단 (Tavily 생략)...\x1b[0m`);
       await Promise.all(
         preEnrichedCells.map(async ({ rowCriterion, colKey, productLabel, snippets }) => {
-          const { value, uncertain } = await judgeCell(
-            productLabel, rowCriterion, snippets, locale,
-            rowTypeMap.get(rowCriterion) ?? detectCriterionType(rowCriterion),
-            synonymMap[rowCriterion] ?? [], [],
+          const { value: rawValue, uncertain } = await extractCellValueLight(
+            productLabel, rowCriterion, snippets, locale, [],
             criterionMeta[rowCriterion]?.formatHint, criterionMeta[rowCriterion]?.canonicalUnit
           );
+          const value = normalizeUnitValue(rawValue, rowCriterion, criterionMeta[rowCriterion]?.canonicalUnit);
           const targetRow = rows.find(r => r["criterion"] === rowCriterion);
           if (targetRow && value !== "-") {
             const displayValue = uncertain ? `${value} (추정)` : value;
@@ -1583,27 +1460,16 @@ export async function enrichCompTableCells(
     }
 
     // STEP 4: 셀 값 판단 + 업데이트
-    console.log(`\n\x1b[33m[CompTable STEP 4] judgeCell로 셀 값 판단...\x1b[0m`);
+    console.log(`\n\x1b[33m[CompTable STEP 4] extractCellValueLight로 셀 값 판단...\x1b[0m`);
     const s4 = Date.now();
     await Promise.all(
       needsTavily.map(async ({ rowCriterion, colKey, productLabel }) => {
         const snippets = searchResultMap.get(`${productLabel}__${rowCriterion}`) ?? [];
-        // judgeCell에 실제로 넘어가는 키워드 창(300자)을 미리 표시
-        if (snippets.length > 0) {
-          const kws = [rowCriterion, ...(synonymMap[rowCriterion] ?? []), productLabel];
-          console.log(`\n         \x1b[90m[judgeCell 입력] "${productLabel}" × "${rowCriterion}"\x1b[0m`);
-          snippets.slice(0, 3).forEach((r, idx) => {
-            const window = extractKeywordWindow(r.content, kws, 300);
-            console.log(`            [${idx + 1}] ${r.url}`);
-            console.log(`                 ${window.replace(/\s+/g, ' ').slice(0, 200)}`);
-          });
-        }
-        const { value, sourceUrl, usedSnippet, uncertain, trace } = await judgeCell(
-          productLabel, rowCriterion, snippets, locale,
-          rowTypeMap.get(rowCriterion) ?? detectCriterionType(rowCriterion),
-          synonymMap[rowCriterion] ?? [], [],
+        const { value: rawValue, sourceUrl, usedSnippet, uncertain, trace } = await extractCellValueLight(
+          productLabel, rowCriterion, snippets, locale, [],
           criterionMeta[rowCriterion]?.formatHint, criterionMeta[rowCriterion]?.canonicalUnit
         );
+        const value = normalizeUnitValue(rawValue, rowCriterion, criterionMeta[rowCriterion]?.canonicalUnit);
         const displayValue = (uncertain && value !== "-") ? `${value} (추정)` : value;
         const targetRow = rows.find(r => r["criterion"] === rowCriterion);
         if (targetRow) targetRow[colKey] = displayValue;
@@ -1615,6 +1481,8 @@ export async function enrichCompTableCells(
     );
     console.log(`\x1b[33m[CompTable STEP 4] 완료 (${Date.now() - s4}ms)\x1b[0m`);
   }
+
+  await runRowNormalization();
 }
 
 /** 제품명을 열 헤더 표시용으로 정리한다 (접미사 제거만, 잘라내지 않음).
@@ -1642,7 +1510,15 @@ export function buildAndAssembleTable(
   const products = blocks.map((block, idx) => {
     const name     = block.match(/Name:\s*(.+)/)?.[1].trim() ?? `Product ${idx + 1}`;
     const imageUrl = block.match(/Image:\s*(\S+)/)?.[1]?.trim() ?? "";
-    const specs    = block.match(/Specs:\s*(.+)/)?.[1]?.split(" / ").map(s => s.trim()).filter(Boolean) ?? [];
+    const specsRaw = block.match(/Specs:\s*(.+)/)?.[1]?.split(" / ").map(s => s.trim()).filter(Boolean) ?? [];
+    // enrichContextWithTavily가 DB 미커버 기준에 대해 Tavily로 검증까지 마친 값을
+    // "WebSpecs (from web search): 기준: 값 | 기준2: 값2" 형태로 블록에 덧붙인다. 이미
+    // hasUnitDimensionMismatch + extractCellValueLight 검증을 거친 값이므로, DB의 느슨한
+    // 부분일치 매칭(예: "배터리수명".includes("배터리"))보다 먼저 와야 lookupCellValue가
+    // 정확한 값을 먼저 찾고 반환한다. 이전엔 이 줄을 아예 파싱하지 않아 Tavily가 애써
+    // 찾은 값이 조용히 버려지고 DB의 잘못된 단위 값이 그대로 채워졌었다.
+    const webSpecs = block.match(/WebSpecs \(from web search\):\s*(.+)/)?.[1]?.split(" | ").map(s => s.trim()).filter(Boolean) ?? [];
+    const specs    = [...webSpecs, ...specsRaw];
     return { key: `prod_${idx}`, name, imageUrl, specs };
   });
 

@@ -19,13 +19,15 @@ You are a shopping assistant who helps${productCategory ? ` first-time ${product
 [Input]
 - user_message: the user's latest message.
 - conversation_history: the full prior conversation, provided as the preceding message list.
+- current_screen (optional): the products currently shown to the user on screen, with their specs/price. If present, it is appended after this system prompt.
 - memory (optional): facts about the user learned in earlier sessions. If present, it is appended after this system prompt.
 
 [Task]
 - Answer user_message naturally and helpfully in English.
 - Use conversation_history to correctly resolve pronouns or references to earlier turns.
+- If the user asks about specific products on screen (e.g. "which one is ranked #1", "why is it in this order"), ground your answer in current_screen — name the actual product and cite its actual specs. Do not answer with only generic criteria if current_screen has the concrete data.
 - Never mention UI components, the system pipeline, or internal behavior (e.g. "I generated a table", "moving to the next step").
-- Never guess or fabricate specs, prices, or product facts not actually present in the conversation.
+- Never guess or fabricate specs, prices, or product facts not present in current_screen or the conversation.
 - Do not use markdown formatting (no **, #, bullet lists) — write plain conversational sentences.
 
 [Output]
@@ -40,13 +42,15 @@ You are a shopping assistant who helps${productCategory ? ` first-time ${product
 [Input]
 - user_message: 사용자가 방금 보낸 메시지.
 - conversation_history: 이전 대화 전체, 앞선 메시지 목록 형태로 함께 전달됨.
+- current_screen (optional): 현재 사용자 화면에 표시된 상품과 그 스펙/가격. 존재하면 이 시스템 프롬프트 뒤에 덧붙여짐.
 - memory (optional): 이전 세션에서 파악된 사용자 관련 사실. 존재하면 이 시스템 프롬프트 뒤에 덧붙여짐.
 
 [Task]
 - user_message에 자연스럽고 친절한 한국어로 답하세요.
 - conversation_history를 참고해 대명사나 이전 턴에 대한 언급을 올바르게 해석하세요.
+- 화면의 특정 상품에 대한 질문(예: "1순위가 뭐야", "왜 이 순서야")에는 current_screen을 근거로 실제 상품명과 실제 스펙을 언급해 답하세요. current_screen에 구체적인 정보가 있는데도 일반적인 기준 설명으로만 답하지 마세요.
 - UI 컴포넌트, 시스템 파이프라인, 내부 동작(예: "표를 생성했어요", "다음 단계로 넘어갈게요")을 언급하지 마세요.
-- 대화에 실제로 등장하지 않은 스펙 수치, 가격, 제품 정보를 추측하거나 지어내지 마세요.
+- current_screen이나 대화에 실제로 등장하지 않은 스펙 수치, 가격, 제품 정보를 추측하거나 지어내지 마세요.
 - 마크다운 서식(**, #, 목록 기호)을 쓰지 말고 자연스러운 대화체 문장으로만 답하세요.
 
 [Output]
@@ -54,17 +58,25 @@ You are a shopping assistant who helps${productCategory ? ` first-time ${product
 `.trim();
 };
 
-const buildChatSystemPrompt = (locale: Locale, memoryBlock: string): string =>
-  buildSystem(locale, currentProductCategory) + memoryBlock;
+const buildChatSystemPrompt = (locale: Locale, memoryBlock: string, screenContext: string): string => {
+  let prompt = buildSystem(locale, currentProductCategory);
+  if (screenContext) {
+    prompt += locale === "en"
+      ? `\n\n[CURRENT SCREEN — products shown to the user right now, with specs/price]\n${screenContext}`
+      : `\n\n[CURRENT SCREEN — 현재 사용자 화면에 표시된 상품과 스펙/가격]\n${screenContext}`;
+  }
+  return prompt + memoryBlock;
+};
 
 export function streamChatReply(
   locale: Locale,
   memoryBlock: string,
-  messages: ModelMessage[]
+  messages: ModelMessage[],
+  screenContext: string = ""
 ) {
   return streamText({
     model: openai(INTENT_MODEL),
-    system: buildChatSystemPrompt(locale, memoryBlock),
+    system: buildChatSystemPrompt(locale, memoryBlock, screenContext),
     messages,
     maxOutputTokens: 400,
     temperature: 0.3,

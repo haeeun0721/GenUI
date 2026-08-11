@@ -679,9 +679,7 @@ export default function ChatPage() {
   const [userContext, setUserContext] = useState(() =>
     typeof window !== 'undefined' ? (localStorage.getItem('gs_userContext') ?? '') : ''
   );
-  const [assignedItem, setAssignedItem] = useState<"A" | "B" | "C" | "">(() =>
-    typeof window !== 'undefined' ? ((localStorage.getItem('gs_assignedItem') as "A" | "B" | "C" | "") ?? '') : ''
-  );
+  const [assignedItem, setAssignedItem] = useState<"A" | "B" | "C" | "">('');
 
   const T = {
     greeting: locale === 'en' ? 'Hello, ' : '안녕하세요, ',
@@ -827,9 +825,14 @@ export default function ChatPage() {
   // 아니라 이 보호된 값을 우선 사용해야 한다 — 화면에 보이는 것(specToShow도 동일 우선순위)과 백엔드로
   // 보내는 것을 일치시킨다.
   const activeOptionListCardsRef = useRef<any[] | null>(null);
+  // 이 리스트를 만들 때 쓴 원래 검색 제약(예: "흡입력 4,500pa 이상") — renderToOptionList가
+  // spec._searchQuery로 붙여준 걸 카드와 같은 방식으로 보호해서, 후속 mutate(add/filter/sort)를
+  // 거쳐도 안 사라지게 한다. Edit Agent가 대화 히스토리를 못 보므로 이게 유일한 통로다.
+  const activeOptionListSearchQueryRef = useRef<string | null>(null);
   useEffect(() => {
     const active = queryHistory[activeHistoryIndex];
     activeOptionListCardsRef.current = active?.spec?.props?.cards ?? productCardListSpec?.props?.cards ?? null;
+    activeOptionListSearchQueryRef.current = active?.spec?._searchQuery ?? productCardListSpec?._searchQuery ?? null;
   }, [queryHistory, activeHistoryIndex, productCardListSpec]);
   // 스트리밍 중 messages 참조가 계속 바뀌면서 mutateSurface effect가 반복 실행되는 것을 막기 위한
   // "이미 처리한 메시지 id" 기록 (중복 mutateLog 방지)
@@ -1045,86 +1048,102 @@ export default function ChatPage() {
     const productCategory = assignedItem === "A" ? "유모차" : assignedItem === "B" ? "로봇 청소기" : "카메라";
     const prefetched: { product_name: string; field_key: string; value: string | null }[] = [];
     try {
-      for (const criterion of newCriteria) {
-        setEnrichingCriterion(criterion.name);
-        const res = await fetch("/api/auto-enrich", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            cards: cards.map((c: any) => ({ name: c.name, price: c.price, specs: c.specs ?? [] })),
-            criterion: criterion.name,
-            category: productCategory,
-            locale,
-          }),
-        });
-        if (!res.ok) continue;
-        const { updates, unconfirmed, notFound } = await res.json() as {
-          updates: { product_name: string; field_key: string; spec_phrase: string; value: string | null }[];
-          unconfirmed: string[];
-          notFound: string[];
-        };
+      // 기준이 여러 개여도 한 번의 요청으로 (제품 × 기준) 전체 조합을 조회한다 — 예전엔
+      // 기준마다 순차적으로 요청을 보내서, 기준을 여러 개 한 번에 추가하면 Option List
+      // 갱신 자체가 N번 직렬로 걸리고 Comparison Table은 그게 다 끝날 때까지 시작도
+      // 못 했다. 요청을 하나로 합치면 이 N번 직렬 대기가 사라진다.
+      setEnrichingCriterion(newCriteria.map((c) => c.name).join(", "));
+      const res = await fetch("/api/auto-enrich", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cards: cards.map((c: any) => ({ name: c.name, price: c.price, specs: c.specs ?? [] })),
+          criteria: newCriteria.map((c) => c.name),
+          category: productCategory,
+          locale,
+        }),
+      });
+      if (!res.ok) return prefetched;
+      const { updates, unconfirmed, notFound } = await res.json() as {
+        updates: { product_name: string; field_key: string; spec_phrase: string; value: string | null }[];
+        unconfirmed: { product_name: string; field_key: string }[];
+        notFound: { product_name: string; field_key: string }[];
+      };
 
-        updates?.forEach((u) => {
-          if (u.value) prefetched.push({ product_name: u.product_name, field_key: u.field_key, value: u.value });
-        });
+      updates?.forEach((u) => {
+        if (u.value) prefetched.push({ product_name: u.product_name, field_key: u.field_key, value: u.value });
+      });
 
-        const unconfirmedSet = new Set(unconfirmed ?? []);
-        const notFoundSet = new Set(notFound ?? []);
+      // 제품명 → 그 제품에 대해 unconfirmed/notFound인 기준명 집합. 응답 하나에 여러
+      // 기준의 결과가 섞여 있으므로, 예전처럼 제품명만으로는 어떤 기준 얘기인지 구분이
+      // 안 된다 — field_key까지 같이 묶어야 한다.
+      const groupByProduct = (pairs: { product_name: string; field_key: string }[]) => {
+        const map = new Map<string, Set<string>>();
+        for (const { product_name, field_key } of pairs ?? []) {
+          if (!map.has(product_name)) map.set(product_name, new Set());
+          map.get(product_name)!.add(field_key);
+        }
+        return map;
+      };
+      const unconfirmedByProduct = groupByProduct(unconfirmed);
+      const notFoundByProduct = groupByProduct(notFound);
 
-        // 화면에 표시되는 카드 업데이트 함수
-        const applyCardUpdates = (cardList: any[]) =>
-          cardList.map((card: any) => {
-            const update = updates?.find((u) => u.product_name === card.name);
-            const isUnconfirmed = unconfirmedSet.has(card.name);
-            const isNotFound = notFoundSet.has(card.name);
+      // 화면에 표시되는 카드 업데이트 함수 — 한 번의 배치 응답에 여러 기준의 결과가
+      // 섞여 있을 수 있으므로, 카드 하나당 해당하는 업데이트를 전부 반영한다.
+      const applyCardUpdates = (cardList: any[]) =>
+        cardList.map((card: any) => {
+          const cardUpdates = updates?.filter((u) => u.product_name === card.name) ?? [];
+          const unconfirmedCrit = [...(unconfirmedByProduct.get(card.name) ?? [])];
+          const notFoundCrit = [...(notFoundByProduct.get(card.name) ?? [])];
 
-            if (update) {
-              const specsCopy = [...(card.specs ?? [])];
+          if (cardUpdates.length > 0) {
+            const specsCopy = [...(card.specs ?? [])];
+            for (const update of cardUpdates) {
               const key = update.field_key.toLowerCase();
               const existingIdx = specsCopy.findIndex((s: string) => s.toLowerCase().includes(key));
               if (existingIdx !== -1) specsCopy[existingIdx] = update.spec_phrase;
               else specsCopy.unshift(update.spec_phrase);
-              return {
-                ...card,
-                specs: specsCopy,
-                _unconfirmedCriteria: isUnconfirmed
-                  ? [...new Set([...(card._unconfirmedCriteria ?? []), criterion.name])]
-                  : (card._unconfirmedCriteria ?? []),
-                _justUpdated: true,
-              };
             }
+            return {
+              ...card,
+              specs: specsCopy,
+              _unconfirmedCriteria: unconfirmedCrit.length > 0
+                ? [...new Set([...(card._unconfirmedCriteria ?? []), ...unconfirmedCrit])]
+                : (card._unconfirmedCriteria ?? []),
+              _justUpdated: true,
+            };
+          }
 
-            // 스펙 업데이트 없이 값 자체를 못 찾은 카드 — "정보 없음" 배지만 붙인다
-            if (isNotFound) {
-              return {
-                ...card,
-                _notFoundCriteria: [...new Set([...(card._notFoundCriteria ?? []), criterion.name])],
-                _justUpdated: false,
-              };
-            }
+          // 스펙 업데이트 없이 값 자체를 못 찾은 카드 — "정보 없음" 배지만 붙인다
+          if (notFoundCrit.length > 0) {
+            return {
+              ...card,
+              _notFoundCriteria: [...new Set([...(card._notFoundCriteria ?? []), ...notFoundCrit])],
+              _justUpdated: false,
+            };
+          }
 
-            if (card._justUpdated) {
-              return { ...card, _justUpdated: false };
-            }
-            return card;
-          });
-
-        setProductCardListSpec((prev: any) => {
-          if (!prev?.props?.cards) return prev;
-          const updatedCards = applyCardUpdates(prev.props.cards);
-          const next = { ...prev, props: { ...prev.props, cards: updatedCards } };
-          productCardListSpecRef.current = next;
-          return next;
+          if (card._justUpdated) {
+            return { ...card, _justUpdated: false };
+          }
+          return card;
         });
 
-        setQueryHistory((prevHistory: any[]) =>
-          prevHistory.map((entry: any) => {
-            if (!entry?.spec?.props?.cards) return entry;
-            const updatedCards = applyCardUpdates(entry.spec.props.cards);
-            return { ...entry, spec: { ...entry.spec, props: { ...entry.spec.props, cards: updatedCards } } };
-          })
-        );
-      }
+      setProductCardListSpec((prev: any) => {
+        if (!prev?.props?.cards) return prev;
+        const updatedCards = applyCardUpdates(prev.props.cards);
+        const next = { ...prev, props: { ...prev.props, cards: updatedCards } };
+        productCardListSpecRef.current = next;
+        return next;
+      });
+
+      setQueryHistory((prevHistory: any[]) =>
+        prevHistory.map((entry: any) => {
+          if (!entry?.spec?.props?.cards) return entry;
+          const updatedCards = applyCardUpdates(entry.spec.props.cards);
+          return { ...entry, spec: { ...entry.spec, props: { ...entry.spec.props, cards: updatedCards } } };
+        })
+      );
     } catch (err) {
       console.error("[autoEnrich] 오류:", err);
     } finally {
@@ -1591,15 +1610,20 @@ export default function ChatPage() {
       // productCardListSpec을 직접 쓰면 mutateSurface(add/filter/sort) 변경분이 다음 턴에서 사라질 수
       // 있어서(위 activeOptionListCardsRef 주석 참고), 보호된 ref를 우선 사용한다.
       const currentCards = activeOptionListCardsRef.current ?? productCardListSpec?.props?.cards;
+      const currentOptionListSearchQuery = activeOptionListSearchQueryRef.current ?? productCardListSpec?._searchQuery ?? '';
       // ComparisonTable/CriteriaMap과 동일하게 JSON으로 왕복 — id를 실어 보내야 Edit Agent가
       // 이름 대신 id로 카드를 정확히 지목할 수 있다(route.ts의 JSON.parse와 형태를 맞출 것).
+      // cards 배열이 아니라 {cards, searchQuery} 객체로 감싸서, 원래 검색 제약도 같이 왕복시킨다.
       const currentOptionListTag = Array.isArray(currentCards) && currentCards.length > 0
-        ? `\n\n[CURRENT_OPTION_LIST]\n${JSON.stringify(currentCards.map((c: any) => ({
-          id: c.id,
-          name: c.name,
-          price: c.price ?? '',
-          specs: c.specs ?? [],
-        })))}`
+        ? `\n\n[CURRENT_OPTION_LIST]\n${JSON.stringify({
+          cards: currentCards.map((c: any) => ({
+            id: c.id,
+            name: c.name,
+            price: c.price ?? '',
+            specs: c.specs ?? [],
+          })),
+          searchQuery: currentOptionListSearchQuery,
+        })}`
         : "";
 
       // ??재 ComparisonTable??전체 spec(columns+rows) 주입 ??Edit Agent가 어떤 기준??있는지 판단?????
@@ -2740,6 +2764,26 @@ export default function ChatPage() {
         };
         setProductCardListSpec((prev: any) => applyToSpec(prev, applyFields));
         applyToHistory(applyFields);
+      }
+    } else if (op === 'remove_field') {
+      // add의 field_updates와 반대 방향 — 조회 없이 이미 있는 스펙 줄만 지운다.
+      const fieldRemovals: any[] = mutationResult.field_removals ?? [];
+      if (fieldRemovals.length > 0) {
+        const removeFields = (cards: any[]) => {
+          return cards.map((card: any) => {
+            const removals = fieldRemovals.filter((r: any) => r?.product_name && findCard([card], r.product_name));
+            if (removals.length === 0) return card;
+            let specsCopy: string[] = [...(card.specs ?? [])];
+            for (const r of removals) {
+              const key = (r.field_key ?? '').toLowerCase();
+              if (!key) continue;
+              specsCopy = specsCopy.filter(s => !s.toLowerCase().includes(key));
+            }
+            return { ...card, specs: specsCopy };
+          });
+        };
+        setProductCardListSpec((prev: any) => applyToSpec(prev, removeFields));
+        applyToHistory(removeFields);
       }
     }
 

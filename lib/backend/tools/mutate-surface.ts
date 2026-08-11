@@ -54,12 +54,13 @@ Operations:
 - filter : "삼성 제품만 남겨줘" / "로보락 빼줘" — keep only matching cards (also handles removal requests)
 - sort   : "가격 낮은 순으로 정렬해줘" — reorder cards
 - add    : "드리미도 추가해줘" / "각 제품 배터리 수명도 보여줘" — add new product cards OR look up a spec field for existing cards (or both)
+- remove_field : "출시 년도 정보 삭제해줘" — remove an existing spec field/line from the cards (no lookup, just deletes it)
 
 Only use when [CURRENT_OPTION_LIST] is present. For new product searches, use renderToOptionList instead.
 `.trim(),
   inputSchema: z.object({
     surface: z.literal("optionList"),
-    op: z.enum(["filter", "sort", "add"]),
+    op: z.enum(["filter", "sort", "add", "remove_field"]),
 
     // filter / sort: 결과로 남아야 할 카드 이름 목록 (순서 포함)
     result_card_names: z.array(z.string()).optional().describe(
@@ -79,13 +80,21 @@ Only use when [CURRENT_OPTION_LIST] is present. For new product searches, use re
 
     // add: 스펙 필드 조회 목록 (선택적, 값은 시스템이 DB/웹에서 직접 조회)
     field_updates: z.array(z.object({
-      product_name: z.string().describe("Card name to update (must exactly match a card in [CURRENT_OPTION_LIST])"),
+      // edit_agent.ts가 실제로 채워 보내는 값은 카드의 `name`이 아니라 `id`다(모호한 이름
+      // 매칭 대신 정확한 매칭을 위해). 그래서 이 필드에 사람이 읽는 제품명이 아니라 카드
+      // ID가 들어올 수 있다는 전제로 아래 execute에서 current_cards로 실제 이름을 되찾는다.
+      product_name: z.string().describe("The card's id or name to update (must match a card in [CURRENT_OPTION_LIST])"),
       field_key: z.string().describe(
         "Short Korean keyword identifying the spec type to look up. e.g. '소음', '배터리', '흡입력', '무게', '충전시간'. " +
         "DO NOT guess or provide spec values — the system will look up real data from DB/web."
       ),
     })).optional().describe(
       "Used by add. Provide product_name + field_key only. The system resolves actual spec values from DB/web."
+    ),
+
+    // field_updates.product_name(카드 id일 수 있음)을 실제 제품명으로 되찾기 위한 현재 카드 목록.
+    current_cards: z.array(z.object({ id: z.string(), name: z.string() })).optional().describe(
+      "Current CURRENT_OPTION_LIST cards (id + name), used to resolve field_updates.product_name to a real product name."
     ),
 
     op_summary: z.string().describe(
@@ -259,10 +268,17 @@ Only use when [CURRENT_OPTION_LIST] is present. For new product searches, use re
       // 갈릴 수 있다(이유는 update-table/route.ts 상단 주석 참고).
       const fieldUpdatesRaw = args.field_updates ?? [];
       if (fieldUpdatesRaw.length > 0) {
+        // edit_agent.ts는 product_name에 카드 id를 넣어 보낸다(모호한 이름 대신 정확한
+        // 매칭을 위해) — 그 id를 그대로 lookupProductSpec(=Tavily 검색어)에 넘기면 "card-
+        // 1786437325669-2" 같은 문자열을 검색하게 되어 항상 실패한다. current_cards로
+        // 실제 제품명을 되찾아서 검색에는 그 이름을, 클라이언트 매칭용 product_name은
+        // 원래 값(id) 그대로 반환한다.
+        const idToName = new Map((args.current_cards ?? []).map(c => [c.id, c.name]));
         const results = await Promise.all(
           fieldUpdatesRaw.map(async (u) => {
-            const lookup = await lookupProductSpec(u.product_name, u.field_key, currentProductCategory, currentLocale);
-            return { ...u, lookup };
+            const resolvedName = idToName.get(u.product_name) ?? u.product_name;
+            const lookup = await lookupProductSpec(resolvedName, u.field_key, currentProductCategory, currentLocale);
+            return { ...u, resolvedName, lookup };
           })
         );
 
@@ -276,11 +292,11 @@ Only use when [CURRENT_OPTION_LIST] is present. For new product searches, use re
               : buildSpecPhrase(field_key, lookup.value),
           }));
 
-        for (const { product_name, field_key, lookup } of results) {
+        for (const { resolvedName, field_key, lookup } of results) {
           if (lookup.value === "-") {
-            console.warn(`[mutateSurface/add] ❌ "${product_name}" × "${field_key}" 해결 실패`);
+            console.warn(`[mutateSurface/add] ❌ "${resolvedName}" × "${field_key}" 해결 실패`);
           } else if (lookup.uncertain) {
-            console.log(`[mutateSurface/add] ⚠️  "${product_name}" × "${field_key}" → "${lookup.value}" (추정)`);
+            console.log(`[mutateSurface/add] ⚠️  "${resolvedName}" × "${field_key}" → "${lookup.value}" (추정)`);
           }
         }
 
@@ -289,6 +305,16 @@ Only use when [CURRENT_OPTION_LIST] is present. For new product searches, use re
       }
 
     } // end else if add
+
+    else if (args.op === "remove_field") {
+      // add와 달리 조회가 필요 없다 — 이미 카드에 있는 스펙 줄을 지우는 것뿐이라
+      // lookupProductSpec/Tavily를 전혀 거치지 않고 그대로 클라이언트에 전달한다.
+      result.field_removals = (args.field_updates ?? []).map(u => ({
+        product_name: u.product_name,
+        field_key: u.field_key,
+      }));
+      console.log(`[mutateSurface/remove_field] ${result.field_removals.length}개 필드 삭제 요청`);
+    }
 
     if (capturedRequestId) pushMutateSurfaceResult(capturedRequestId, result);
     return result;

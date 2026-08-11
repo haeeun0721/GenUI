@@ -4,6 +4,7 @@ import { anthropic } from "@ai-sdk/anthropic";
 import { generateUISpec } from "../agents/ui_agent";
 import { type ProductData, reRankByAI, RAG_NOT_FOUND, type RankedProduct } from "../agents/data_agent";
 import { ragSearch, checkDbCoverage } from "../rag/search";
+import { enrichContextWithTavily } from "../services/spec-lookup";
 import {
   currentRequestId,
   pushOptionListResult,
@@ -294,9 +295,10 @@ export const renderToOptionList = tool({
             return [...matched, ...others.slice(0, Math.max(0, MAX_SPECS - matched.length))];
           }
 
-          const contexts = selectedProducts.map((p) => {
+          const contexts = selectedProducts.map((p, i) => {
             const filteredSpecs = filterSpecsForUI(p.specs);
             return [
+              `[Product ${i + 1}]`,
               `Name: ${p.name}`,
               `Price: ${p.price}`,
               `Brand: ${p.brand}`,
@@ -309,6 +311,21 @@ export const renderToOptionList = tool({
           resolvedContext = contexts.join("\n\n");
         }
 
+      }
+
+      // ── Step 3: DB 미커버 기준 → Tavily 웹 검색으로 보강 ─────────────────
+      // ComparisonTable(render-to-comp-table.ts)과 동일한 파이프라인: DB에서 먼저
+      // 찾고, 없는 기준만 Tavily로 검색해 검증된 값을 WebSpecs로 덧붙인다. 이렇게
+      // 하지 않으면 카드 생성 LLM이 부족한 스펙을 자기 사전지식으로 메꿔서, 같은
+      // 제품의 같은 필드가 비교표와 카드에서 다르게 표시되는 문제가 생긴다.
+      if (resolvedContext.trim() && currentDecisionCriteria.length > 0) {
+        console.log(`[renderToOptionList] DB→Tavily 보강 시작 (기준: ${currentDecisionCriteria.join(", ")})`);
+        const { enriched } = await enrichContextWithTavily(
+          resolvedContext,
+          currentDecisionCriteria,
+          currentProductCategory || "유모차"
+        );
+        resolvedContext = enriched;
       }
 
       // ── RAG 결과 없음 (카테고리 DB 자체가 없는 경우) ─────────────────────
@@ -354,6 +371,12 @@ export const renderToOptionList = tool({
         }
 
         const parsed = parseAndPush(uiSpecString);
+        // 이 리스트를 만들 때 쓴 검색 제약(예: "흡입력 4,500pa 이상")을 리스트 자체에 붙여
+        // 화면 상태의 일부로 계속 들고 다닌다 — 나중에 "다른 브랜드도 보여줘" 같은 후속
+        // add 요청이 왔을 때, Edit Agent가 대화 히스토리 없이도(원래 못 봄) 이 필드를 그대로
+        // 읽어서 하드필터를 유지할 수 있다. 안 그러면 이 제약은 이 턴이 지나면 화면 어디에도
+        // 안 남아서 다음 턴부터는 사라진다.
+        parsed._searchQuery = search_query;
         if (skippedCriteria.length > 0) {
           parsed._skippedCriteria = skippedCriteria;
           parsed._appliedCriteria = coveredAnnotated;

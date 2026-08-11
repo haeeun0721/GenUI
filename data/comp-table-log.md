@@ -1,14 +1,13 @@
 # 📊 비교표 생성 로그
 
-> 생성 시각: 2026. 8. 10. 오후 11:07:44
+> 생성 시각: 2026. 8. 11. 오후 7:54:32
 
 ---
 
-## ✅ Decision Criteria (3개)
+## ✅ Decision Criteria (2개)
 
-- 흡입력 (기준: 4,500PA 이상)
-- 청소기 크기
-- 소음 수준
+- 흡입력 (기준: 4,500pa 이상)
+- 배터리 수명
 
 ---
 
@@ -48,55 +47,62 @@
 
 | 기준 | DB 스펙 커버 | 웹 보강 |
 |------|:-----------:|:------:|
-| 흡입력 (기준: 4,500PA 이상) | ✅ | - |
-| 청소기 크기 | ❌ | 🔍 |
-| 소음 수준 | ❌ | 🔍 |
+| 흡입력 (기준: 4,500pa 이상) | ✅ | - |
+| 배터리 수명 | ❌ | 🔍 |
 
 **웹 검색 보강 내용**
 
-- **기준**: `청소기 크기`
-  - 🔗 출처: [https://blog.naver.com/PostView.naver?blogId=nightd&logNo=224261284722](https://blog.naver.com/PostView.naver?blogId=nightd&logNo=224261284722)
-  - 📝 근거 문구: "7.95cm"
-- **기준**: `소음 수준`
-  - 🔗 출처: [https://www.youtube.com/watch?v=jiyIc-p6RTQ](https://www.youtube.com/watch?v=jiyIc-p6RTQ)
-  - 📝 근거 문구: "55dB"
+- **기준**: `배터리 수명`
+  - 🔗 출처: []()
+  - 📝 근거 문구: "200분(최대)"
 
-### 샤오미 미지아 5C
+### 드리미 X50s Pro Ultra
 
-**Danawa DB 스펙 (18개)**
+**Danawa DB 스펙 (30개)**
 
-- `흡입력: 15,000Pa`
-- `LDS: ○`
-- `복층: ○`
-- `사물인식: ○`
+- `흡입력: 25,000Pa`
+- `ToF: ○`
+- `측면: ○`
+- `2D: ○`
+- `AI사물인식: ○`
 - `낙하방지: ○`
+- `오염도감지: ○`
 - `먼지비움: ○`
 - `걸레건조(온풍): ○`
-- `리프팅: 1cm`
-- `메인: ○`
-- `흡입청소면적: 240㎡`
-- `소비전력: 55W`
+- `세제투입: ○`
+- `자동급수: ○`
+- `자동충전: ○`
+- `리프팅: 1.1cm`
+- `통과높이: 9cm`
+- `격자: ○`
+- `모서리: ○`
+- `메인2개: ○`
+- `엉킴방지재질: ○`
+- `먼지통: 0.31L`
 - `금지구역: ○`
 - `카펫부스트: ○`
+- `예약청소: ○`
 - `물걸레리프팅: ○`
 - `물걸레: 회전형`
+- `물탱크: 정수4.5L+오수4L`
 - `음성인식: ○`
-- `샤오미미홈: ○`
-- `무게: 3.9kg`
+- `홈캠: ○`
+- `펫케어: ○`
+- `자체앱: ○`
+- `색상: 화이트`
 
 **기준별 커버리지**
 
 | 기준 | DB 스펙 커버 | 웹 보강 |
 |------|:-----------:|:------:|
-| 흡입력 (기준: 4,500PA 이상) | ✅ | - |
-| 청소기 크기 | ❌ | 🔍 |
-| 소음 수준 | ❌ | - |
+| 흡입력 (기준: 4,500pa 이상) | ✅ | - |
+| 배터리 수명 | ❌ | 🔍 |
 
 **웹 검색 보강 내용**
 
-- **기준**: `청소기 크기`
-  - 🔗 출처: [https://search.danawa.com/dsearch.php?query=%EB%AF%B8%EC%A7%80%EC%95%84](https://search.danawa.com/dsearch.php?query=%EB%AF%B8%EC%A7%80%EC%95%84)
-  - 📝 근거 문구: "5.5x26.7"
+- **기준**: `배터리 수명`
+  - 🔗 출처: [https://blog.naver.com/PostView.naver?blogId=rotiggiluk&logNo=223980897561&redirect=Dlog](https://blog.naver.com/PostView.naver?blogId=rotiggiluk&logNo=223980897561&redirect=Dlog)
+  - 📝 근거 문구: "200~220분"
 
 ---
 
@@ -104,19 +110,16 @@
 
 | 제품 | DB 커버 기준 | 미커버 기준 | 웹 보강 |
 |------|:-----------:|:-----------:|:------:|
-| 로보락 S10 MaxV Slim | 1/3 | 청소기 크기, 소음 수준 | 2개 |
-| 샤오미 미지아 5C | 1/3 | 청소기 크기, 소음 수준 | 1개 |
+| 로보락 S10 MaxV Slim | 1/2 | 배터리 수명 | 1개 |
+| 드리미 X50s Pro Ultra | 1/2 | 배터리 수명 | 1개 |
 
 ---
 
 ## 🔗 웹 검색 출처 전체 목록
 
-- **로보락 S10 MaxV Slim** / `청소기 크기`
-  - [https://blog.naver.com/PostView.naver?blogId=nightd&logNo=224261284722](https://blog.naver.com/PostView.naver?blogId=nightd&logNo=224261284722)
-  - > 7.95cm
-- **로보락 S10 MaxV Slim** / `소음 수준`
-  - [https://www.youtube.com/watch?v=jiyIc-p6RTQ](https://www.youtube.com/watch?v=jiyIc-p6RTQ)
-  - > 55dB
-- **샤오미 미지아 5C** / `청소기 크기`
-  - [https://search.danawa.com/dsearch.php?query=%EB%AF%B8%EC%A7%80%EC%95%84](https://search.danawa.com/dsearch.php?query=%EB%AF%B8%EC%A7%80%EC%95%84)
-  - > 5.5x26.7
+- **로보락 S10 MaxV Slim** / `배터리 수명`
+  - []()
+  - > 200분(최대)
+- **드리미 X50s Pro Ultra** / `배터리 수명`
+  - [https://blog.naver.com/PostView.naver?blogId=rotiggiluk&logNo=223980897561&redirect=Dlog](https://blog.naver.com/PostView.naver?blogId=rotiggiluk&logNo=223980897561&redirect=Dlog)
+  - > 200~220분
