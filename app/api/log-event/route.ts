@@ -1,10 +1,7 @@
 import {
   createSession,
-  logCriteriaEvent,
-  logOptionEvent,
   logPurchaseClicked,
   logPurchaseConfirmed,
-  logFeatureEvent,
 } from "@/lib/backend/services/research-log";
 
 /**
@@ -32,24 +29,7 @@ export async function POST(req: Request) {
           participantId,
           assignedItem: body.assignedItem ?? "",
           purchaseContext: body.purchaseContext ?? "",
-        });
-        break;
-
-      case "criteria_event":
-        await logCriteriaEvent({
-          participantId,
-          op: body.op,
-          criterionName: body.criterionName,
-          turnIndex: body.turnIndex,
-        });
-        break;
-
-      case "option_event":
-        await logOptionEvent({
-          participantId,
-          op: body.op,
-          optionName: body.optionName,
-          turnIndex: body.turnIndex,
+          locale: body.locale,
         });
         break;
 
@@ -60,18 +40,7 @@ export async function POST(req: Request) {
       case "purchase_confirmed":
         await logPurchaseConfirmed({
           participantId,
-          finalCriteria: body.finalCriteria,
-          finalOptions: body.finalOptions,
-        });
-        break;
-
-      case "feature_event":
-        await logFeatureEvent({
-          participantId,
-          feature: body.feature,
-          event: body.event,
-          payload: body.payload,
-          turnIndex: body.turnIndex,
+          finalProductName: body.finalProductName ?? "",
         });
         break;
 

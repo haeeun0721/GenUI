@@ -315,6 +315,7 @@ export async function ragSearch(
     image: s.product.image,
     link: s.product.link,
     brand: s.product.brand,
+    mallName: "",
     specs: s.product.specs,
     description: s.product.description,
   }));
