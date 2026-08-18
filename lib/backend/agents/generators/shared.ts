@@ -6,7 +6,7 @@
 import { generateText } from "ai";
 import { openai } from "@ai-sdk/openai";
 
-export const UI_AGENT_MODEL = "gpt-4o" as const;
+export const UI_AGENT_MODEL = "gpt-4o-mini" as const;
 
 export type Locale = "ko" | "en";
 

@@ -1,6 +1,7 @@
 import { generateText } from "ai";
 import { openai } from "@ai-sdk/openai";
 import { NextRequest } from "next/server";
+import { logElapsed } from "@/lib/backend/timing";
 
 /**
  * POST /api/translate-spec
@@ -53,6 +54,7 @@ Rules:
     const batchInput: Record<string, any> = {};
     validEntries.forEach((k) => { batchInput[k] = specsMap[k]; });
 
+    const t0 = Date.now();
     try {
       const { text } = await generateText({
         model: openai("gpt-4o"),
@@ -60,7 +62,13 @@ Rules:
         prompt: `Translate all specs in this object to ${lang}:\n\n${JSON.stringify(batchInput, null, 2)}`,
         temperature: 0,
         maxOutputTokens: 4096,  // 스펙 필드 축소로 입력/출력 모두 감소
+        // 이 호출엔 원래 타임아웃이 없어서, 드물게 느린 응답 하나가 41초까지 걸린 사례가
+        // 실측에서 확인됐다(정상 케이스는 5~6초). 정상 범위보다 넉넉한 상한을 걸어 최악의
+        // 경우에도 이 값 이상 기다리지 않게 한다 — 타임아웃 나면 아래 catch가 번역 없이
+        // 원본 스펙을 그대로 반환(fail-open)하므로 화면이 깨지지 않는다.
+        abortSignal: AbortSignal.timeout(15000),
       });
+      logElapsed("translate_spec.batch", "-", t0);
 
       // Extract the outermost JSON object
       const firstBrace = text.indexOf("{");
@@ -80,6 +88,7 @@ Rules:
       });
       return Response.json(translated);
     } catch (err) {
+      logElapsed("translate_spec.batch", "-", t0, "err");
       console.error("[translate-spec] Batch error:", err);
       return Response.json(specsMap); // fallback: return originals
     }
@@ -89,13 +98,16 @@ Rules:
   const { spec } = body;
   if (!spec) return Response.json({ error: "Missing spec" }, { status: 400 });
 
+  const t0Single = Date.now();
   try {
     const { text } = await generateText({
       model: openai("gpt-4o"),
       system: systemPrompt,
       prompt: `Translate this UI spec to ${lang}:\n\n${JSON.stringify(spec, null, 2)}`,
       temperature: 0,
+      abortSignal: AbortSignal.timeout(15000),
     });
+    logElapsed("translate_spec.single", "-", t0Single);
 
     const firstBrace = text.indexOf("{");
     if (firstBrace === -1) return Response.json(spec);
@@ -110,6 +122,7 @@ Rules:
     const translated = JSON.parse(text.substring(firstBrace, lastBrace + 1));
     return Response.json(translated);
   } catch (err) {
+    logElapsed("translate_spec.single", "-", t0Single, "err");
     console.error("[translate-spec] Single error:", err);
     return Response.json(spec);
   }

@@ -5,6 +5,7 @@ import { generateUISpec } from "../agents/ui_agent";
 import { type ProductData, reRankByAI, RAG_NOT_FOUND, type RankedProduct } from "../agents/data_agent";
 import { ragSearch, checkDbCoverage } from "../rag/search";
 import { enrichContextWithTavily } from "../services/spec-lookup";
+import { time } from "../timing";
 import {
   currentRequestId,
   pushOptionListResult,
@@ -12,6 +13,8 @@ import {
   currentSavedItems,
   currentDecisionCriteria,
   currentProductCategory,
+  currentLocale,
+  currentComparisonTableCells,
 } from "./sidebar-store";
 
 // ---------------------------------------------------------------------------
@@ -240,11 +243,13 @@ export const renderToOptionList = tool({
 
       // ── Step 1: RAG 벡터 검색 ────────────────────────────────────────────
       console.log(`[renderToOptionList] RAG 검색: "${search_query}"`);
-      const candidates: ProductData[] = await ragSearch(
-        `${search_query} ${intent_summary}`.trim(),
-        currentProductCategory || "유모차",
-        20,
-        alreadyShownNames
+      const candidates: ProductData[] = await time("option_list.rag_search", currentRequestId ?? "", () =>
+        ragSearch(
+          `${search_query} ${intent_summary}`.trim(),
+          currentProductCategory || "유모차",
+          20,
+          alreadyShownNames
+        )
       );
       console.log(`[renderToOptionList] RAG 결과: ${candidates.length}개 후보`);
 
@@ -252,12 +257,14 @@ export const renderToOptionList = tool({
 
       if (candidates.length > 0) {
         // ── Step 2: AI Reranker — 정성적 기준만 전달 (가격/브랜드는 하드필터에서 이미 처리됨) ───────────
-        const ranked = await reRankByAI(
-          candidates,
-          `${search_query} ${intent_summary}`.trim(),
-          currentProductCategory,
-          6,
-          coveredAnnotated  // DB 커버 스펙 기준만 전달 (수치/가격/브랜드 조건은 하드필터에서 완료)
+        const ranked = await time("option_list.rerank", currentRequestId ?? "", () =>
+          reRankByAI(
+            candidates,
+            `${search_query} ${intent_summary}`.trim(),
+            currentProductCategory,
+            6,
+            coveredAnnotated  // DB 커버 스펙 기준만 전달 (수치/가격/브랜드 조건은 하드필터에서 완료)
+          )
         );
 
         // 커버 가능한 기준조차 0개인 경우 → 진짜 NOT_FOUND
@@ -320,10 +327,14 @@ export const renderToOptionList = tool({
       // 제품의 같은 필드가 비교표와 카드에서 다르게 표시되는 문제가 생긴다.
       if (resolvedContext.trim() && currentDecisionCriteria.length > 0) {
         console.log(`[renderToOptionList] DB→Tavily 보강 시작 (기준: ${currentDecisionCriteria.join(", ")})`);
-        const { enriched } = await enrichContextWithTavily(
-          resolvedContext,
-          currentDecisionCriteria,
-          currentProductCategory || "유모차"
+        const { enriched } = await time("option_list.tavily_enrich", currentRequestId ?? "", () =>
+          enrichContextWithTavily(
+            resolvedContext,
+            currentDecisionCriteria,
+            currentProductCategory || "유모차",
+            currentLocale,
+            currentComparisonTableCells
+          )
         );
         resolvedContext = enriched;
       }
@@ -342,14 +353,16 @@ export const renderToOptionList = tool({
       }
 
       // ── Step 4: UI Agent → ProductCardList ─────────────────────────────────
-      const uiSpecString = await generateUISpec(
-        resolvedContext,
-        intent_summary,
-        ui_intent_category,
-        1,
-        currentUserContext,
-        currentSavedItems,
-        currentDecisionCriteria
+      const uiSpecString = await time("option_list.ui_agent", currentRequestId ?? "", () =>
+        generateUISpec(
+          resolvedContext,
+          intent_summary,
+          ui_intent_category,
+          1,
+          currentUserContext,
+          currentSavedItems,
+          currentDecisionCriteria
+        )
       );
 
       console.log(`[renderToOptionList] UI Agent 응답 (앞 200자): ${uiSpecString?.slice(0, 200)}`);

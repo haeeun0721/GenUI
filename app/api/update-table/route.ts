@@ -1,36 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { findProductInLocalDB } from "@/lib/backend/agents/data_agent";
-import { computeRankingAndReasoning } from "@/lib/backend/agents/generators/comp_table";
-import { lookupProductSpec, enrichContextWithTavily } from "@/lib/backend/services/spec-lookup";
+import { enrichContextWithTavily, type KnownProductSpecs } from "@/lib/backend/services/spec-lookup";
+import { buildIncrementalTableUpdate, isValidTableSeed } from "@/lib/backend/services/comp-table-incremental";
 import { generateUISpec } from "@/lib/backend/agents/ui_agent";
 import { writeCompTableLog } from "@/lib/backend/logger";
 import { setCurrentLocale, setCurrentUserContext } from "@/lib/backend/tools/sidebar-store";
 
 export const maxDuration = 60;
-
-// ────────────────────────────────────────────────────────────────────────────
-// Helper: criteria label 정규화 (브라켓/괄호 제거)
-// ────────────────────────────────────────────────────────────────────────────
-function cleanCriterionLabel(c: string): string {
-  return c
-    .replace(/\s*\[.*?\]\s*/g, "")
-    .replace(/\s*\(.*?\)\s*/g, "")
-    .trim();
-}
-
-// 사용자가 실제로 제거한 기준(removedCriteriaNames)에 대해서만, 느슨한 부분일치로 행을 제거한다.
-// criteria 화이트리스트와의 엄격한 문자열 일치로 "존재하는 행"을 판단하지 않는다 — 표현 차이(공백/괄호/문구)로
-// 멀쩡한 행이 오탐 삭제되는 것을 방지하기 위함. 행 삭제 트리거는 오직 "기준 칩 제거"뿐이어야 한다.
-function dropRemovedCriteriaRows(rows: any[], removedCriteriaNames: string[]): any[] {
-  if (!removedCriteriaNames?.length) return rows;
-  const norm = (s: string) => s.replace(/\s+/g, "").toLowerCase();
-  const removedNorm = removedCriteriaNames.map((n) => norm(cleanCriterionLabel(n)));
-  return rows.filter((r: any) => {
-    if (r.criterion === "순위" || r.criterion === "Rank") return true;
-    const rowNorm = norm(cleanCriterionLabel(String(r.criterion ?? "")));
-    return !removedNorm.some((rn) => rn && (rowNorm === rn || rowNorm.includes(rn) || rn.includes(rowNorm)));
-  });
-}
 
 export async function POST(req: NextRequest) {
   try {
@@ -65,14 +41,6 @@ export async function POST(req: NextRequest) {
       prefetchedValues?: { product_name: string; field_key: string; value: string | null }[];
     };
 
-    // 정규화 키(기준명 소문자+공백제거 + 제품명 소문자+공백제거)로 prefetched 값 조회
-    const normKey = (criterion: string, productName: string) =>
-      `${cleanCriterionLabel(criterion).replace(/\s+/g, "").toLowerCase()}__${productName.replace(/\s+/g, "").toLowerCase()}`;
-    const prefetchedMap = new Map<string, string>();
-    for (const p of prefetchedValues) {
-      if (p.value) prefetchedMap.set(normKey(p.field_key, p.product_name), p.value);
-    }
-
     if (!savedItems?.length) {
       return NextResponse.json({ error: "No saved items provided" }, { status: 400 });
     }
@@ -83,118 +51,25 @@ export async function POST(req: NextRequest) {
     setCurrentLocale(locale === "en" ? "en" : "ko");
     setCurrentUserContext(userContext);
 
-    console.log(`[update-table] ${savedItems.length}개 제품, ${criteria.length}개 기준`);
+    const requestId = `updatetable-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    console.log(`[update-table] req=${requestId} ${savedItems.length}개 제품, ${criteria.length}개 기준`);
 
     // ── STRATEGY A: 증분(patch) 업데이트 ──────────────────────────────────────
     // currentTableData가 유효한 경우: 기존 셀 값을 보존하고 새로운 기준 행만 추가
-    if (
-      currentTableData?.props?.columns?.length > 1 &&
-      Array.isArray(currentTableData?.props?.rows)
-    ) {
+    // (실제 로직은 comp-table-incremental.ts로 옮김 — /api/auto-enrich도 같은 요청 안에서
+    // 이 함수를 호출해 Option List 카드와 표를 한 번의 검색으로 동시에 갱신한다)
+    if (isValidTableSeed(currentTableData)) {
       console.log("[update-table] ✅ 증분 업데이트 모드: 기존 테이블 데이터 보존");
-      const tableJson = JSON.parse(JSON.stringify(currentTableData)); // deep copy
-      const cols: any[] = tableJson.props.columns;
-      const rows: any[] = tableJson.props.rows;
-      const productCols = cols.filter((c: any) => c.key !== "criterion");
-
-      // 기존 criteria 행 목록 (clean)
-      const existingCriteriaClean = new Set(
-        rows
-          .filter((r: any) => r.criterion && r.criterion !== "순위" && r.criterion !== "Rank")
-          .map((r: any) => cleanCriterionLabel(r.criterion).toLowerCase())
+      const tableJson = await buildIncrementalTableUpdate(
+        currentTableData,
+        criteria,
+        currentCards,
+        category,
+        locale,
+        removedCriteriaNames,
+        prefetchedValues,
+        requestId
       );
-
-      // 새로운 기준만 추출
-      const newCriteria = criteria.filter(
-        (c) => !existingCriteriaClean.has(cleanCriterionLabel(c).toLowerCase())
-      );
-      console.log(
-        `[update-table] 기존 기준 ${existingCriteriaClean.size}개, 신규 기준 ${newCriteria.length}개: [${newCriteria.join(", ")}]`
-      );
-
-      if (newCriteria.length === 0) {
-        // 새로 추가할 기준은 없음 (중요도 변경 등) → removedCriteriaNames가 있을 때만 행 제거, 순위 재계산
-        tableJson.props.rows = dropRemovedCriteriaRows(rows, removedCriteriaNames);
-        const { reasoning } = await computeRankingAndReasoning(tableJson, criteria, locale);
-        if (reasoning) tableJson.props._rankReasoning = reasoning;
-        console.log("[update-table] 순위 재계산 완료 (행 삭제: " + removedCriteriaNames.length + "개)");
-        return NextResponse.json(tableJson);
-      }
-
-      // 제품 전체 이름 매핑: col.label → fullName
-      // Option List(auto-enrich)는 card.name을 그대로 lookupProductSpec에 넘기므로,
-      // 여기서도 반드시 동일한 문자열을 써야 prefetchedMap 키(normKey)가 같은 키로 맞아떨어져
-      // 위에서 받은 prefetchedValues를 인식하고 재사용할 수 있다.
-      // (과거엔 matchCard.name을 찾고도 DB의 Name: 필드로 덮어써서, 표기 차이(공백/접두어/모델 접미사)
-      //  하나만 있어도 키가 어긋나 두 패널이 서로 다른 검색을 독립적으로 수행 → 값 불일치 버그로 이어졌음.
-      //  지금은 애초에 auto-enrich가 검색을 먼저 끝내고 그 결과를 여기로 넘겨받는 구조라 재검색 자체가
-      //  일어나지 않지만, 이름이 어긋나면 prefetched 매칭에 실패해 다시 독립 검색으로 빠지므로 여전히 중요)
-      const fullNameMap = new Map<string, string>();
-      for (const col of productCols) {
-        const shortLabel = col.label;
-        const matchCard = currentCards?.find(
-          (c: any) => c.name?.includes(shortLabel) || shortLabel.includes(c.name)
-        );
-        if (matchCard?.name) {
-          // Option List 카드와 매칭됨 → Option List가 쓰는 이름을 그대로 재사용 (prefetched 매칭 보장)
-          fullNameMap.set(shortLabel, matchCard.name);
-          continue;
-        }
-        // 매칭되는 카드가 없을 때만 DB 조회로 전체 이름 복원 시도
-        const dbEntry = findProductInLocalDB(category, shortLabel);
-        if (dbEntry) {
-          const nameMatch = dbEntry.match(/Name:\s*(.+)/);
-          fullNameMap.set(shortLabel, nameMatch ? nameMatch[1].trim() : shortLabel);
-        } else {
-          fullNameMap.set(shortLabel, shortLabel);
-        }
-      }
-
-      // 새 기준 × 각 제품 → lookupProductSpec (캐시→DB→Tavily 3단계+검증, mutate-comptable.ts와 공유)
-      for (const criterion of newCriteria) {
-        const cleanLabel = cleanCriterionLabel(criterion);
-        const newRow: Record<string, string> = { criterion: cleanLabel };
-        // 기본값은 "-"
-        for (const col of productCols) newRow[col.key] = "-";
-
-        await Promise.all(
-          productCols.map(async (col) => {
-            const productLabel = col.label;
-            const fullName = fullNameMap.get(productLabel) ?? productLabel;
-
-            // Option List(auto-enrich)가 이번 사이클에서 이미 찾아둔 값이 있으면 재사용 —
-            // 새로 Tavily/judgeCell을 돌리면 같은 제품×기준인데 두 패널이 서로 다른 값을
-            // 받게 될 수 있다(검색 결과 변동성).
-            const prefetched = prefetchedMap.get(normKey(cleanLabel, fullName));
-            if (prefetched) {
-              newRow[col.key] = prefetched;
-              console.log(`[update-table] "${fullName}" × "${cleanLabel}" → "${prefetched}" (source=prefetched, Option List와 공유)`);
-              return;
-            }
-
-            const result = await lookupProductSpec(fullName, cleanLabel, category, locale);
-            newRow[col.key] = result.uncertain && result.value !== "-" ? `${result.value} (추정)` : result.value;
-            console.log(`[update-table] "${fullName}" × "${cleanLabel}" → "${newRow[col.key]}" (source=${result.source}${result.uncertain ? ", 불확실" : ""})`);
-          })
-        );
-
-        // 순위 행 바로 앞에 삽입
-        const rankIdx = rows.findIndex(
-          (r: any) => r.criterion === "순위" || r.criterion === "Rank"
-        );
-        if (rankIdx === -1) rows.push(newRow);
-        else rows.splice(rankIdx + 1, 0, newRow);
-
-        console.log(`[update-table] 새 행 추가: "${cleanLabel}"`);
-      }
-
-      // removedCriteriaNames가 있을 때만 행 제거 (사용자가 실제로 제거한 기준에 한함)
-      tableJson.props.rows = dropRemovedCriteriaRows(rows, removedCriteriaNames);
-
-      // 순위 재계산
-      const { reasoning } = await computeRankingAndReasoning(tableJson, criteria, locale);
-      if (reasoning) tableJson.props._rankReasoning = reasoning;
-
       console.log("[update-table] ✅ 증분 업데이트 완료");
       return NextResponse.json(tableJson);
     }
@@ -245,11 +120,28 @@ export async function POST(req: NextRequest) {
     }
 
     // 2. Enrich with Tavily
+    // STRATEGY A의 prefetchedMap과 동일한 취지 — 이번 요청에 실려온 currentCards(Option List
+    // 카드 스펙)와 prefetchedValues(auto-enrich 결과)를 먼저 보고, 없는 값만 Tavily로 새로 찾는다.
+    // 두 패널이 같은 제품×기준을 각자 독립 검색해 값이 갈리는 걸 막기 위함(영속 캐시는 아님 —
+    // 이 요청의 body에 실려온 값만 본다).
+    const knownProductsMap = new Map<string, string[]>();
+    for (const c of currentCards ?? []) {
+      if (c?.name) knownProductsMap.set(c.name, Array.isArray(c.specs) ? [...c.specs] : []);
+    }
+    for (const p of prefetchedValues) {
+      if (!p.value) continue;
+      const arr = knownProductsMap.get(p.product_name) ?? [];
+      arr.push(`${p.field_key}: ${p.value}`);
+      knownProductsMap.set(p.product_name, arr);
+    }
+    const knownProducts: KnownProductSpecs[] = Array.from(knownProductsMap, ([name, specs]) => ({ name, specs }));
+
     const { enriched: enrichedContext, productLogs } = await enrichContextWithTavily(
       rawContext,
       criteria,
       category,
-      locale
+      locale,
+      knownProducts
     );
     writeCompTableLog(productLogs, criteria);
 

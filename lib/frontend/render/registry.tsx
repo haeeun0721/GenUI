@@ -92,6 +92,7 @@ const T = {
     unverifiedFor: (name: string) => `${name} (추정)`,
     notFound: "정보 없음",
     notFoundFor: (name: string) => `${name} 정보 없음`,
+    notApplicable: "스펙 없음",
     whyRecommended: "이렇게 추천드린 이유예요",
     cancel: "취소",
     addAndCompare: (n: number) => `${n}개의 제품 추가하여 비교하기`,
@@ -122,6 +123,7 @@ const T = {
     unverifiedFor: (name: string) => `${name} (est.)`,
     notFound: "Not found",
     notFoundFor: (name: string) => `${name} info not found`,
+    notApplicable: "Not applicable",
     whyRecommended: "Why we recommend this",
     cancel: "Cancel",
     addAndCompare: (n: number) => `Add ${n} product${n === 1 ? "" : "s"} and compare`,
@@ -830,7 +832,9 @@ export const manualRegistry: Record<string, any> = {
                           const valSizeClass = val.length > 40 ? 'text-[11px]' : val.length > 22 ? 'text-[12px]' : 'text-[13px]';
                           return (
                             <td key={col.key} data-col-key={col.key} className={`px-3 py-2.5 text-left font-medium text-slate-700 ${valSizeClass} ${isFirst ? 'bg-slate-50/60' : ''}`}>
-                              {val === '-' ? <span className="text-[11px] text-slate-300 font-medium">{t.notFound}</span> : val}
+                              {val === '-'
+                                ? <span className="text-[11px] text-slate-300 font-medium">{t.notFound}</span>
+                                : (val === t.notApplicable) ? <span className="text-[11px] text-slate-400 italic">{t.notApplicable}</span> : val}
                             </td>
                           );
                         })}

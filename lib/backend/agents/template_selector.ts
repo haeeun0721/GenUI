@@ -3,7 +3,7 @@ import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
 import type { IntentAnalysis } from "./intent_analyzer";
 
-export const SELECTOR_MODEL = "gpt-4o" as const;
+export const SELECTOR_MODEL = "gpt-4o-mini" as const;
 
 export const TemplateSelectionSchema = z.object({
   template: z

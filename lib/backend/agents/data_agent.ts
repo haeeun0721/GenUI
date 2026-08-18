@@ -4,6 +4,7 @@ import { z } from "zod";
 import * as cheerio from "cheerio";
 import * as fs from "fs";
 import * as path from "path";
+import { currentOptionListCards } from "../tools/sidebar-store";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -532,7 +533,8 @@ export type LookupDiscardStage =
   | "tavily_empty"        // Tavily 검색 결과 0건
   | "llm_parse_error"     // LLM 응답 파싱 실패
   | "light_extract_hit"   // 성공 — 경량 파이프라인(Tavily answer + 단일 LLM 질문) 추출
-  | "light_extract_empty"; // 경량 파이프라인이 명확한 값을 찾지 못함
+  | "light_extract_empty" // 경량 파이프라인이 명확한 값을 찾지 못함
+  | "not_applicable";     // 성공 — 이 제품 카테고리엔 원래 없는 속성으로 분류됨
 
 export interface LookupTrace {
   stage: LookupDiscardStage;
@@ -574,16 +576,29 @@ export async function tavilySearch(
   if (options.includeDomains?.length) body.include_domains = options.includeDomains;
   if (options.includeAnswer) body.include_answer = options.includeAnswer;
 
-  const res = await fetch("https://api.tavily.com/search", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
-    body: JSON.stringify(body),
-    // advanced + 더 많은 결과 요청은 basic보다 느리므로 타임아웃을 넉넉하게
-    signal: AbortSignal.timeout(searchDepth === "advanced" ? 20000 : 10000),
-  });
-  if (!res.ok) { console.warn(`[Tavily] ${res.status}`); return { results: [] }; }
-  const data = await res.json() as { results?: TavilyResult[]; answer?: string };
-  return { results: data.results ?? [], answer: data.answer };
+  // 호출부(enrichContextWithTavily/enrichCompTableCells)는 제품×기준 조합마다 이 함수를
+  // Promise.all로 동시에 여러 개 호출한다 — 여기서 예외가 던져지면 Promise.all이 fail-fast로
+  // 전체를 reject해서, 이미 성공한 나머지 조회 결과까지 통째로 버려지고(ComparisonTable
+  // 경로는 route.ts에 이 호출을 감싸는 try/catch도 없어 스트림 자체가 죽는다) 요청 하나가
+  // 타임아웃/네트워크 순간 장애 하나로 재시도 없이 전부 실패한다. 그래서 !res.ok와 동일하게
+  // "결과 없음"으로 fail-open 처리한다 — 상위 파이프라인은 이미 빈 results를 "값 없음"으로
+  // 정상 처리하도록 되어 있다(extractCellValueLight의 tavily_empty 분기 등).
+  try {
+    const res = await fetch("https://api.tavily.com/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
+      body: JSON.stringify(body),
+      // advanced + 더 많은 결과 요청은 basic보다 느리므로 타임아웃을 넉넉하게
+      signal: AbortSignal.timeout(searchDepth === "advanced" ? 20000 : 10000),
+    });
+    if (!res.ok) { console.warn(`[Tavily] ${res.status}`); return { results: [] }; }
+    const data = await res.json() as { results?: TavilyResult[]; answer?: string };
+    return { results: data.results ?? [], answer: data.answer };
+  } catch (err: any) {
+    const reason = err?.name === "TimeoutError" || err?.name === "AbortError" ? "timeout" : (err?.message ?? String(err));
+    console.warn(`[Tavily] 요청 실패(${reason}), 빈 결과로 폴백: "${query.slice(0, 60)}"`);
+    return { results: [] };
+  }
 }
 
 
@@ -747,6 +762,81 @@ export function toDisplayValue(rawValue: string, fieldKey?: string): string {
   return normalized.length > 15 ? normalized.slice(0, 15) : normalized;
 }
 
+// ---------------------------------------------------------------------------
+// "화면에 이미 떠 있는 값" 매칭 — Option List 카드 / Comparison Table 셀처럼 이번
+// 요청과 함께 실려온, 이미 확정된 스펙 목록에서 fieldKey에 해당하는 값을 찾는다.
+// spec-lookup.ts(findProductSpecInDB, lookupKnownSpecValue)가 이 함수들에 의존해서
+// spec-lookup.ts에 있었는데, spec-lookup.ts는 이미 data_agent.ts를 import하고 있어
+// (순환 참조 방지) 반대 방향(data_agent.ts → spec-lookup.ts)은 만들 수 없다 — Option
+// List/Comparison Table 양쪽 생성 경로 모두(enrichCompTableCells 포함) 이 매칭 로직이
+// 필요해져서, 의존성이 실제로 향하는 이 파일로 옮기고 spec-lookup.ts는 여기서 re-export한다.
+// ---------------------------------------------------------------------------
+
+const FIELD_SYNONYMS: [RegExp, string[]][] = [
+  [/무게|weight/i,                    ["무게", "중량"]],
+  // 배터리 "수명/사용시간"(지속시간)과 배터리 "용량"(mAh)은 서로 다른 물리량이다.
+  // 이 패턴을 아래 배터리 패턴보다 먼저 검사해야 "배터리 수명" 같은 필드키가
+  // "배터리"/"배터리용량"(mAh) 스펙에 먼저 매칭돼 잘못된 단위로 반환되지 않는다.
+  [/수명|사용\s*시간|런타임|run.*time/i, ["사용시간", "배터리 수명", "런타임"]],
+  [/배터리|battery/i,                 ["배터리용량", "배터리"]],
+  [/충전\s*시간|charge/i,            ["충전시간", "충전"]],
+  [/소음|noise/i,                     ["소음", "소음수준"]],
+  [/흡입\s*력|suction/i,             ["흡입력", "흡입"]],
+  [/담한\s*면적|area/i,              ["담한면적", "사용고도지 면적"]],
+  [/먼지통|집진통|dust.*bin|bin/i,  ["먼지통", "집진통", "먼지통용량"]],
+  [/물통|water.*tank|tank/i,         ["물통", "물탱크", "물탱크용량"]],
+  [/먼지\s*비움|empty/i,             ["먼지비움", "자동먼지비움", "비움"]],
+  [/걸레\s*세척|wash/i,              ["걸레세척", "자동걸레세척", "세척"]],
+  [/걸레\s*건조|dry/i,               ["걸레건조", "온풍건조", "건조"]],
+];
+
+export function expandFieldKeySynonyms(fieldKey: string): string[] {
+  for (const [pattern, synonyms] of FIELD_SYNONYMS) {
+    if (pattern.test(fieldKey)) return synonyms;
+  }
+  return [fieldKey];
+}
+
+/**
+ * 스펙 문자열 목록("흡입력: 30,000Pa" 등)에서 fieldKey에 해당하는 값을 찾는다.
+ * findProductSpecInDB(로컬 DB)와 lookupKnownSpecValue(화면에 이미 떠 있는 카드/테이블 값)가
+ * 공유하는 핵심 매칭 로직 — 동의어 확장 후 단위 불일치를 걸러내며 값을 뽑는다.
+ */
+export function findSpecValueInList(specs: string[], fieldKey: string): string | null {
+  const synonyms = expandFieldKeySynonyms(fieldKey);
+  for (const key of synonyms) {
+    const keyNormalized = key.toLowerCase().replace(/\s+/g, "");
+    const candidates = specs.filter(s => s.toLowerCase().replace(/\s+/g, "").includes(keyNormalized));
+    for (const matchedSpec of candidates) {
+      const { rawValue } = parseSpecEntry(matchedSpec);
+      if (hasUnitDimensionMismatch(fieldKey, rawValue)) continue;
+      return toDisplayValue(rawValue, fieldKey);
+    }
+  }
+  return null;
+}
+
+export interface KnownProductSpecs {
+  name: string;
+  specs: string[];
+}
+
+/** productName/fieldKey가 knownProducts(화면에 이미 떠 있는 카드/테이블 값) 안에 있으면 그 값을 반환. */
+export function lookupKnownSpecValue(
+  productName: string,
+  fieldKey: string,
+  knownProducts?: KnownProductSpecs[]
+): string | null {
+  if (!knownProducts || knownProducts.length === 0) return null;
+  const qLower = productName.toLowerCase();
+  const matched = knownProducts.find(p => {
+    const pLower = p.name.toLowerCase();
+    return pLower === qLower || pLower.includes(qLower) || qLower.includes(pLower);
+  });
+  if (!matched) return null;
+  return findSpecValueInList(matched.specs, fieldKey);
+}
+
 // ── 유의어 캐시 (프로세스 수명 동안 유지) ─────────────────────────────
 const synonymsCache = new Map<string, Record<string, string[]>>();
 
@@ -785,6 +875,14 @@ export interface CriterionMeta {
   formatHint: string;
   /** 정규 단위 (단위가 있는 수치 기준만, 없으면 null — 예: boolean 기준, 목록형 기준) */
   canonicalUnit: string | null;
+  /**
+   * 이 기준이 제품/제조사마다 서로 다른 측정 조건(모드)으로 보고되는 경우, 제품 간
+   * 비교가 가능하도록 우선적으로 찾아야 할 "기준 조건" 한 문구 (예: 배터리 수명 →
+   * "1회 완충 시 표준/일반 모드 기준 사용 시간"). 검색 쿼리에 덧붙여 그 조건을 다루는
+   * 페이지를 우선 찾게 하고, 추출 프롬프트에도 "여러 조건이 있으면 이 조건을 우선"
+   * 하도록 넘긴다. 조건에 따라 갈리지 않는 기준(예: 무게, 가격)은 null.
+   */
+  preferredCondition: string | null;
 }
 
 // Promise 자체를 캐시한다(값이 아니라) — enrichContextWithTavily/lookupProductSpec처럼 같은
@@ -814,9 +912,10 @@ export async function expandCriterionMeta(
         system: `You are a product spec analyst. For each Korean product criterion, provide:
 1. "formatHint": ONE short Korean sentence describing (a) what unit or format the correct value should take, and (b) what commonly-confused OTHER spec it must NOT be mistaken for. Be specific and concrete — this will be injected into an extraction prompt to prevent a model from picking the wrong kind of value.
 2. "canonicalUnit": the standard unit abbreviation this criterion's numeric values should be normalized to (e.g. "mm", "kg", "dB", "Pa", "mAh", "L", "분"). If the criterion has no meaningful single unit (e.g. it's a boolean/feature-presence criterion, or a list of named items, or a format/resolution criterion with multiple valid notations like "4K"/"6000x4000"), set this to null.
+3. "preferredCondition": if this criterion is COMMONLY reported by manufacturers under several different measurement conditions/modes that are NOT directly comparable to each other (e.g. battery life measured in standard-mode minutes vs. max-power-mode minutes vs. charge-cycle count vs. calendar lifespan; continuous shooting count measured via viewfinder vs. LCD), name the ONE standard/baseline condition that should be searched for and prioritized so values line up across products — a short Korean phrase usable inside a search query (e.g. "1회 완충 시 표준/일반 모드 기준 사용 시간"). If this criterion is normally reported only one way (e.g. weight, price, dimensions), set this to null — do not invent a condition that doesn't typically vary.
 
 Output ONLY valid JSON in this exact shape:
-{ "<criterion>": { "formatHint": "...", "canonicalUnit": "mm" | null }, ... }`,
+{ "<criterion>": { "formatHint": "...", "canonicalUnit": "mm" | null, "preferredCondition": "..." | null }, ... }`,
         prompt: `Criteria: ${JSON.stringify(criteria)}`,
         temperature: 0,
       });
@@ -871,6 +970,44 @@ export function detectCriterionType(criterion: string): "value" | "boolean" {
  * judgeCell의 인용 번호 검증·거리 기반 SiblingGuard 같은 별도 검증 단계는 없다 — 즉
  * "형제 제품과 헷갈리지 마라"는 지시만 있고, 실제로 안 헷갈렸는지 코드로 재확인하지는 않는다.
  */
+/**
+ * "정보를 못 찾음"(검색/재시도하면 나올 수도 있음)과 "이 제품군엔 원래 이 속성이 없음"
+ * (예: 카메라 바디에 초점거리)을 구분하기 위한 분류 단계. extractCellValueLight는 주어진
+ * 텍스트만 보고 판단하는 반면(출처 없는 지식 사용 금지), 이 함수는 반대로 일반 지식을
+ * 써서 "이 속성이 이 제품 카테고리에 개념적으로 존재하는가"만 판단한다 — 구체적인 값을
+ * 아는지는 무관하다. 애매하면 false(적용됨/그냥 못 찾은 것)로 판단해 재시도 기회를
+ * 죽이지 않는 쪽으로 보수적으로 설계했다.
+ */
+async function classifyFieldApplicability(
+  productName: string,
+  criterion: string,
+  locale: string
+): Promise<boolean> {
+  try {
+    const { object } = await generateObject({
+      model: openai("gpt-4o-mini"),
+      schema: z.object({
+        notApplicable: z.boolean().describe(
+          `True ONLY if "${criterion}" is a property that products of this general type structurally never ` +
+          `have at all (e.g. focal length for a camera body, since focal length belongs to the lens, not the ` +
+          `body) — a category mismatch, not just "I don't know the number." False if the product type could ` +
+          `plausibly have this spec but the value simply wasn't found this time.`
+        ),
+      }),
+      system: `You classify whether a spec field is structurally inapplicable to a product's category, using ` +
+        `general product knowledge (not tied to any specific search result). Be conservative: when uncertain, ` +
+        `answer false — a wrong "true" permanently hides a field that might actually have a value.`,
+      prompt: `Product: "${productName}"\nSpec field: "${criterion}"\n\nDoes this general type of product ever have a meaningful value for this spec field?`,
+      temperature: 0,
+    });
+    return object.notApplicable === true;
+  } catch {
+    return false;
+  }
+}
+
+const NOT_APPLICABLE_TEXT: Record<string, string> = { ko: "스펙 없음", en: "Not applicable" };
+
 export async function extractCellValueLight(
   productName: string,
   criterion: string,
@@ -878,9 +1015,14 @@ export async function extractCellValueLight(
   locale: string,
   siblingExcludeTokens: string[] = [],
   formatHint?: string,
-  canonicalUnit?: string | null
+  canonicalUnit?: string | null,
+  preferredCondition?: string | null,
+  criterionType?: "boolean" | "value"
 ): Promise<{ value: string; sourceUrl?: string; usedSnippet?: string; uncertain?: boolean; trace: LookupTrace }> {
   if (snippets.length === 0) {
+    if (await classifyFieldApplicability(productName, criterion, locale)) {
+      return { value: NOT_APPLICABLE_TEXT[locale] ?? NOT_APPLICABLE_TEXT.en, trace: { stage: "not_applicable", detail: "field structurally absent for this product category" } };
+    }
     return { value: "-", trace: { stage: "tavily_empty", detail: "snippets array empty at extractCellValueLight entry" } };
   }
 
@@ -892,6 +1034,27 @@ export async function extractCellValueLight(
     : "";
   const hintNote = formatHint ? `\nFormat guidance for this field: ${formatHint}` : "";
   const unitNote = canonicalUnit ? `\nIf the value is a numeric measurement, express it in ${canonicalUnit}.` : "";
+  // 제품마다 다른 측정 조건으로 보고되는 기준(배터리 수명 등)을 여러 제품 간에 최대한
+  // 같은 조건으로 비교할 수 있게 하기 위함 — 텍스트에 여러 조건이 섞여 있으면 이 조건을
+  // 최우선/대표 값으로 앞세우되, 없는 조건을 지어내진 않는다(원문에 있는 다른 조건 값은
+  // 그대로 라벨을 붙여 부가로 남긴다).
+  const conditionNote = preferredCondition
+    ? `\nThis field is commonly reported under different conditions across products — for comparability, if the ` +
+      `text offers a value for this specific condition, lead with it as the primary value: "${preferredCondition}". ` +
+      `If the text offers other conditions too, you may still label and include them after the primary one. If the ` +
+      `text does NOT offer this specific condition at all, do not invent it — use whatever condition the text does ` +
+      `report, clearly labeled as usual.`
+    : "";
+  // "DSLR"처럼 "이 제품이 이 카테고리/기능에 해당하는가"만 묻는 boolean 필드는, 일반 프롬프트를
+  // 그대로 쓰면 텍스트에 딸려온 세부 스펙(화소수, ISO 범위 등)까지 그대로 베껴온다 — 그 세부
+  // 스펙은 각자의 행에 따로 들어가야 할 내용이라 이 필드에서는 노이즈다. boolean 행임을 알 때만
+  // ○/X 두 값으로만 답하도록 별도로 강하게 지시한다.
+  const booleanNote = criterionType === "boolean"
+    ? `\nIMPORTANT: "${criterion}" is a YES/NO field asking only whether "${productName}" IS/HAS this category or ` +
+      `feature — it is NOT a place for detailed specs. Respond with ONLY "○" (yes) or "X" (no), even if the text ` +
+      `lists specific numbers/specs alongside the yes/no fact (e.g. resolution, ISO range, fps) — leave those out, ` +
+      `they belong in their own separate rows. Use "-" only if the text never addresses whether this is true or false.`
+    : "";
 
   try {
     const { object } = await generateObject({
@@ -921,12 +1084,15 @@ export async function extractCellValueLight(
         `Never collapse a concrete list into a vague summary word like "여러" or "지원" — only use "○" when the text confirms "${criterion}" is present but names no specific modes/numbers/options at all. ` +
         `If the text explicitly says this product does NOT have/support "${criterion}", that is a real answer — respond with "X", not "-". ` +
         `Only respond with "-" when the text simply never mentions "${criterion}" for this product at all. ` +
-        `Write the value in ${locale === "en" ? "English" : "Korean"}.${siblingNote}${hintNote}${unitNote}`,
+        `Write the value in ${locale === "en" ? "English" : "Korean"}.${siblingNote}${hintNote}${unitNote}${conditionNote}${booleanNote}`,
       prompt: `Answer text:\n${answerText}\n\nFollow-up question: What is the "${criterion}" for "${productName}" mentioned in this text?`,
       temperature: 0,
     });
 
     if (!object.value || object.value === "-") {
+      if (await classifyFieldApplicability(productName, criterion, locale)) {
+        return { value: NOT_APPLICABLE_TEXT[locale] ?? NOT_APPLICABLE_TEXT.en, trace: { stage: "not_applicable", detail: "field structurally absent for this product category" } };
+      }
       return { value: "-", trace: { stage: "light_extract_empty", detail: "no clear value in answer text" } };
     }
 
@@ -936,6 +1102,12 @@ export async function extractCellValueLight(
     const parts = finalValue.split(/,\s*/);
     if (parts.length > 5) {
       finalValue = parts.slice(0, 5).join(", ") + " 등";
+    }
+
+    // boolean 행인데도 프롬프트 지시를 무시하고 스펙 텍스트를 그대로 돌려주는 경우에 대한
+    // 안전망 — 이미 답을 찾았다는 뜻이므로(못 찾았으면 위에서 "-"로 걸러짐) ○로 접는다.
+    if (criterionType === "boolean" && finalValue !== "○" && finalValue !== "X") {
+      finalValue = "○";
     }
 
     return {
@@ -980,11 +1152,13 @@ export async function normalizeCriterionRowAcrossProducts(
             `what the other products report (e.g. a dock/base/accessory measurement mixed in with the ` +
             `device's own measurement), drop that irrelevant part and keep only the part comparable to the ` +
             `others. Never invent a number that isn't in the raw value. If this product's raw value reports ` +
-            `a DIFFERENT metric than what most other products report (e.g. it only gives video recording ` +
-            `time while the others give still-shot count), do NOT blank it to "-" and do NOT convert/estimate ` +
-            `it into the other metric — keep its own value as-is, clearly labeled with what it actually ` +
-            `measures, so it reads as real-but-not-directly-comparable rather than missing. Only use "-" when ` +
-            `there is truly no usable number left after removing an irrelevant bundled part.`
+            `a DIFFERENT metric than what most other products report for "${criterion}" (e.g. one product's ` +
+            `only reported figure is a charge-cycle count while the others report per-charge runtime), do NOT ` +
+            `blank it to "-" and do NOT convert/estimate it into the other metric — keep its own value as-is, ` +
+            `labeled with what THIS SPECIFIC value actually measures (read that from its own raw text below, ` +
+            `never assume a domain-specific label from an unrelated product category), so it reads as ` +
+            `real-but-not-directly-comparable rather than missing. Only use "-" when there is truly no usable ` +
+            `number left after removing an irrelevant bundled part.`
           ),
         })).describe("One entry per given product key — return ALL of them, in any order."),
       }),
@@ -1266,7 +1440,7 @@ export async function enrichCompTableCells(
         if (!row) return;
         const entries = productCols
           .map(col => ({ colKey: col.key, label: col.label, value: String((row as Record<string, string>)[col.key] ?? "-") }))
-          .filter(e => e.value && e.value !== "-" && e.value !== "○" && e.value !== "X");
+          .filter(e => e.value && e.value !== "-" && e.value !== "○" && e.value !== "X" && !Object.values(NOT_APPLICABLE_TEXT).includes(e.value));
         if (entries.length < 2) return;
 
         const updates = await normalizeCriterionRowAcrossProducts(criterion, entries, locale);
@@ -1402,6 +1576,19 @@ export async function enrichCompTableCells(
       return false;
     }
 
+    // Option List가 이 제품×기준을 이미 화면에 표시 중이면(currentOptionListCards, 이번
+    // 요청과 함께 실려온 request-scoped 값) 그 값을 그대로 재사용한다 — 여기서 새로
+    // Tavily 검색을 돌리면 두 컴포넌트가 같은 제품×기준을 독립적으로 재조회해 값이
+    // 갈릴 수 있다(예: 초점거리가 Option List엔 "-", Comparison Table엔 "0.3m").
+    const fullName = fullNameMap.get(productLabel) ?? productLabel;
+    const known = lookupKnownSpecValue(fullName, rowCriterion, currentOptionListCards);
+    if (known) {
+      const targetRow = rows.find(r => r["criterion"] === rowCriterion);
+      if (targetRow) (targetRow as Record<string, string>)[colKey] = known;
+      console.log(`\x1b[36m🔗 [Screen HIT] "${productLabel}" × "${rowCriterion}" → "${known}" (source=screen, Tavily 생략)\x1b[0m`);
+      return false;
+    }
+
     return true;
   });
 
@@ -1419,7 +1606,10 @@ export async function enrichCompTableCells(
         // (STEP 4.5/4.7 재검색이 불필요해질 만큼 충분히 강한 쿼리를 처음부터 사용)
         const cleanedCriterion = rowCriterion.replace(/\s*\[[^\]]*\]/g, "").replace(/\s*\([^)]*\)/g, "").trim();
         const synonyms = synonymMap[rowCriterion] ?? [];
-        const terms = [cleanedCriterion, ...synonyms.slice(0, 2), "제원 사양표"].join(" ");
+        // preferredCondition: 제품마다 다른 조건(모드)으로 보고되는 기준(배터리 수명 등)은
+        // 쿼리에 그 조건을 덧붙여, 애초에 같은 조건을 다루는 페이지가 검색되도록 유도한다.
+        const preferredCondition = criterionMeta[rowCriterion]?.preferredCondition;
+        const terms = [cleanedCriterion, ...synonyms.slice(0, 2), "제원 사양표", preferredCondition].filter(Boolean).join(" ");
         const fullName = fullNameMap.get(productLabel) ?? productLabel;
         const { results, answer } = await tavilySearch(`${fullName} ${terms}`, "advanced", { includeAnswer: "advanced" });
         if (answer) console.log(`\x1b[36m💡 [Tavily Answer] "${fullName} × ${rowCriterion}"\n   ${answer.slice(0, 200)}\x1b[0m`);
@@ -1446,7 +1636,8 @@ export async function enrichCompTableCells(
         preEnrichedCells.map(async ({ rowCriterion, colKey, productLabel, snippets }) => {
           const { value: rawValue, uncertain } = await extractCellValueLight(
             productLabel, rowCriterion, snippets, locale, [],
-            criterionMeta[rowCriterion]?.formatHint, criterionMeta[rowCriterion]?.canonicalUnit
+            criterionMeta[rowCriterion]?.formatHint, criterionMeta[rowCriterion]?.canonicalUnit,
+            criterionMeta[rowCriterion]?.preferredCondition, rowTypeMap.get(rowCriterion)
           );
           const value = normalizeUnitValue(rawValue, rowCriterion, criterionMeta[rowCriterion]?.canonicalUnit);
           const targetRow = rows.find(r => r["criterion"] === rowCriterion);
@@ -1467,7 +1658,8 @@ export async function enrichCompTableCells(
         const snippets = searchResultMap.get(`${productLabel}__${rowCriterion}`) ?? [];
         const { value: rawValue, sourceUrl, usedSnippet, uncertain, trace } = await extractCellValueLight(
           productLabel, rowCriterion, snippets, locale, [],
-          criterionMeta[rowCriterion]?.formatHint, criterionMeta[rowCriterion]?.canonicalUnit
+          criterionMeta[rowCriterion]?.formatHint, criterionMeta[rowCriterion]?.canonicalUnit,
+          criterionMeta[rowCriterion]?.preferredCondition, rowTypeMap.get(rowCriterion)
         );
         const value = normalizeUnitValue(rawValue, rowCriterion, criterionMeta[rowCriterion]?.canonicalUnit);
         const displayValue = (uncertain && value !== "-") ? `${value} (추정)` : value;
@@ -1592,14 +1784,26 @@ function proxyImageForLocalDB(url: string): string {
   return `/api/image-proxy?url=${encodeURIComponent(url)}`;
 }
 
+// 요청마다(마이 아이템 개수만큼) 동기 readFileSync+JSON.parse를 반복하면 Node 이벤트
+// 루프가 그 시간만큼 블로킹되어 같은 프로세스가 처리 중인 다른 동시 요청까지 지연시킨다.
+// 프로세스 수명 동안 카테고리별로 한 번만 읽어 캐싱한다(search.ts의 loadData 캐시와 동일한 패턴).
+const localDbCache: Record<string, any[]> = {};
+
+function loadLocalDbProducts(fileName: string): any[] {
+  if (localDbCache[fileName]) return localDbCache[fileName];
+  const filePath = path.join(process.cwd(), "data", fileName);
+  const raw = fs.readFileSync(filePath, "utf-8");
+  const products: any[] = JSON.parse(raw);
+  localDbCache[fileName] = products;
+  return products;
+}
+
 export function findProductInLocalDB(productCategory: string, name: string): string | null {
   const fileName = CATEGORY_FILE_MAP[productCategory];
   if (!fileName) return null;
 
   try {
-    const filePath = path.join(process.cwd(), "data", fileName);
-    const raw = fs.readFileSync(filePath, "utf-8");
-    const products: any[] = JSON.parse(raw);
+    const products = loadLocalDbProducts(fileName);
 
     // 정확히 일치하는 제품 먼저 탐색
     let found = products.find((p) => p.name === name);

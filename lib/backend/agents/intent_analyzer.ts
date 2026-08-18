@@ -2,7 +2,7 @@ import { generateObject, type ModelMessage } from "ai";
 import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
 
-export const INTENT_MODEL = "gpt-4o" as const;
+export const INTENT_MODEL = "gpt-4o-mini" as const;
 
 export const IntentAnalysisSchema = z.object({
   user_goal: z.string().describe("A detailed 1-2 sentence description of what the user is trying to accomplish. e.g. 'The user wants to find a robot vacuum under 800,000 KRW that is quiet and suitable for a household with pets.'"),

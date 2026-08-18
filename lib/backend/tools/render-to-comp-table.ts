@@ -3,6 +3,7 @@ import { z } from "zod";
 import { generateUISpec } from "../agents/ui_agent";
 import { enrichContextWithTavily } from "../services/spec-lookup";
 import { writeCompTableLog } from "../logger";
+import { time } from "../timing";
 import {
   currentRequestId,
   pushCompTableResult,
@@ -11,6 +12,8 @@ import {
   currentDecisionCriteria,
   currentMyItemsContextSummary,
   currentProductCategory,
+  currentLocale,
+  currentOptionListCards,
 } from "./sidebar-store";
 
 
@@ -50,10 +53,16 @@ export const renderToCompTable = tool({
     console.log("[renderToCompTable] product_data length:", rawContext.length);
 
     console.log("\n[Pre-enrich] Local DB 스펙 vs. Decision Criteria 커버리지 점검 시작...");
-    const { enriched: enrichedContext, productLogs } = await enrichContextWithTavily(
-      rawContext,
-      currentDecisionCriteria,
-      currentProductCategory
+    const { enriched: enrichedContext, productLogs } = await time(
+      "comp_table.pre_enrich_tavily",
+      capturedRequestId,
+      () => enrichContextWithTavily(
+        rawContext,
+        currentDecisionCriteria,
+        currentProductCategory,
+        currentLocale,
+        currentOptionListCards
+      )
     );
     const wasEnriched = enrichedContext !== rawContext;
     console.log(

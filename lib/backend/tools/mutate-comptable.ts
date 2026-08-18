@@ -10,7 +10,8 @@ import {
 import { findProductInLocalDB } from "../agents/data_agent";
 import { computeRankingAndReasoning } from "../agents/generators/comp_table";
 import { ragSearch } from "../rag/search";
-import { lookupProductSpec } from "../services/spec-lookup";
+import { resolveSpecValue } from "../services/spec-lookup";
+import { time } from "../timing";
 
 /**
  * mutateComparisonTable — 이미 화면에 표시된 ComparisonTable에 기준(행)/제품(열)을 추가/삭제
@@ -19,15 +20,17 @@ import { lookupProductSpec } from "../services/spec-lookup";
  * 동일한 building block(lookupProductSpec)을 재사용하되, update-table/route.ts 자체는
  * 건드리지 않는다 — 그 경로는 Decision Criteria 패널 변경 시에도 여전히 그대로 동작해야 하기 때문.
  *
- * 셀 값 조회는 전부 lookupProductSpec(로컬 DB → Tavily 검색 + judgeCell 검증 + SiblingGuard)로
- * 통일했다. 예전엔 이 파일이 findProductSpecInDB/tavilySearch/judgeCell을 직접 조합해서
- * auto-enrich/fetch-spec이 쓰는 더 정교한 파이프라인과 따로 놀았는데, 그러다보니 개선
- * (SiblingGuard 등)이 한쪽에만 적용되는 문제가 있었다.
+ * 셀 값 조회는 전부 resolveSpecValue(화면에 이미 떠 있는 값 확인 → lookupProductSpec: 로컬
+ * DB → Tavily 검색 + judgeCell 검증 + SiblingGuard)로 통일했다. 예전엔 이 파일이
+ * findProductSpecInDB/tavilySearch/judgeCell을 직접 조합해서 auto-enrich/fetch-spec이
+ * 쓰는 더 정교한 파이프라인과 따로 놀았는데, 그러다보니 개선(SiblingGuard 등)이 한쪽에만
+ * 적용되는 문제가 있었다.
  *
- * 주의: 여기(채팅으로 Table을 직접 mutate하는 경로)는 app/api/update-table/route.ts의
- * STRATEGY A와 달리 Option List 쪽 auto-enrich 결과를 넘겨받지 않는다 — 즉 캐시가 없으므로
- * 동일 제품×기준을 이 경로와 Option List 경로가 각각 건드리면 독립적인 실시간 검색이 되어
- * 값이 갈릴 수 있다(캐시를 두지 않기로 한 이유는 update-table/route.ts 상단 주석 참고).
+ * resolveSpecValue는 lookupProductSpec을 부르기 전에 currentOptionListCards(Option List가
+ * 이번 요청에 실어보낸, 이미 화면에 떠 있는 스펙)를 먼저 확인한다 — 그래서 이 경로(채팅으로
+ * Table을 직접 mutate)와 Option List 경로가 같은 제품×기준을 각자 독립적으로 재검색해 값이
+ * 갈리는 문제(예: 초점거리가 한쪽엔 "-", 다른 쪽엔 "0.3m")가 방지된다. 이 값은 영속 캐시가
+ * 아니라 매 요청 시작 시 덮어써지는 request-scoped 상태다(app/api/generate/route.ts 참고).
  *
  * product(열) add는 mutateSurface(Option List add)와 동일하게 RAG(ragSearch)로 제품을 찾는다.
  * 단일 셀 재조회(특정 제품 × 특정 기준 하나만 갱신)는 여전히 범위 밖이다.
@@ -108,13 +111,15 @@ Only use when [CURRENT_COMPARISON_TABLE] is present. Cannot re-check a single ce
         const newRow: Record<string, string> = { id: genRowId(), criterion };
         for (const col of productCols) newRow[col.key] = "-";
 
-        await Promise.all(
-          productCols.map(async (col: any) => {
-            const fullName = fullNameMap.get(col.label) ?? col.label;
-            const result = await lookupProductSpec(fullName, criterion, currentProductCategory, currentLocale);
-            newRow[col.key] = result.uncertain && result.value !== "-" ? `${result.value} (추정)` : result.value;
-            console.log(`[mutateComparisonTable] "${fullName}" × "${criterion}" → "${newRow[col.key]}" (source=${result.source}${result.uncertain ? ", 불확실" : ""})`);
-          })
+        await time("mutate_comp_table.add_criteria_lookup", capturedRequestId, () =>
+          Promise.all(
+            productCols.map(async (col: any) => {
+              const fullName = fullNameMap.get(col.label) ?? col.label;
+              const result = await resolveSpecValue(fullName, criterion, currentProductCategory, currentLocale);
+              newRow[col.key] = result.uncertain && result.value !== "-" ? `${result.value} (추정)` : result.value;
+              console.log(`[mutateComparisonTable] "${fullName}" × "${criterion}" → "${newRow[col.key]}" (source=${result.source}${result.uncertain ? ", 불확실" : ""})`);
+            })
+          )
         );
 
         const rankIdx = rows.findIndex((r: any) => r.criterion === "순위" || r.criterion === "Rank");
@@ -149,22 +154,24 @@ Only use when [CURRENT_COMPARISON_TABLE] is present. Cannot re-check a single ce
       const requested = (args.products_to_add ?? []).map((s) => s.trim()).filter(Boolean);
       const existingLabelsLower = new Set(productCols.map((c: any) => c.label.toLowerCase()));
 
-      const searchResults = await Promise.all(
-        requested.map(async (q) => {
-          try {
-            const found = await ragSearch(q, currentProductCategory, 5, productCols.map((c: any) => c.label));
-            const qLower = q.toLowerCase();
-            const filtered = found.filter((p) =>
-              p.name?.toLowerCase().includes(qLower) ||
-              p.brand?.toLowerCase().includes(qLower) ||
-              qLower.split(/\s+/).every((w: string) => p.name?.toLowerCase().includes(w) || p.brand?.toLowerCase().includes(w))
-            );
-            return (filtered.length > 0 ? filtered : found)[0] ?? null;
-          } catch (err) {
-            console.error(`[mutateComparisonTable/add_product] 검색 실패 "${q}":`, err);
-            return null;
-          }
-        })
+      const searchResults = await time("mutate_comp_table.rag_search", capturedRequestId, () =>
+        Promise.all(
+          requested.map(async (q) => {
+            try {
+              const found = await ragSearch(q, currentProductCategory, 5, productCols.map((c: any) => c.label));
+              const qLower = q.toLowerCase();
+              const filtered = found.filter((p) =>
+                p.name?.toLowerCase().includes(qLower) ||
+                p.brand?.toLowerCase().includes(qLower) ||
+                qLower.split(/\s+/).every((w: string) => p.name?.toLowerCase().includes(w) || p.brand?.toLowerCase().includes(w))
+              );
+              return (filtered.length > 0 ? filtered : found)[0] ?? null;
+            } catch (err) {
+              console.error(`[mutateComparisonTable/add_product] 검색 실패 "${q}":`, err);
+              return null;
+            }
+          })
+        )
       );
 
       const seenLower = new Set<string>();
@@ -184,13 +191,15 @@ Only use when [CURRENT_COMPARISON_TABLE] is present. Cannot re-check a single ce
         const newKey = `prod_${idx}`;
         cols.push({ key: newKey, label: prod.name, imageUrl: (prod as any).image ?? "" });
 
-        await Promise.all(
-          criterionRows.map(async (row: any) => {
-            const criterion = String(row.criterion ?? "");
-            const result = await lookupProductSpec(prod.name, criterion, currentProductCategory, currentLocale);
-            row[newKey] = result.uncertain && result.value !== "-" ? `${result.value} (추정)` : result.value;
-            console.log(`[mutateComparisonTable/add_product] "${prod.name}" × "${criterion}" → "${row[newKey]}" (source=${result.source}${result.uncertain ? ", 불확실" : ""})`);
-          })
+        await time("mutate_comp_table.add_product_lookup", capturedRequestId, () =>
+          Promise.all(
+            criterionRows.map(async (row: any) => {
+              const criterion = String(row.criterion ?? "");
+              const result = await resolveSpecValue(prod.name, criterion, currentProductCategory, currentLocale);
+              row[newKey] = result.uncertain && result.value !== "-" ? `${result.value} (추정)` : result.value;
+              console.log(`[mutateComparisonTable/add_product] "${prod.name}" × "${criterion}" → "${row[newKey]}" (source=${result.source}${result.uncertain ? ", 불확실" : ""})`);
+            })
+          )
         );
         console.log(`[mutateComparisonTable/add_product] 새 제품 컬럼 추가: "${prod.name}"`);
       }
@@ -207,7 +216,9 @@ Only use when [CURRENT_COMPARISON_TABLE] is present. Cannot re-check a single ce
     tableJson.props._lastMutateOpSummary = args.op_summary;
 
     try {
-      const { reasoning } = await computeRankingAndReasoning(tableJson, currentDecisionCriteria, currentLocale);
+      const { reasoning } = await time("mutate_comp_table.ranking_llm", capturedRequestId, () =>
+        computeRankingAndReasoning(tableJson, currentDecisionCriteria, currentLocale)
+      );
       if (reasoning) tableJson.props._rankReasoning = reasoning;
     } catch (err) {
       console.warn("[mutateComparisonTable] 순위 재계산 실패, 기존 값 유지:", err);

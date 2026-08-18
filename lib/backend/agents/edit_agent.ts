@@ -17,7 +17,7 @@ import type { IntentAnalysis } from "./intent_analyzer";
 import type { Locale } from "./generators/shared";
 import { currentProductCategory, currentUserContext, currentDecisionCriteria } from "../tools/sidebar-store";
 
-export const EDIT_AGENT_MODEL = "gpt-4o" as const;
+export const EDIT_AGENT_MODEL = "gpt-4o-mini" as const;
 
 // z.discriminatedUnion would compile to JSON Schema's `oneOf`, which OpenAI's
 // Responses API structured-outputs mode rejects ("'oneOf' is not permitted").
@@ -79,9 +79,12 @@ function buildEditPlanSchema(locale: Locale) {
       ...opSummaryField,
       op: z.enum(["add_item", "remove_item"]),
       category_label: z.string()
-        .describe(`add_item: reuse an existing label from current_criteriaMap if it fits, otherwise a new ` +
-          `short ${lang} label. remove_item: the existing category's `+ "`id` (not the label) copied from " +
-          "current_criteriaMap."),
+        .describe(`add_item: a human-readable LABEL — reuse an existing category's 'label' text from ` +
+          `current_criteriaMap if it fits, otherwise write a new short ${lang} label. NEVER put an 'id' ` +
+          `value (e.g. "cat-1234567890-0") here for add_item — ids are for remove_item only, and putting ` +
+          `one here for add_item creates a garbage-named category on screen. ` +
+          "remove_item: the OPPOSITE — the existing category's `id` field (not its label text), copied " +
+          "exactly from current_criteriaMap."),
       item_names: z.array(z.string()).nullable()
         .describe(`add_item: new item names to add, in ${lang} (see [criteriaMap ops] for how to generate these). ` +
           "remove_item: the exact item `id`s (not the names) copied from current_criteriaMap to remove — to " +
@@ -212,9 +215,14 @@ Only surfaces that are actually present in the input may be targeted. Never targ
       Each name must be a short concrete noun phrase for a SPECIFIC dimension (e.g. for robot vacuum performance:
       "dustbin capacity", "runtime", "mapping accuracy" — NOT vague restatements like "other performance" or "additional item").
       Never repeat an item name that already exists under category_label in current_criteriaMap.
+  → category_label here = the category's 'label' TEXT (e.g. "Camera Performance"), reused verbatim if merging
+    into an existing category, or a new short label if creating one. Do NOT write an 'id' field value
+    (a string like "cat-1234567890-0") here — that is only for remove_item below, and doing it here creates
+    a category literally named after that id string on screen.
 - "remove_item": the user wants existing items, or an entire category, gone.
   Signals: "remove ~", "delete ~ info", "delete the ~ category".
-  → category_label = the matching category's 'id' from current_criteriaMap — NOT its label.
+  → category_label = the matching category's 'id' from current_criteriaMap — NOT its label. (This is the
+    OPPOSITE of add_item above: add_item takes a label, remove_item takes an id — do not mix them up.)
   → item_names = the matching items' 'id's from current_criteriaMap under that category — NOT their
     names. If the user means the whole category, list every current item id under it.
 
@@ -281,8 +289,32 @@ export async function planEdit(
     maxOutputTokens: 600,
   });
 
-  console.log(`\x1b[32m[Output] Edit Plan:\x1b[0m\n${JSON.stringify(object.plan, null, 2)}`);
+  const plan = object.plan;
+
+  // 안전망: add_item인데 category_label이 (프롬프트 지시를 무시하고) remove_item용
+  // 내부 id 패턴("cat-<숫자>...")으로 온 경우 — 그대로 쓰면 mutateCriteriaMap이 그
+  // id 문자열을 라벨로 착각해 화면에 "cat-1712345678-0" 같은 카테고리를 새로 만들어
+  // 버린다. current_criteriaMap에서 같은 id를 가진 카테고리를 찾아 실제 라벨로
+  // 되돌려준다 — 못 찾으면 강제로 지어내지 않고 경고만 남긴다(잘못된 병합보다 낫다).
+  if (plan.target_surface === "criteriaMap" && plan.op === "add_item" && /^cat-\d/.test(plan.category_label)) {
+    const matched = screen.criteriaMap?.find((c) => c.id === plan.category_label);
+    if (matched) {
+      console.warn(
+        `\x1b[33m[EditAgent] add_item인데 category_label이 id("${plan.category_label}")로 옴 — ` +
+        `실제 라벨("${matched.label}")로 교정\x1b[0m`
+      );
+      plan.category_label = matched.label;
+    } else {
+      console.warn(
+        `\x1b[33m[EditAgent] add_item인데 category_label이 id처럼 생긴 값("${plan.category_label}")으로 ` +
+        `왔고 current_criteriaMap에서도 일치하는 카테고리를 못 찾음 — 그대로 진행하면 잘못된 이름의 ` +
+        `카테고리가 생길 수 있음\x1b[0m`
+      );
+    }
+  }
+
+  console.log(`\x1b[32m[Output] Edit Plan:\x1b[0m\n${JSON.stringify(plan, null, 2)}`);
   console.log(`\x1b[34m=====================================\x1b[0m\n`);
 
-  return object.plan;
+  return plan;
 }

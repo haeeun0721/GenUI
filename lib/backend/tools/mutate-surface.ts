@@ -3,7 +3,8 @@ import { z } from "zod";
 import { currentRequestId, currentProductCategory, currentLocale, pushMutateSurfaceResult } from "./sidebar-store";
 import { ragSearch } from "../rag/search";
 import { generateUISpec } from "../agents/ui_agent";
-import { lookupProductSpec, buildSpecPhrase } from "../services/spec-lookup";
+import { resolveSpecValue, buildSpecPhrase } from "../services/spec-lookup";
+import { time } from "../timing";
 
 /**
  * mutateSurface — 이미 화면에 표시된 Option List를 자연어 명령으로 수정
@@ -135,28 +136,36 @@ Only use when [CURRENT_OPTION_LIST] is present. For new product searches, use re
       // Step 1: 모든 제품을 먼저 DB에서 검색 (병렬)
       // original_query가 있으면 제품명 + 조건을 결합해 하드필터(Pa/가격 등) 적용
       const baseQuery = args.original_query?.trim() ?? "";
+      // 이미 화면에 떠 있는 카드 이름 — ragSearch에 안 넘기면 "더 보여줘" 요청이 지금
+      // 보여준 카드를 그대로 다시 찾아올 수 있다. 그러면 아래 appendNew()가 이름 중복으로
+      // 조용히 걸러내 실제로는 아무것도 안 추가되는데, op_summary는 "더 추천해드릴게요"처럼
+      // 성공한 것처럼 나가서 사용자만 헷갈리게 된다 — renderToOptionList(최초 검색)는 이미
+      // alreadyShownNames를 넘기고 있었는데 이 add 경로만 빠뜨리고 있었다.
+      const alreadyShownNames = (args.current_cards ?? []).map((c) => c.name).filter(Boolean);
 
-      const searchResults = await Promise.all(
-        toAdd.map(async (productName: string) => {
-          try {
-            const searchQuery = baseQuery ? `${productName} ${baseQuery}` : productName;
-            const found = await ragSearch(searchQuery, currentProductCategory, 5);
-            const nameQuery = productName.toLowerCase();
-            const filtered = found.filter(p =>
-              p.name?.toLowerCase().includes(nameQuery) ||
-              p.brand?.toLowerCase().includes(nameQuery) ||
-              nameQuery.split(/\s+/).every((word: string) =>
-                p.name?.toLowerCase().includes(word) ||
-                p.brand?.toLowerCase().includes(word)
-              )
-            );
-            const candidates = filtered.length > 0 ? filtered : found.slice(0, 1);
-            return candidates;
-          } catch (err) {
-            console.error(`[mutateSurface/add] Search error for "${productName}":`, err);
-            return [];
-          }
-        })
+      const searchResults = await time("mutate_surface.rag_search", capturedRequestId, () =>
+        Promise.all(
+          toAdd.map(async (productName: string) => {
+            try {
+              const searchQuery = baseQuery ? `${productName} ${baseQuery}` : productName;
+              const found = await ragSearch(searchQuery, currentProductCategory, 5, alreadyShownNames);
+              const nameQuery = productName.toLowerCase();
+              const filtered = found.filter(p =>
+                p.name?.toLowerCase().includes(nameQuery) ||
+                p.brand?.toLowerCase().includes(nameQuery) ||
+                nameQuery.split(/\s+/).every((word: string) =>
+                  p.name?.toLowerCase().includes(word) ||
+                  p.brand?.toLowerCase().includes(word)
+                )
+              );
+              const candidates = filtered.length > 0 ? filtered : found.slice(0, 1);
+              return candidates;
+            } catch (err) {
+              console.error(`[mutateSurface/add] Search error for "${productName}":`, err);
+              return [];
+            }
+          })
+        )
       );
 
       // Step 2: 모든 제품을 하나의 productContext로 합쳐 generateUISpec 1번만 호출
@@ -173,7 +182,9 @@ Only use when [CURRENT_OPTION_LIST] is present. For new product searches, use re
 
         let cardMap: Record<string, any> = {};
         try {
-          const uiSpecString = await generateUISpec(productContext, "", "3", 1, "", [], []);
+          const uiSpecString = await time("mutate_surface.ui_agent", capturedRequestId, () =>
+            generateUISpec(productContext, "", "3", 1, "", [], [])
+          );
           const firstBrace = uiSpecString?.indexOf("{") ?? -1;
           if (firstBrace !== -1) {
             let depth = 0, lastBrace = -1;
@@ -215,57 +226,60 @@ Only use when [CURRENT_OPTION_LIST] is present. For new product searches, use re
       const notFoundNames = toAdd.filter((_: string, i: number) => searchResults[i].length === 0);
       if (notFoundNames.length > 0) {
         console.log(`[mutateSurface/add] RAG 미발견 ${notFoundNames.length}개 → Tavily 웹검색 시도`);
-        await Promise.all(notFoundNames.map(async (name: string) => {
-          const category = currentProductCategory ?? '제품';
-          const query = `${name} ${category} 가격 스펙`;
-          const results = await tavilySearchInline(query);
-          if (results.length === 0) {
-            console.warn(`[mutateSurface/add] Tavily도 미발견: "${name}"`);
-            return;
-          }
-          const combined = results.slice(0, 3).map(r => r.content).join(' ');
-          // 가격 추출: "572,390원" 또는 "572390원"
-          const priceMatch = combined.match(/(\d{3,3},?\d{3})\s*원/);
-          const price = priceMatch ? `${priceMatch[1]}원` : '';
-          // 스펙 후보 추출: "흡입력 15,000Pa", "소음 65dB" 등
-          const specPatterns = [
-            /흡입\s*력\s*[\d,]+\s*Pa/gi,
-            /소음\s*[\d]+\s*dB/gi,
-            /배터리\s*[\d,]+\s*(?:mAh|분|시간)/gi,
-            /무게\s*[\d.]+\s*kg/gi,
-          ];
-          const specs: string[] = [];
-          for (const pat of specPatterns) {
-            const m = combined.match(pat);
-            if (m) specs.push(m[0].trim());
-          }
-          newCards.push({
-            // 병렬로 실행되는 Promise.all 안이라 newCards.length를 인덱스로 못 쓴다(경쟁 상태) —
-            // 랜덤 접미사로 유일성 보장.
-            id: `card-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            name,
-            price,
-            imageUrl: '',
-            link: results[0]?.url ?? '',
-            brand: name.split(/\s+/)[0],
-            specs: specs.slice(0, 4),
-            description: `웹 검색 결과로 추가됨 (DB 미수록 제품)`,
-          });
-          console.log(`[mutateSurface/add] Tavily 카드 생성: "${name}" (가격: ${price}, 스펙: ${specs.length}개)`);
-        }));
+        await time("mutate_surface.tavily_fallback", capturedRequestId, () =>
+          Promise.all(notFoundNames.map(async (name: string) => {
+            const category = currentProductCategory ?? '제품';
+            const query = `${name} ${category} 가격 스펙`;
+            const results = await tavilySearchInline(query);
+            if (results.length === 0) {
+              console.warn(`[mutateSurface/add] Tavily도 미발견: "${name}"`);
+              return;
+            }
+            const combined = results.slice(0, 3).map(r => r.content).join(' ');
+            // 가격 추출: "572,390원" 또는 "572390원"
+            const priceMatch = combined.match(/(\d{3,3},?\d{3})\s*원/);
+            const price = priceMatch ? `${priceMatch[1]}원` : '';
+            // 스펙 후보 추출: "흡입력 15,000Pa", "소음 65dB" 등
+            const specPatterns = [
+              /흡입\s*력\s*[\d,]+\s*Pa/gi,
+              /소음\s*[\d]+\s*dB/gi,
+              /배터리\s*[\d,]+\s*(?:mAh|분|시간)/gi,
+              /무게\s*[\d.]+\s*kg/gi,
+            ];
+            const specs: string[] = [];
+            for (const pat of specPatterns) {
+              const m = combined.match(pat);
+              if (m) specs.push(m[0].trim());
+            }
+            newCards.push({
+              // 병렬로 실행되는 Promise.all 안이라 newCards.length를 인덱스로 못 쓴다(경쟁 상태) —
+              // 랜덤 접미사로 유일성 보장.
+              id: `card-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              name,
+              price,
+              imageUrl: '',
+              link: results[0]?.url ?? '',
+              brand: name.split(/\s+/)[0],
+              specs: specs.slice(0, 4),
+              description: `웹 검색 결과로 추가됨 (DB 미수록 제품)`,
+            });
+            console.log(`[mutateSurface/add] Tavily 카드 생성: "${name}" (가격: ${price}, 스펙: ${specs.length}개)`);
+          }))
+        );
       }
 
       result.new_cards = newCards;
 
       // ── field_updates 처리 (add op에 통합) ───────────────────────────────
-      // lookupProductSpec(로컬 DB→Tavily 검색+judgeCell 검증+SiblingGuard)을 제품마다
-      // 개별 호출한다. 예전엔 DB에 없는 제품들을 모아 스니펫 하나씩만 가져온 뒤 Claude
-      // 배치 호출 1번으로 값을 뽑았는데(검증 없음), 이제는 auto-enrich/fetch-spec/
-      // ComparisonTable과 동일한 검증된 파이프라인을 쓴다 — 그만큼 제품 수만큼 호출이
-      // 늘어나지만(병렬 처리), 형제 SKU 오염 방지 등 다른 경로와 동일한 안전장치를 받는다.
-      // 캐시는 없다 — 이 경로(채팅으로 Option List를 직접 mutate)와 update-table/route.ts의
-      // STRATEGY A가 동시에 같은 제품×기준을 건드리면 독립적인 실시간 검색이 되어 값이
-      // 갈릴 수 있다(이유는 update-table/route.ts 상단 주석 참고).
+      // resolveSpecValue(화면에 이미 떠 있는 값 확인 → lookupProductSpec: 로컬 DB→Tavily
+      // 검색+judgeCell 검증+SiblingGuard)을 제품마다 개별 호출한다. 예전엔 DB에 없는
+      // 제품들을 모아 스니펫 하나씩만 가져온 뒤 Claude 배치 호출 1번으로 값을 뽑았는데
+      // (검증 없음), 이제는 auto-enrich/fetch-spec/ComparisonTable과 동일한 검증된
+      // 파이프라인을 쓴다 — 그만큼 제품 수만큼 호출이 늘어나지만(병렬 처리), 형제 SKU
+      // 오염 방지 등 다른 경로와 동일한 안전장치를 받는다. Comparison Table이 이미 이
+      // 제품×기준을 화면에 표시 중이면(currentComparisonTableCells) resolveSpecValue가
+      // 그 값을 그대로 재사용하므로, 이 경로와 Comparison Table 쪽이 독립적으로 재검색해
+      // 값이 갈리는 문제(예: 초점거리가 한쪽엔 "-", 다른 쪽엔 "0.3m")가 방지된다.
       const fieldUpdatesRaw = args.field_updates ?? [];
       if (fieldUpdatesRaw.length > 0) {
         // edit_agent.ts는 product_name에 카드 id를 넣어 보낸다(모호한 이름 대신 정확한
@@ -274,12 +288,14 @@ Only use when [CURRENT_OPTION_LIST] is present. For new product searches, use re
         // 실제 제품명을 되찾아서 검색에는 그 이름을, 클라이언트 매칭용 product_name은
         // 원래 값(id) 그대로 반환한다.
         const idToName = new Map((args.current_cards ?? []).map(c => [c.id, c.name]));
-        const results = await Promise.all(
-          fieldUpdatesRaw.map(async (u) => {
-            const resolvedName = idToName.get(u.product_name) ?? u.product_name;
-            const lookup = await lookupProductSpec(resolvedName, u.field_key, currentProductCategory, currentLocale);
-            return { ...u, resolvedName, lookup };
-          })
+        const results = await time("mutate_surface.field_updates_lookup", capturedRequestId, () =>
+          Promise.all(
+            fieldUpdatesRaw.map(async (u) => {
+              const resolvedName = idToName.get(u.product_name) ?? u.product_name;
+              const lookup = await resolveSpecValue(resolvedName, u.field_key, currentProductCategory, currentLocale);
+              return { ...u, resolvedName, lookup };
+            })
+          )
         );
 
         const resolvedUpdates = results

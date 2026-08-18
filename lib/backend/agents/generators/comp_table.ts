@@ -22,9 +22,10 @@
 
 import { generateText } from "ai";
 import { openai } from "@ai-sdk/openai";
-import { currentLocale as _currentLocale, currentUserContext as _currentUserContext } from "../../tools/sidebar-store";
+import { currentLocale as _currentLocale, currentUserContext as _currentUserContext, currentRequestId } from "../../tools/sidebar-store";
 import { buildAndAssembleTable, enrichCompTableCells } from "../data_agent";
 import type { CompTableJson } from "../data_agent";
+import { time, logElapsed } from "../../timing";
 
 // ---------------------------------------------------------------------------
 // 순위 + 분석 코멘트 생성
@@ -171,6 +172,10 @@ export async function computeRankingAndReasoning(
     };
 
     const { text } = await generateText({
+      // gpt-4o-mini로 실측 테스트해봤더니 순위 라벨은 정상 반환했지만 _rankReasoning
+      // 필드가 3/3 재현으로 빈 문자열이었다(스키마상 "필수"가 아니라 프롬프트 지시일
+      // 뿐이라 mini가 조용히 누락시킴 — 별도 예외/에러 없이 통과되어 발견이 늦어짐).
+      // 사용자에게 "왜 이 순위인지" 설명이 아예 안 보이게 되는 실질적 품질 저하라 되돌림.
       model: openai("gpt-4o"),
       system: `
 [Component]
@@ -325,16 +330,24 @@ export async function orchestrateCompTablePipeline(
   console.log("\x1b[35m [CompTable Pipeline Start] (코드 구조 생성 + Tavily + 순위)\x1b[0m");
   console.log("\x1b[35m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m\n");
 
+  const reqId = currentRequestId ?? "";
+
   // ── STEP 1: 코드로 구조 생성 + DB 값 즉시 주입 (LLM 없음) ───────────────
   console.log("\x1b[33m[STEP 1] 코드로 테이블 구조 생성 + DB 값 즉시 주입...\x1b[0m");
+  const step1Start = Date.now();
   const { tableJson, fullNameMap } = buildAndAssembleTable(uiContext, decisionCriteria, locale);
+  logElapsed("comp_table.build_structure", reqId, step1Start);
 
   // ── STEP 2: DB 미커버 셀 → data_agent.ts(Tavily+judgeCell) 판단 ─────────
-  await enrichCompTableCells(tableJson, uiContext, locale, fullNameMap);
+  await time("comp_table.enrich_cells", reqId, () =>
+    enrichCompTableCells(tableJson, uiContext, locale, fullNameMap)
+  );
 
   // ── STEP 3: 순위 결정 + 이유 생성 ────────────────────────────────────
   {
-    const { reasoning } = await computeRankingAndReasoning(tableJson, decisionCriteria, locale);
+    const { reasoning } = await time("comp_table.ranking_llm", reqId, () =>
+      computeRankingAndReasoning(tableJson, decisionCriteria, locale)
+    );
     if (tableJson.props && reasoning) {
       (tableJson.props as any)._rankReasoning = reasoning;
     }

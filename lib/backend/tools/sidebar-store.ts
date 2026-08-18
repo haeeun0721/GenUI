@@ -139,3 +139,17 @@ export let currentLocale: "ko" | "en" = "ko";
 export function setCurrentLocale(locale: "ko" | "en") {
   currentLocale = locale;
 }
+
+/** Option List 카드(화면에 이미 표시된 스펙 칩 포함) — [CURRENT_OPTION_LIST] 태그에서 매 요청마다 갱신.
+ *  render-to-comp-table.ts가 enrichContextWithTavily에 넘겨 재검색 없이 값을 재사용하는 데 쓴다. */
+export let currentOptionListCards: { name: string; specs: string[] }[] = [];
+export function setCurrentOptionListCards(cards: { name: string; specs: string[] }[]) {
+  currentOptionListCards = cards;
+}
+
+/** Comparison Table의 이미 확정된 셀 값(제품별 "기준: 값" 목록) — [CURRENT_COMPARISON_TABLE] 태그에서
+ *  매 요청마다 갱신. render-to-option-list.ts가 카드 생성 시 재검색 없이 값을 재사용하는 데 쓴다. */
+export let currentComparisonTableCells: { name: string; specs: string[] }[] = [];
+export function setCurrentComparisonTableCells(cells: { name: string; specs: string[] }[]) {
+  currentComparisonTableCells = cells;
+}

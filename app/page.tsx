@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo, memo, useRef, useEffect, startTransition } from "react";
+import { useState, useCallback, useMemo, memo, useRef, useEffect, useLayoutEffect, startTransition } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import {
@@ -652,6 +652,59 @@ const InformationCardItem = memo(({ card, index }: { card: any, index: number })
 });
 
 // =============================================================================
+// Shrink-to-fit single-line text — History Banner의 질문처럼 길이가 제각각인 문장을
+// "..."로 자르지도, 여러 줄로 줄바꿈하지도 않고 한 줄에 맞춰 글자 크기를 줄여서 전부
+// 보여준다. 컨테이너 실제 폭(clientWidth) 대비 텍스트의 자연스러운 폭(scrollWidth)
+// 비율만큼 font-size를 축소 — 텍스트나 컨테이너 폭이 바뀔 때마다 다시 계산한다.
+// =============================================================================
+
+function ShrinkToFitText({
+  text,
+  baseSizePx,
+  minSizePx = 8,
+  className,
+}: {
+  text: string;
+  baseSizePx: number;
+  minSizePx?: number;
+  className?: string;
+}) {
+  const ref = useRef<HTMLParagraphElement>(null);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+
+    const fit = () => {
+      // 먼저 기준 크기로 되돌려야 scrollWidth가 "이 텍스트를 기준 크기로 그렸을 때
+      // 실제 필요한 폭"을 반영한다 — 안 그러면 이전에 줄인 크기 기준으로 다시 재는
+      // 꼴이라 한 번 줄어든 글씨가 텍스트가 짧아져도 다시 안 커진다.
+      el.style.fontSize = `${baseSizePx}px`;
+      const available = el.clientWidth;
+      const natural = el.scrollWidth;
+      if (available > 0 && natural > available) {
+        const scale = available / natural;
+        // 소수점 반올림으로 아주 살짝 넘치는 걸 막기 위해 2% 여유를 둔다.
+        const next = Math.max(minSizePx, Math.floor(baseSizePx * scale * 0.98));
+        el.style.fontSize = `${next}px`;
+      }
+    };
+
+    fit();
+
+    const observer = new ResizeObserver(fit);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [text, baseSizePx, minSizePx]);
+
+  return (
+    <p ref={ref} className={className} style={{ whiteSpace: "nowrap", overflow: "hidden" }}>
+      {text}
+    </p>
+  );
+}
+
+// =============================================================================
 // Page
 // =============================================================================
 
@@ -1037,16 +1090,25 @@ export default function ChatPage() {
   // Reactive Option List ??Decision Criteria 변??감?? ????동 ??펙 보강
   // ---------------------------------------------------------------------------
 
-  // Option List가 찾은 원본 값을 Comparison Table에도 그대로 넘겨서 같은 제품×기준을
-  // 두 번 독립적으로 검색하지 않게 한다 (반환값은 이 요청의 생명주기 안에서만 쓰이고
-  // 어디에도 저장되지 않음 — 세션 간에 공유되는 캐시가 아니다).
+  // Option List 카드 스펙을 보강하면서, 같은 요청 안에서 Comparison Table도 같이 갱신한다.
+  // 예전엔 이 함수가 끝나야(응답을 기다린 뒤) 그 결과를 갖고 updateComparisonTable()을
+  // 따로 또 호출했다 — 두 번의 순차 왕복 + 표 쪽의 재검색 위험이 있었다. 지금은 검색을
+  // /api/auto-enrich 안에서 한 번만 하고, 카드용 패치와 표용 패치를 같은 응답으로 동시에
+  // 받아 동시에 반영한다.
   const autoEnrichForCriteria = async (
     newCriteria: { name: string; min?: string }[],
-    cards: any[]
-  ): Promise<{ product_name: string; field_key: string; value: string | null }[]> => {
-    if (cards.length === 0) return [];
+    cards: any[],
+    allCriteria: { name: string; min?: string }[]
+  ): Promise<void> => {
+    if (cards.length === 0) return;
     const productCategory = assignedItem === "A" ? "유모차" : assignedItem === "B" ? "로봇 청소기" : "카메라";
-    const prefetched: { product_name: string; field_key: string; value: string | null }[] = [];
+
+    // 표가 이미 있을 때만 같이 갱신 — updateComparisonTable()의 기존 가드와 동일한 조건.
+    const compTable = compTableSpecRef.current;
+    const hasValidTable = !!(compTable?.props?.columns && compTable.props.columns.length > 1);
+    const mySeq = hasValidTable ? ++updateTableSeqRef.current : -1;
+    if (hasValidTable) setIsUpdatingTable(true);
+
     try {
       // 기준이 여러 개여도 한 번의 요청으로 (제품 × 기준) 전체 조합을 조회한다 — 예전엔
       // 기준마다 순차적으로 요청을 보내서, 기준을 여러 개 한 번에 추가하면 Option List
@@ -1061,18 +1123,21 @@ export default function ChatPage() {
           criteria: newCriteria.map((c) => c.name),
           category: productCategory,
           locale,
+          ...(hasValidTable ? {
+            currentTableData: compTable,
+            // 순위 판단(기준 충족/미달)이 사용자가 명시한 최솟값을 읽을 수 있게 annotation을 유지한 형태.
+            tableCriteria: allCriteria.map(c => `${c.name}${c.min ? ` (기준: ${c.min})` : ''}`),
+            userContext,
+          } : {}),
         }),
       });
-      if (!res.ok) return prefetched;
-      const { updates, unconfirmed, notFound } = await res.json() as {
+      if (!res.ok) return;
+      const { updates, unconfirmed, notFound, tableJson } = await res.json() as {
         updates: { product_name: string; field_key: string; spec_phrase: string; value: string | null }[];
         unconfirmed: { product_name: string; field_key: string }[];
         notFound: { product_name: string; field_key: string }[];
+        tableJson?: any;
       };
-
-      updates?.forEach((u) => {
-        if (u.value) prefetched.push({ product_name: u.product_name, field_key: u.field_key, value: u.value });
-      });
 
       // 제품명 → 그 제품에 대해 unconfirmed/notFound인 기준명 집합. 응답 하나에 여러
       // 기준의 결과가 섞여 있으므로, 예전처럼 제품명만으로는 어떤 기준 얘기인지 구분이
@@ -1144,12 +1209,35 @@ export default function ChatPage() {
           return { ...entry, spec: { ...entry.spec, props: { ...entry.spec.props, cards: updatedCards } } };
         })
       );
+
+      // 같은 응답에 실려온 Comparison Table 갱신 결과 반영 — updateComparisonTable()의
+      // 응답 처리와 동일한 방식(이미지 URL 보존 + 낡은 응답 무시).
+      if (hasValidTable && tableJson?.props) {
+        if (mySeq !== updateTableSeqRef.current) {
+          console.log("[auto-enrich] 낡은 표 응답 무시 (더 최신 요청이 이미 진행 중)");
+        } else {
+          if (tableJson.props.columns && compTable?.props?.columns) {
+            tableJson.props.columns.forEach((newCol: any) => {
+              if (newCol.key.startsWith("prod_")) {
+                const oldCol = compTable.props.columns.find((c: any) => c.label === newCol.label);
+                if (oldCol && oldCol.imageUrl && !newCol.imageUrl) {
+                  newCol.imageUrl = oldCol.imageUrl;
+                }
+              }
+            });
+          }
+          setCompTableSpec(tableJson);
+          compTableSpecRef.current = tableJson;
+          directTableUpdateAheadRef.current = true;
+          console.log("[auto-enrich] ✅ Comparison Table 갱신 완료 (같은 요청에서 처리)");
+        }
+      }
     } catch (err) {
       console.error("[autoEnrich] 오류:", err);
     } finally {
       setEnrichingCriterion(null);
+      if (hasValidTable) setIsUpdatingTable(false);
     }
-    return prefetched;
   };
 
   const updateComparisonTable = async (
@@ -1268,19 +1356,16 @@ export default function ChatPage() {
       return;
     }
 
-    // [2] 새 기준 → Option List auto-enrich 먼저 끝내고, 그 결과를 Table 갱신에 그대로 넘긴다.
-    // 예전엔 auto-enrich와 update-table이 서로를 모른 채 각자 독립적으로 Tavily 검색+judgeCell
-    // 판단을 돌려서, 같은 제품×기준인데 두 패널의 값이 갈리는 문제가 있었다(검색 결과 변동성 때문).
-    // 검색을 auto-enrich 쪽에서 한 번만 하고 그 결과를 update-table 요청에 실어 보내는 걸로 고쳤다
-    // — 전역 캐시가 아니라 이 기준-변경 이벤트 하나의 흐름 안에서만 값을 공유하므로, 다른
-    // 세션/참가자로 새어나가지 않는다.
+    // [2] 새 기준 → Option List 카드와 Comparison Table을 같은 요청 한 번으로 같이 갱신한다.
+    // 예전엔 auto-enrich(카드)가 끝나야 그 결과를 갖고 update-table(표)을 또 요청하는
+    // 순차 구조였다 — 두 번의 왕복 + "두 패널이 독립 검색해 값이 갈리는" 위험이 있었다.
+    // 지금은 검색을 /api/auto-enrich 안에서 한 번만 하고, 카드/표 패치를 같은 응답으로
+    // 동시에 받아 동시에 반영한다(전역 캐시 아님 — 이 요청 하나의 생명주기 안에서만 공유).
     if (newCriteria.length > 0) {
       const currentCards = (productCardListSpecRef.current as any)?.props?.cards ?? [];
       console.log(`[auto-enrich] 신기준 감지: [${newCriteria.map(c => c.name).join(', ')}] | 카드 수 ${currentCards.length}`);
       if (currentCards.length > 0) {
-        autoEnrichForCriteria(newCriteria, currentCards).then((prefetchedValues) => {
-          updateComparisonTable(curr, [], prefetchedValues);
-        });
+        autoEnrichForCriteria(newCriteria, currentCards, curr);
       } else {
         console.log(`[auto-enrich] 카드 없음 — Option List가 아직 없음`);
         updateComparisonTable(curr);
@@ -3185,12 +3270,14 @@ export default function ChatPage() {
         {activeEntry && (
           <div className="flex-shrink-0 px-4 pb-3">
             <div className="mx-6 rounded-[8px] border border-slate-200 bg-white px-3 py-2 flex flex-col gap-1.5">
-              {/* Row 1: ??이??+ 질문(1?? + ????스??프 + ??N/N ??*/}
+              {/* Row 1: ??이??+ 질문(?줄, 필요시 글자 축소) + ????스??프 + ??N/N ??*/}
               <div className="flex items-center gap-1.5">
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-slate-400 flex-shrink-0"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
-                <p className="text-[11.5px] font-semibold text-slate-700 leading-snug truncate flex-1 min-w-0">
-                  {activeEntry.query}
-                </p>
+                <ShrinkToFitText
+                  text={activeEntry.query}
+                  baseSizePx={11.5}
+                  className="font-semibold text-slate-700 leading-snug flex-1 min-w-0"
+                />
 
                 {total > 1 && (
                   <div className="flex items-center gap-0.5 flex-shrink-0">
@@ -3257,10 +3344,7 @@ export default function ChatPage() {
         )}
         {isUpdatingTable && (
           <span className="ml-auto text-[10px] text-slate-400 font-medium animate-pulse flex items-center gap-1 bg-slate-50 px-2 py-1 rounded-md border border-slate-100 whitespace-nowrap transition-all duration-300">
-            <svg className="animate-spin -ml-0.5 mr-0.5 h-3 w-3 text-slate-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
+            <span className="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce inline-block" />
             {locale === 'en' ? 'Updating ranks & table...' : '기준에 맞춰 순위 재평가 중..'}
           </span>
         )}
@@ -3271,9 +3355,11 @@ export default function ChatPage() {
         <div className="flex-shrink-0 rounded-[8px] border border-slate-200 bg-white px-3 py-2 flex flex-col gap-1.5">
           <div className="flex items-center gap-1.5">
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-slate-400 flex-shrink-0"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
-            <p className="text-[11.5px] font-semibold text-slate-700 leading-snug truncate flex-1 min-w-0">
-              {compTableQuery}
-            </p>
+            <ShrinkToFitText
+              text={compTableQuery}
+              baseSizePx={11.5}
+              className="font-semibold text-slate-700 leading-snug flex-1 min-w-0"
+            />
           </div>
         </div>
       )}

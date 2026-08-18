@@ -17,6 +17,7 @@ import {
   createUIMessageStreamResponse,
   streamText,
   type UIMessage,
+  type ModelMessage,
 } from "ai";
 import { openai } from "@ai-sdk/openai";
 import { SPEC_DATA_PART_TYPE } from "@json-render/core";
@@ -40,24 +41,54 @@ import {
   setCurrentMyItemsRaw,
   setCurrentProductCategory,
   setCurrentLocale,
+  setCurrentOptionListCards,
+  setCurrentComparisonTableCells,
 } from "@/lib/backend/tools/sidebar-store";
 import { findProductInLocalDB } from "@/lib/backend/agents/data_agent";
 import { streamChatReply } from "@/lib/backend/agents/chat_agent";
 import { loadMemory, appendMemoryTurn } from "@/lib/backend/services/session-memory";
 import { logChatTurn } from "@/lib/backend/services/research-log";
+import { time, logElapsed } from "@/lib/backend/timing";
 
 export const maxDuration = 60;
 
-
+/**
+ * intent_analyzer / CriteriaMap·InformationCard 생성 / "none" 잡담 응답처럼 "지금까지 무슨
+ * 대화가 오갔는지"만 필요한 소비자를 위해, tool 호출/결과(카드·표 JSON 등 무거운 구조화
+ * 데이터)를 걷어낸 history를 만든다. 그 데이터 자체가 필요한 소비자(edit_agent 등)는 이
+ * 함수를 쓰지 않고 ctx의 큐레이션된 스냅샷(currentProducts/currentComparisonTable 등)을 쓴다.
+ *
+ * 예전엔 이 세 곳 모두 원본 modelMessages를 그대로 받아서, 이전 턴에 생성된 상품 카드/표
+ * JSON이 반복적으로 등장하는 걸 모델이 "지금 이 턴의 주제"로 착각해 최신 메시지와 무관한
+ * 응답을 내는 문제가 있었다(예: 옛 검색 조건이 최신 질문의 user_goal로 잘못 나옴).
+ */
+function buildCompactHistory(messages: ModelMessage[]): ModelMessage[] {
+  const compact: ModelMessage[] = [];
+  for (const msg of messages) {
+    if (msg.role === "tool") continue; // 순수 tool-result 캐리어 — 텍스트 대화 흐름에 불필요
+    if (msg.role === "assistant") {
+      if (typeof msg.content === "string") {
+        if (msg.content.trim()) compact.push(msg);
+        continue;
+      }
+      const textParts = (msg.content as any[]).filter((p) => p?.type === "text" && p.text?.trim());
+      if (textParts.length > 0) compact.push({ ...msg, content: textParts } as ModelMessage);
+      continue;
+    }
+    compact.push(msg); // user/system 메시지는 이미 STRIP_PATTERNS로 정제됨 — 그대로 유지
+  }
+  return compact;
+}
 
 export async function POST(req: Request) {
+  const requestStartedAt = Date.now();
   const headersList = await headers();
   const ip = headersList.get("x-forwarded-for")?.split(",")[0] ?? "anonymous";
 
-  const [minuteResult, dailyResult] = await Promise.all([
+  const [minuteResult, dailyResult] = await time("rate_limit", ip, () => Promise.all([
     minuteRateLimit.limit(ip),
     dailyRateLimit.limit(ip),
-  ]);
+  ]));
 
   if (!minuteResult.success || !dailyResult.success) {
     const isMinuteLimit = !minuteResult.success;
@@ -213,6 +244,7 @@ export async function POST(req: Request) {
   });
 
   const modelMessages = await convertToModelMessages(sanitizedMessages);
+  const compactModelMessages = buildCompactHistory(modelMessages);
   const hasOptionList = latestText.includes('[CURRENT_OPTION_LIST');
   // Extract full product data (id + name + numeric price + specs) from CURRENT_OPTION_LIST.
   // JSON 왕복(app/page.tsx가 JSON.stringify로 씀) — ComparisonTable/CriteriaMap과 동일한 프로토콜.
@@ -246,6 +278,10 @@ export async function POST(req: Request) {
   const currentProductNames = currentProducts.map(p => p.name);
   console.log(`[Route] Turn ${uiMessages.length} | requestId: ${requestId.slice(0, 10)} | CURRENT_OPTION_LIST: ${hasOptionList ? '✅ 있음' : '❌ 없음'} | products: [${currentProductNames.join(', ')}]`);
 
+  // Option List 카드가 이미 화면에 보여준 스펙 칩을 renderToCompTable/render-to-option-list가
+  // 재검색 없이 재사용할 수 있게 sidebar-store에 실어둔다(요청마다 덮어씀 — 영속 캐시 아님).
+  setCurrentOptionListCards(currentProducts.map(p => ({ name: p.name, specs: p.specs })));
+
   // Parse existing CriteriaMap categories from CURRENT_CRITERIA_MAP tag.
   // This tag is always appended last (see app/page.tsx handleSubmit), and its content
   // is a JSON array (which itself contains "[" characters), so capture to end-of-string
@@ -278,6 +314,23 @@ export async function POST(req: Request) {
     .map((r: any) => ({ id: r.id ?? r.criterion, label: r.criterion }));
   const hasComparisonTable = comparisonTableProducts.length > 0 || comparisonTableCriteria.length > 0;
   const hasCriteriaMap = parsedCriteriaMap.length > 0;
+
+  // Comparison Table이 이미 확정한 셀 값을 render-to-option-list.ts가 카드 생성 시 재검색
+  // 없이 재사용할 수 있게, 제품(열)별로 "기준: 값" 목록을 만들어 sidebar-store에 실어둔다.
+  const tableDataRows = (currentComparisonTable?.props?.rows ?? []).filter(
+    (r: any) => r.criterion && r.criterion !== "순위" && r.criterion !== "Rank"
+  );
+  setCurrentComparisonTableCells(
+    comparisonTableProducts.map((col) => ({
+      name: col.label,
+      specs: tableDataRows
+        .map((r: any) => {
+          const val = r[col.key];
+          return val && val !== "-" ? `${r.criterion}: ${val}` : null;
+        })
+        .filter((s: string | null): s is string => s !== null),
+    }))
+  );
 
   // Action Router/Template Selector는 screen_state(boolean) 또는 제품명 목록 정도만 보고
   // 판단해왔는데, 그 정도로는 "이미 화면에 있는 구체적인 내용"이 필요한 요청(예: "왜 이
@@ -345,6 +398,7 @@ export async function POST(req: Request) {
     screenDetail: string;
     strippedLatest: string;
     modelMessages: typeof modelMessages;
+    compactModelMessages: typeof compactModelMessages;
   }
 
   // screenSummary는 라우팅 판단용 요약이라 상품명만 담고 스펙/가격은 뺐다. "왜 이 순서야?" 같은
@@ -373,6 +427,7 @@ export async function POST(req: Request) {
     screenDetail,
     strippedLatest,
     modelMessages,
+    compactModelMessages,
   };
 
   // ─── [1] Intent Agent Fast: 의도 분류 (text_reply 없음, ~0.5–1s) ────────────
@@ -401,7 +456,9 @@ export async function POST(req: Request) {
       try {
         // modelMessages already ends with this turn's (sanitized) user message, so pass everything
         // before it as history and let analyzeIntent append strippedLatest itself.
-        intentAnalysis = await analyzeIntent(ctx.strippedLatest, ctx.modelMessages.slice(0, -1));
+        intentAnalysis = await time("intent_analyzer", requestId, () =>
+          analyzeIntent(ctx.strippedLatest, ctx.compactModelMessages.slice(0, -1))
+        );
       } catch (err) {
         console.error('[Intent Analyzer] 실패:', err);
         writer.write({ type: "finish-step" } as any);
@@ -409,10 +466,49 @@ export async function POST(req: Request) {
         return;
       }
 
-      // ── [2] Action Router ───────────────────────────────────────────────────────────────
+      // ── [2] Action Router + [속도 최적화] Template Selector/Edit Planner 추측 실행 ─────────
+      // template_selector와 edit_agent는 실제로는 actionRoute의 "값"에 의존하지 않는다 —
+      // 둘 다 intentAnalysis + ctx만 있으면 되고, 그동안은 actionRoute.action==='generate'/
+      // 'edit'라는 분기 조건에 걸려서 순차로 실행됐을 뿐이다. 그래서 router와 동시에 미리
+      // 실행해두고 실제로 필요한 쪽의 결과만 골라 쓴다 — 순차 3콜(intent→router→template/
+      // edit)이던 라우팅 체인이 실질적으로 2단계(intent→max(router, template, edit))로
+      // 줄어든다(실측: 라우팅 체인이 턴당 40~56%를 차지했음).
+      // 트레이드오프: 실제 action이 그쪽이 아니면(예: "none") 계산해둔 결과를 그냥 버리므로,
+      // 매 턴 최대 2개의 "버려지는" LLM 호출이 추가로 발생해 OpenAI 비용이 늘어난다.
+      // routeAction의 두 번째 인자는 ScreenState({hasOptionList/hasComparisonTable/hasCriteriaMap}
+      // 불리언 3개)여야 한다 — ctx를 통째로 넘기면 구조적 타이핑상 컴파일은 통과하지만, 함수
+      // 내부에서 JSON.stringify(screenState)를 그대로 프롬프트에 꽂기 때문에 ctx.modelMessages
+      // (원시 대화 히스토리+tool 결과)까지 "screen_state"라는 이름으로 라우터에 새어 들어가
+      // 판단을 흐렸다. 여기서 명시적으로 3개 필드만 골라 전달한다.
+      const actionRoutePromise = time("action_router", requestId, () =>
+        routeAction(
+          intentAnalysis,
+          { hasOptionList: ctx.hasOptionList, hasComparisonTable: ctx.hasComparisonTable, hasCriteriaMap: ctx.hasCriteriaMap },
+          ctx.screenSummary
+        )
+      );
+      const templateSelectionPromise = time("template_selector", requestId, () =>
+        selectTemplate(intentAnalysis, ctx.hasOptionList, ctx.currentProductNames, ctx.screenSummary)
+      );
+      const editPlanPromise = time("edit_agent", requestId, () =>
+        planEdit(ctx.strippedLatest || intentAnalysis.user_goal, intentAnalysis, {
+          optionList: ctx.hasOptionList ? ctx.currentProducts : undefined,
+          optionListSearchQuery: ctx.hasOptionList ? ctx.currentOptionListSearchQuery : undefined,
+          comparisonTable: ctx.hasComparisonTable
+            ? { products: ctx.comparisonTableProducts, criteria: ctx.comparisonTableCriteria }
+            : undefined,
+          criteriaMap: ctx.hasCriteriaMap ? ctx.parsedCriteriaMap : undefined,
+        }, ctx.locale)
+      );
+      // 실제로 안 쓰일 수도 있는 두 추측 호출이 실패해도 unhandled rejection으로 번지지 않게
+      // 여기서 한 번 조용히 삼킨다 — 아래에서 실제로 필요해 다시 await할 때는 그 시점에
+      // 원래 그대로 reject되므로, 각 분기의 기존 catch/에러 처리는 그대로 작동한다.
+      templateSelectionPromise.catch(() => {});
+      editPlanPromise.catch(() => {});
+
       let actionRoute;
       try {
-        actionRoute = await routeAction(intentAnalysis, ctx, ctx.screenSummary);
+        actionRoute = await actionRoutePromise;
       } catch (err) {
         console.error('[Action Router] 실패:', err);
         writer.write({ type: "finish-step" } as any);
@@ -432,7 +528,8 @@ export async function POST(req: Request) {
       if (actionRoute.action === 'generate') {
         let templateSelection;
         try {
-          templateSelection = await selectTemplate(intentAnalysis, ctx.hasOptionList, ctx.currentProductNames, ctx.screenSummary);
+          // action_router와 동시에 이미 시작해둔 추측 실행 결과를 그대로 사용(위 [2] 참고).
+          templateSelection = await templateSelectionPromise;
         } catch (err) {
           console.error('[Template Selector] 실패:', err);
           writer.write({ type: "finish-step" } as any);
@@ -476,8 +573,9 @@ export async function POST(req: Request) {
             console.log(`\x1b[90m[Input] user_query:\x1b[0m ${ctx.strippedLatest}`);
           }
 
-          const extendedMessages = [...ctx.modelMessages, { role: 'user', content: userPrompt }];
+          const extendedMessages = [...ctx.compactModelMessages, { role: 'user', content: userPrompt }];
 
+          const uiStreamStartedAt = Date.now();
           const { textStream } = streamText({
             model: openai(UI_AGENT_MODEL),
             system: systemStr,
@@ -505,6 +603,7 @@ export async function POST(req: Request) {
           if (!inJsonBlock) {
             writer.write({ type: "text-end", id: textId } as any);
           }
+          logElapsed(`ui_agent_stream_${template}`, requestId, uiStreamStartedAt);
 
           // Log the text reply portion (before ```json block)
           const textReply = fullOutput.split("```json")[0].trim();
@@ -548,10 +647,12 @@ export async function POST(req: Request) {
 
           // ── Generate: ComparisonTable ──────────────────────────────────────────────────────
         } else if (template === 'ComparisonTable') {
+          const renderCompTableStartedAt = Date.now();
           const compTableSpec = await (renderToCompTable as any).execute({
             intent_summary: intentAnalysis.user_goal,
             ui_intent_category: 'ComparisonTable',
           });
+          logElapsed("render_comp_table", requestId, renderCompTableStartedAt);
           const colLabels = (compTableSpec?.props?.columns ?? [])
             .filter((c: any) => c.key !== 'criterion')
             .map((c: any) => c.label)
@@ -566,11 +667,13 @@ export async function POST(req: Request) {
 
           // ── Generate: ProductCardList ──────────────────────────────────────────────────────
         } else if (template === 'ProductCardList') {
+          const renderOptionListStartedAt = Date.now();
           const optionListSpec = await (renderToOptionList as any).execute({
             search_query: intentAnalysis.user_goal,
             intent_summary: intentAnalysis.user_goal,
             ui_intent_category: 'ProductCardList',
           });
+          logElapsed("render_option_list", requestId, renderOptionListStartedAt);
           const cardNames = (optionListSpec?.props?.cards ?? []).map((c: any) => c.name).join(', ');
           turnMemoryNote = cardNames ? `상품 목록 생성: ${cardNames}` : 'ProductCardList 생성';
         }
@@ -579,14 +682,8 @@ export async function POST(req: Request) {
       } else if (actionRoute.action === 'edit') {
         let editPlan;
         try {
-          editPlan = await planEdit(ctx.strippedLatest || intentAnalysis.user_goal, intentAnalysis, {
-            optionList: ctx.hasOptionList ? ctx.currentProducts : undefined,
-            optionListSearchQuery: ctx.hasOptionList ? ctx.currentOptionListSearchQuery : undefined,
-            comparisonTable: ctx.hasComparisonTable
-              ? { products: ctx.comparisonTableProducts, criteria: ctx.comparisonTableCriteria }
-              : undefined,
-            criteriaMap: ctx.hasCriteriaMap ? ctx.parsedCriteriaMap : undefined,
-          }, ctx.locale);
+          // action_router와 동시에 이미 시작해둔 추측 실행 결과를 그대로 사용(위 [2] 참고).
+          editPlan = await editPlanPromise;
         } catch (err) {
           console.error('[Edit Agent] 실패:', err);
           writer.write({ type: "finish-step" } as any);
@@ -610,40 +707,46 @@ export async function POST(req: Request) {
             // filter로 판단됐지만 화면에 리스트가 없는 방어적 케이스 → fresh 검색으로 전환
             console.log('[Route] filter op + no existing list → renderToOptionList로 전환');
             const filterQuery = editPlan.original_query ?? intentAnalysis.user_goal;
-            await (renderToOptionList as any).execute({
-              search_query: filterQuery,
-              intent_summary: filterQuery,
-              ui_intent_category: 'ProductCardList',
-            });
+            await time("render_option_list_fallback", requestId, () =>
+              (renderToOptionList as any).execute({
+                search_query: filterQuery,
+                intent_summary: filterQuery,
+                ui_intent_category: 'ProductCardList',
+              })
+            );
           } else {
-            await (mutateSurface as any).execute({
-              surface: 'optionList',
-              op: editPlan.op,
-              op_summary: editPlan.op_summary,
-              result_card_names: editPlan.result_card_names,
-              products_to_add: editPlan.products_to_add,
-              field_updates: editPlan.field_updates,
-              current_cards: ctx.currentProducts.map(p => ({ id: p.id, name: p.name })),
-              original_query: editPlan.original_query,
-              sort_by: editPlan.sort_by,
-              sort_order: editPlan.sort_order,
-            });
+            await time("mutate_option_list", requestId, () =>
+              (mutateSurface as any).execute({
+                surface: 'optionList',
+                op: editPlan.op,
+                op_summary: editPlan.op_summary,
+                result_card_names: editPlan.result_card_names,
+                products_to_add: editPlan.products_to_add,
+                field_updates: editPlan.field_updates,
+                current_cards: ctx.currentProducts.map(p => ({ id: p.id, name: p.name })),
+                original_query: editPlan.original_query,
+                sort_by: editPlan.sort_by,
+                sort_order: editPlan.sort_order,
+              })
+            );
           }
 
         } else if (editPlan.target_surface === 'comparisonTable') {
           if (!ctx.currentComparisonTable) {
             console.warn('[Route] target_surface=comparisonTable이지만 지원 범위를 벗어남(현재 테이블 없음) — edit 스킵');
           } else {
-            await (mutateComparisonTable as any).execute({
-              surface: 'comparisonTable',
-              op: editPlan.op,
-              current_table: ctx.currentComparisonTable,
-              criteria_to_add: editPlan.criteria_to_add ?? undefined,
-              criteria_to_remove: editPlan.criteria_to_remove ?? undefined,
-              products_to_add: editPlan.products_to_add ?? undefined,
-              products_to_remove: editPlan.products_to_remove ?? undefined,
-              op_summary: editPlan.op_summary,
-            });
+            await time("mutate_comparison_table", requestId, () =>
+              (mutateComparisonTable as any).execute({
+                surface: 'comparisonTable',
+                op: editPlan.op,
+                current_table: ctx.currentComparisonTable,
+                criteria_to_add: editPlan.criteria_to_add ?? undefined,
+                criteria_to_remove: editPlan.criteria_to_remove ?? undefined,
+                products_to_add: editPlan.products_to_add ?? undefined,
+                products_to_remove: editPlan.products_to_remove ?? undefined,
+                op_summary: editPlan.op_summary,
+              })
+            );
           }
 
         } else if (editPlan.target_surface === 'criteriaMap') {
@@ -651,13 +754,15 @@ export async function POST(req: Request) {
           if (!editPlan.category_label || itemNames.length === 0) {
             console.warn('[Route] target_surface=criteriaMap이지만 category/items가 없음(빈 문자열 포함) — edit 스킵');
           } else {
-            await (mutateCriteriaMap as any).execute({
-              surface: 'criteriaMap',
-              op: editPlan.op,
-              category_label: editPlan.category_label,
-              item_names: itemNames,
-              op_summary: editPlan.op_summary,
-            });
+            await time("mutate_criteria_map", requestId, () =>
+              (mutateCriteriaMap as any).execute({
+                surface: 'criteriaMap',
+                op: editPlan.op,
+                category_label: editPlan.category_label,
+                item_names: itemNames,
+                op_summary: editPlan.op_summary,
+              })
+            );
           }
         }
 
@@ -665,13 +770,15 @@ export async function POST(req: Request) {
       } else {
         writer.write({ type: "data-action-type", data: { action: "none" } } as any);
         writer.write({ type: "text-start", id: textId } as any);
-        const { textStream: noneStream } = streamChatReply(ctx.locale, await memoryPromptBlock, ctx.modelMessages as any, ctx.screenDetail);
+        const noneStreamStartedAt = Date.now();
+        const { textStream: noneStream } = streamChatReply(ctx.locale, await memoryPromptBlock, ctx.compactModelMessages as any, ctx.screenDetail);
         let noneReplyText = "";
         for await (const delta of noneStream) {
           noneReplyText += delta;
           writer.write({ type: "text-delta", id: textId, delta } as any);
         }
         writer.write({ type: "text-end", id: textId } as any);
+        logElapsed("chat_reply_stream_none", requestId, noneStreamStartedAt);
         turnMemoryNote = noneReplyText.trim();
         console.log('[Route] action_type=none → 텍스트 응답만 반환');
       }
@@ -707,6 +814,11 @@ export async function POST(req: Request) {
       writer.write({ type: "finish-step" } as any);
       writer.write({ type: "finish", finishReason: "stop" } as any);
 
+      // 사용자가 입력한 시점부터 화면에 보이는 답변이 전부 끝나는 시점까지의 체감 지연.
+      // 이 아래(공유 메모리/리서치 로그 반영)는 클라이언트가 이미 다 받은 뒤에 일어나는
+      // best-effort 뒷정리라 체감 속도에는 포함되지 않는다 — 그래서 TOTAL은 여기서 찍는다.
+      logElapsed(`TOTAL(action=${actionRoute.action}${generatedTemplate ? `,template=${generatedTemplate}` : ''})`, requestId, requestStartedAt);
+
       // ── 로그 요약 ──────────────────────────────────────────────────────────────
       const totalTools = sidePanelResults.length + optionListResults.length + compTableResults.length + mutateSurfaceResults.length;
       if (totalTools === 0) {
@@ -717,24 +829,29 @@ export async function POST(req: Request) {
 
       // ── 공유 메모리 반영 ──────────────────────────────────────────────────────
       // 실패해도 이번 턴 응답 자체에는 영향을 주지 않는다 (best-effort).
+      // Redis(세션 메모리)와 Supabase(리서치 로그)는 서로 무관한 목적지라 순차로 기다릴
+      // 이유가 없다 — 스트림이 실제로 닫히기 전 마지막 관문이라 순차 대기는 그대로
+      // 사용자 체감 지연(스트림 종료까지의 시간)에 더해진다.
       if (ctx.participantId) {
-        await appendMemoryTurn(ctx.participantId, {
-          turn: uiMessages.length,
-          userText: ctx.strippedLatest,
-          action: actionRoute.action,
-          template: generatedTemplate,
-          note: turnMemoryNote,
-        }).catch((err) => console.error('[SessionMemory] append 실패:', err));
+        await Promise.all([
+          appendMemoryTurn(ctx.participantId, {
+            turn: uiMessages.length,
+            userText: ctx.strippedLatest,
+            action: actionRoute.action,
+            template: generatedTemplate,
+            note: turnMemoryNote,
+          }).catch((err) => console.error('[SessionMemory] append 실패:', err)),
 
-        await logChatTurn({
-          participantId: ctx.participantId,
-          turnIndex: uiMessages.length,
-          userText: ctx.strippedLatest,
-          action: actionRoute.action,
-          template: generatedTemplate,
-          editTarget: editTargetSurface,
-          editOp: editOpValue,
-        }).catch((err) => console.error('[ResearchLog] logChatTurn 실패:', err));
+          logChatTurn({
+            participantId: ctx.participantId,
+            turnIndex: uiMessages.length,
+            userText: ctx.strippedLatest,
+            action: actionRoute.action,
+            template: generatedTemplate,
+            editTarget: editTargetSurface,
+            editOp: editOpValue,
+          }).catch((err) => console.error('[ResearchLog] logChatTurn 실패:', err)),
+        ]);
       }
     },
   });
