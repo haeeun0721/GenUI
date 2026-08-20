@@ -1,17 +1,17 @@
 import { generateUISpec } from "@/lib/backend/agents/ui_agent";
-import { setCurrentLocale } from "@/lib/backend/tools/sidebar-store";
+import { setCurrentLocale, setCurrentProductCategory } from "@/lib/backend/tools/sidebar-store";
 
 export const maxDuration = 30;
 
 export async function POST(req: Request) {
   try {
-    // generateUnchartedTerritory reads the shared currentLocale global — this route never
-    // set it before, so it silently rode on whatever locale a previous, unrelated
-    // /api/generate request happened to leave behind.
+    // generateUnchartedTerritory reads the shared currentLocale/currentProductCategory
+    // globals directly instead of taking them as parameters — both are (re-)set right
+    // before the generateUISpec call below, not just once here, since another concurrent
+    // request can overwrite the globals during the req.json() await in between.
     const cookieHeader = req.headers.get("cookie") ?? "";
     const localeCookie = cookieHeader.split(";").find(c => c.trim().startsWith("gs_locale="));
     const locale = (localeCookie?.split("=")[1]?.trim() === "en" ? "en" : "ko") as "ko" | "en";
-    setCurrentLocale(locale);
 
     const body = await req.json();
     const existingCategories: string[] = body.existingCategories ?? [];
@@ -35,6 +35,8 @@ export async function POST(req: Request) {
     console.log(`\x1b[90m[Input] existing_categories:\x1b[0m ${existingCategories.join(", ") || "(없음)"}`);
     console.log(`\x1b[90m[Input] existing_items:\x1b[0m ${existingItems.join(", ") || "(없음)"}`);
     console.log(`\x1b[90m[Input] already_suggested:\x1b[0m ${alreadySuggested.join(", ") || "(없음)"}`);
+    setCurrentLocale(locale);
+    setCurrentProductCategory(productCategory);
     const specText = await generateUISpec(uiContext, "", "6", 1, "", [], []);
 
     // Robust JSON extraction (same brace-matching pattern as check-tradeoff)

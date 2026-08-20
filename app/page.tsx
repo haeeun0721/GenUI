@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useCallback, useMemo, memo, useRef, useEffect, useLayoutEffect, startTransition } from "react";
+import { useState, useCallback, useMemo, memo, useRef, useEffect, useLayoutEffect, startTransition, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import {
@@ -27,7 +28,7 @@ import {
   Pencil,
   X,
   Heart,
-  GripVertical,
+  Info,
   PanelRight,
   PanelLeft,
   User,
@@ -52,6 +53,10 @@ type AppMessage = UIMessage<unknown, AppDataParts>;
 // =============================================================================
 
 const transport = new DefaultChatTransport({ api: "/api/generate" });
+
+// 참여자가 "구매 목적 및 상황"에 최소한의 구체성을 담도록 강제하는 하한선 —
+// 한두 단어짜리 성의 없는 답만 걸러내는 낮은 문턱이라 값을 크게 올리지 않는다.
+const MIN_CONTEXT_LENGTH = 20;
 
 // =============================================================================
 // Tool Call Display
@@ -150,12 +155,47 @@ function actionSummaryLabel(data: any, locale: 'ko' | 'en'): string | null {
   return null;
 }
 
+// actionSummaryLabel과 짝을 이루는 "진행 중" 버전. CriteriaMap/InformationCard는 tool()
+// 호출이 아니라 순수 텍스트 스트리밍(generateText)이라 toolInvocations에 안 잡힌다 —
+// activeToolName(도구 이름) 기준으로 이 라벨을 판단하면 CriteriaMap류에서 영영 안 뜬다.
+// 대신 actionSummaryLabel과 똑같은 data-action-type 파트(getActionData)를 쓴다 — 이 파트는
+// route.ts가 action_router/template_selector가 결정되는 즉시(실제 생성이 끝나기 한참 전)
+// 스트리밍해서, 응답이 아직 안 왔어도(assistantText 없음) action/template만으로 바로 알 수 있다.
+function actionInProgressLabel(data: any, locale: 'ko' | 'en'): string | null {
+  if (!data) return null;
+  const isEn = locale === 'en';
+  if (data.action === 'generate') {
+    const labels: Record<string, [string, string]> = {
+      CriteriaMap: ['기준 맵 생성 중', 'Generating criteria map'],
+      InformationCard: ['정보 카드 생성 중', 'Generating information card'],
+      ComparisonTable: ['비교 테이블 생성 중', 'Generating comparison table'],
+      ProductCardList: ['옵션 리스트 생성 중', 'Generating option list'],
+    };
+    const pair = labels[data.template];
+    return pair ? (isEn ? pair[1] : pair[0]) : null;
+  }
+  if (data.action === 'edit') {
+    const labels: Record<string, [string, string]> = {
+      optionList: ['옵션 리스트 수정 중', 'Updating option list'],
+      comparisonTable: ['비교 테이블 수정 중', 'Updating comparison table'],
+      criteriaMap: ['기준 맵 수정 중', 'Updating criteria map'],
+    };
+    const pair = labels[data.target_surface];
+    return pair ? (isEn ? pair[1] : pair[0]) : null;
+  }
+  return null;
+}
+
 // 입력창 위 미리보기 한 턴 — 현재 턴(들어오는 애니메이션)과 이전 턴(나가는 애니메이션)이
 // 같은 모양을 쓰도록 공유하는 프레젠테이션 컴포넌트.
-function DockTurnRow({ turn, userLabel, streaming, className }: {
+function DockTurnRow({ turn, userLabel, streaming, loadingLabel, loadingProgress, className }: {
   turn: { displayMsg: string; assistantText: string; summaryLabel: string | null };
   userLabel: string;
   streaming?: boolean;
+  // 결과가 아직 안 왔을 때(assistantText/summaryLabel 둘 다 없을 때)만 쓰이는 진행 중 표시 —
+  // 완료된 턴(exiting turn)에는 절대 안 넘겨야 한다(그 턴은 이미 결과가 있으므로).
+  loadingLabel?: string | null;
+  loadingProgress?: number;
   className: string;
 }) {
   return (
@@ -181,6 +221,14 @@ function DockTurnRow({ turn, userLabel, streaming, className }: {
           <span className="text-[11px] text-slate-400 font-medium flex items-center gap-1">
             <Sparkles className="w-2.5 h-2.5" />
             {turn.summaryLabel}
+          </span>
+        ) : loadingLabel ? (
+          // 서버가 세부 진행률을 스트리밍으로 안 주므로(단일 요청/응답), enrichProgress와
+          // 동일하게 90%까지 점근하는 추정 진행률이다 — 실제 완료 시점(loadingLabel이
+          // summaryLabel로 바뀌는 순간)까지 대략적인 체감 대기시간만 줄여주는 용도.
+          <span className="text-[11px] text-slate-400 font-medium flex items-center gap-1">
+            <Sparkles className="w-2.5 h-2.5 animate-pulse" />
+            {loadingLabel}... ({Math.round(loadingProgress ?? 0)}%)
           </span>
         ) : null}
       </div>
@@ -676,17 +724,26 @@ function ShrinkToFitText({
     if (!el) return;
 
     const fit = () => {
-      // 먼저 기준 크기로 되돌려야 scrollWidth가 "이 텍스트를 기준 크기로 그렸을 때
-      // 실제 필요한 폭"을 반영한다 — 안 그러면 이전에 줄인 크기 기준으로 다시 재는
-      // 꼴이라 한 번 줄어든 글씨가 텍스트가 짧아져도 다시 안 커진다.
+      // 먼저 기준 크기/한 줄 상태로 되돌려야 scrollWidth가 "이 텍스트를 기준 크기로
+      // 한 줄에 그렸을 때 실제 필요한 폭"을 반영한다 — 안 그러면 이전에 줄인 크기나
+      // 줄바꿈 기준으로 다시 재는 꼴이라 텍스트가 짧아져도 다시 안 커진다.
+      el.style.whiteSpace = "nowrap";
       el.style.fontSize = `${baseSizePx}px`;
       const available = el.clientWidth;
       const natural = el.scrollWidth;
       if (available > 0 && natural > available) {
         const scale = available / natural;
         // 소수점 반올림으로 아주 살짝 넘치는 걸 막기 위해 2% 여유를 둔다.
-        const next = Math.max(minSizePx, Math.floor(baseSizePx * scale * 0.98));
-        el.style.fontSize = `${next}px`;
+        const next = Math.floor(baseSizePx * scale * 0.98);
+        if (next >= minSizePx) {
+          el.style.fontSize = `${next}px`;
+        } else {
+          // 최소 크기로 줄여도 한 줄에 다 안 들어가면(예: 제품명 두 개를 나열한 긴 질문),
+          // 계속 줄이는 대신 줄바꿈을 허용한다 — 글씨가 안 읽힐 정도로 작아지느니
+          // 두 줄이 되더라도 원문이 안 잘리는 쪽이 낫다.
+          el.style.fontSize = `${minSizePx}px`;
+          el.style.whiteSpace = "normal";
+        }
       }
     };
 
@@ -703,6 +760,178 @@ function ShrinkToFitText({
     </p>
   );
 }
+
+// =============================================================================
+// Panel info popover — hover-only card explaining what a panel does, shown from
+// the ⓘ icon in each panel header. Richer than HoverTooltip's one-line label
+// (multiple sections + a small mock UI unit), so it's a dedicated component
+// rather than an overload of HoverTooltip.
+// =============================================================================
+
+type RichPanelInfo = {
+  userInput: { ko: string; en: string };
+  sampleCaption: { ko: string; en: string };
+  updateScope: { ko: string; en: string };
+  sample: (locale: 'ko' | 'en') => ReactNode;
+};
+
+function InfoIconPopover({
+  info,
+  locale,
+  children,
+}: {
+  info: RichPanelInfo;
+  locale: 'ko' | 'en';
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const ref = useRef<HTMLDivElement>(null);
+
+  const updatePosition = () => {
+    const el = ref.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const rawLeft = r.left + r.width / 2;
+    // 팝오버 폭(300px)의 절반만큼은 화면 안에 들어오도록 좌우 clamp
+    const clampedLeft = Math.min(Math.max(rawLeft, 160), window.innerWidth - 160);
+    setPos({ top: r.bottom + 12, left: clampedLeft });
+  };
+
+  return (
+    <div
+      ref={ref}
+      className="inline-flex"
+      onMouseEnter={() => { updatePosition(); setOpen(true); }}
+      onMouseLeave={() => setOpen(false)}
+    >
+      {children}
+      {open && typeof document !== 'undefined' && createPortal(
+        <div
+          style={{ position: 'fixed', top: pos.top, left: pos.left, transform: 'translateX(-50%)', zIndex: 9999 }}
+          className="pointer-events-none w-[300px] rounded-2xl bg-[#141416] text-white p-4 shadow-2xl"
+        >
+          <span className="absolute -top-1.5 left-1/2 -translate-x-1/2 w-3 h-3 bg-[#141416] rotate-45" />
+          <div className="relative flex flex-col gap-3.5">
+            <div>
+              <p className="text-[11px] font-bold text-white mb-1">{locale === 'en' ? 'When does it appear?' : '언제 나타나요?'}</p>
+              <p className="text-[11px] text-slate-300 leading-relaxed whitespace-pre-line">
+                {locale === 'en' ? info.userInput.en : info.userInput.ko}
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] font-bold text-white mb-1">{locale === 'en' ? 'What will you see?' : '무엇을 보여줘요?'}</p>
+              <p className="text-[11px] text-slate-300 leading-relaxed mb-1.5">
+                {locale === 'en' ? info.sampleCaption.en : info.sampleCaption.ko}
+              </p>
+              <div className="rounded-xl bg-white p-3 flex items-center justify-center">
+                {info.sample(locale)}
+              </div>
+            </div>
+            <div>
+              <p className="text-[11px] font-bold text-white mb-1">{locale === 'en' ? 'How can you edit it?' : '어떻게 수정할 수 있어요?'}</p>
+              <p className="text-[11px] text-slate-300 leading-relaxed whitespace-pre-line">
+                {locale === 'en' ? info.updateScope.en : info.updateScope.ko}
+              </p>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+    </div>
+  );
+}
+
+const PANEL_INFO_RICH: Partial<Record<'exploration' | 'optionList' | 'compTable', RichPanelInfo>> = {
+  exploration: {
+    userInput: {
+      ko: "궁금한 개념이나 구매 기준을 물어보세요.\n예: “로봇청소기 살 때 뭘 봐야 해?” · “HEPA 필터가 어떤거야?”",
+      en: "Ask about a concept or buying criterion you're curious about.\ne.g. “What should I look for in a robot vacuum?” · “What is a HEPA filter?”",
+    },
+    sampleCaption: {
+      ko: '질문 내용을 바탕으로 이런 기준 카테고리를 만들어드려요.',
+      en: "We'll build criteria categories like this from your question.",
+    },
+    updateScope: {
+      ko: '기준 카테고리와 세부 항목을 자유롭게 추가·삭제할 수 있어요.\n예: “청소 성능을 위해서는 또 어떤걸 고려할 수 있을지 추가해주세요”',
+      en: 'Freely add or remove categories and the items under them.\ne.g. “Add more things I should consider for cleaning performance”',
+    },
+    sample: (locale) => (
+      <div className="rounded-lg border border-slate-200 overflow-hidden w-full">
+        <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100">
+          <span className="text-[10.5px] font-bold text-slate-700">
+            {locale === 'en' ? 'Cleaning Performance' : '청소 성능'}
+          </span>
+        </div>
+        <div className="flex flex-wrap gap-1.5 px-3 py-2">
+          <span className="text-[9.5px] font-medium text-slate-600 bg-slate-50 border border-slate-200 rounded-full px-2 py-1">
+            {locale === 'en' ? 'Suction' : '흡입력'}
+          </span>
+          <span className="text-[9.5px] font-medium text-slate-600 bg-slate-50 border border-slate-200 rounded-full px-2 py-1">
+            {locale === 'en' ? 'HEPA Filter' : 'HEPA필터'}
+          </span>
+        </div>
+      </div>
+    ),
+  },
+  optionList: {
+    userInput: {
+      ko: "원하는 조건을 말하면 딱 맞는 제품을 찾아드려요.\n예: “흡입력 2,000pa 이상인 제품 추천해줘” · “20만원대 제품도 추천해줘”",
+      en: "Tell us what you're looking for and we'll find matching products.\ne.g. “Recommend products with 2,000Pa+ suction” · “Also recommend options under $200”",
+    },
+    sampleCaption: {
+      ko: '조건에 맞는 상품을 이런 카드로 정리해드려요.',
+      en: "We'll organize matching products into cards like this.",
+    },
+    updateScope: {
+      ko: '카드 필터링·정렬은 물론, 제품이나 스펙 정보 추가도 요청할 수 있어요.\n예: “가격 낮은 순으로 정렬해줘” · “이 중에서 로보락만 남겨줘”',
+      en: 'Filter or sort cards, and request more products or spec info.\ne.g. “Sort by lowest price” · “Keep only Roborock among these”',
+    },
+    sample: (locale) => (
+      <div className="rounded-lg border border-slate-200 overflow-hidden w-[128px]">
+        <div className="aspect-[4/3] bg-slate-100" />
+        <div className="p-2 flex flex-col gap-1">
+          <span className="text-[8px] font-bold text-slate-800">{locale === 'en' ? 'Roborock' : '로보락'}</span>
+          <span className="text-[9px] text-slate-600 leading-snug">S9 MaxV Ultra</span>
+          <span className="text-[8.5px] text-slate-500 bg-slate-50 border border-slate-200 rounded-full px-1.5 py-0.5 w-fit">
+            {locale === 'en' ? 'Suction 22,000Pa' : '흡입력 22,000Pa'}
+          </span>
+          <span className="text-[10px] font-bold text-slate-900 mt-0.5">
+            {locale === 'en' ? '$970' : '1,339,200원'}
+          </span>
+        </div>
+      </div>
+    ),
+  },
+  compTable: {
+    userInput: {
+      ko: "비교하고 싶은 제품 2개 이상을 말해보세요.\n예: “이 두 제품 비교해줘” · “로보락이랑 삼성 제품 비교해줘”",
+      en: "Name 2 or more products you'd like to compare.\ne.g. “Compare these two products” · “Compare the Roborock and Samsung models”",
+    },
+    sampleCaption: {
+      ko: '선택한 제품들을 이런 표로 나란히 비교해드려요.',
+      en: "We'll compare your selected products in a table like this.",
+    },
+    updateScope: {
+      ko: '비교 기준과 제품을 자유롭게 추가·삭제·교체할 수 있어요.\n예: “소음 수준도 비교해줘” · “이 제품은 비교에서 빼줘”',
+      en: 'Freely add, remove, or swap comparison criteria and products.\ne.g. “Also compare noise level” · “Remove this product from the comparison”',
+    },
+    sample: (locale) => (
+      <div className="rounded-lg border border-slate-200 overflow-hidden w-full">
+        <div className="grid grid-cols-3 text-[8.5px] font-bold text-slate-400 border-b border-slate-100 px-2 py-1.5">
+          <span>{locale === 'en' ? 'Criterion' : '비교 항목'}</span>
+          <span className="text-center">A</span>
+          <span className="text-center">B</span>
+        </div>
+        <div className="grid grid-cols-3 text-[9.5px] text-slate-700 px-2 py-2">
+          <span className="font-semibold">{locale === 'en' ? 'Suction' : '흡입력'}</span>
+          <span className="text-center">36,000Pa</span>
+          <span className="text-center">22,000Pa</span>
+        </div>
+      </div>
+    ),
+  },
+};
 
 // =============================================================================
 // Page
@@ -744,15 +973,18 @@ export default function ChatPage() {
     purchaseContext: locale === 'en' ? 'PURCHASE CONTEXT' : '구매 목적 및 상황',
     contextPlaceholder: locale === 'en'
       ? (assignedItem === 'B'
-        ? 'e.g. I have a cat and need strong suction and mopping.'
+        ? 'e.g. I have a cat and want to keep my home clean without much effort every day. I don\'t have much time to spend on cleaning.'
         : assignedItem === 'C'
           ? 'e.g. I want to take beautiful landscape and portrait photos while traveling. I will also shoot vlogs.'
           : 'e.g. I go out often alone. Lightweight and portable is important.')
       : (assignedItem === 'B'
-        ? '저 고양이를 키우고 있어서 흡입력이 강하고 물걸레 기능도 있는 제품이 필요해요.'
+        ? '고양이를 키우고 있어서 매일 편하게 집을 청소하고 싶어요. 청소에 시간을 많이 쓰기는 어려운 편이에요.'
         : assignedItem === 'C'
           ? '여행 다니면서 풍경이나 인물 사진을 예쁘게 찍고 싶어요. 브이로그 촬영도 할 거예요.'
           : '외출이 잦아서 혼자 쓰기에 가볍고 휴대성이 좋은 게 중요해요.'),
+    contextMinHint: locale === 'en'
+      ? (n: number) => `At least ${MIN_CONTEXT_LENGTH} characters (${n}/${MIN_CONTEXT_LENGTH})`
+      : (n: number) => `최소 ${MIN_CONTEXT_LENGTH}자 이상 (${n}/${MIN_CONTEXT_LENGTH})`,
     getStarted: locale === 'en' ? 'Get Started' : '시작하기',
     criteriaEmpty: locale === 'en' ? 'Click criteria chips\nto pin them here' : '기준 칩을 클릭해\n여기에 고정해두세요',
     optionsEmpty: locale === 'en' ? 'Press ♡ on products\nto save them here' : '관심 제품의 ♡를 눌러\n여기에 저장해보세요',
@@ -813,6 +1045,7 @@ export default function ChatPage() {
     tradeoffs?: Record<string, any>;
     droppedItems?: any[];
     queryHistory?: any[];
+    compTableHistory?: any[];
   } | null>(null);
   const isPreTranslatingRef = useRef(false); // 중복 ??행 방??
   const prevTableTurnRef = useRef<number>(-1);
@@ -838,7 +1071,6 @@ export default function ChatPage() {
   });
   const [rightWidth, setRightWidth] = useState(320);
   const [rightTopHeight, setRightTopHeight] = useState(300);
-  const [compTableCollapsed, setCompTableCollapsed] = useState(false);
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(true);
   const [productCardListSpec, setProductCardListSpec] = useState<any>(null);
   const [coverageNoticeSpec, setCoverageNoticeSpec] = useState<any>(null);
@@ -855,6 +1087,10 @@ export default function ChatPage() {
   const [isUpdatingTable, setIsUpdatingTable] = useState(false);
   // auto-enrich 실행 중 현재 처리 중인 criterion 이름 (null이면 실행 안 함)
   const [enrichingCriterion, setEnrichingCriterion] = useState<string | null>(null);
+  // auto-enrich 로딩 오버레이용 추정 진행률(%) — 서버가 실시간 진행률을 안 주므로(단일
+  // Promise.all 배치 응답) 프론트에서 90%까지 점점 느려지며 근접시키다가, 응답이 실제로
+  // 도착하면(enrichingCriterion이 null이 됨) 100%로 채우고 잠깐 보여준 뒤 닫는다.
+  const [enrichProgress, setEnrichProgress] = useState(0);
   // updateComparisonTable 요청의 순번. 응답이 도착했을 때 더 최신 요청이 이미 나갔다면
   // (겹치는 기준 변경 등으로) 낡은 응답이 최신 테이블 상태를 덮어써 행이 사라지는 것을 방지.
   const updateTableSeqRef = useRef(0);
@@ -864,12 +1100,25 @@ export default function ChatPage() {
   type QHEntry = { id: string; query: string; criteria: string[]; timestamp: Date; spec: any; mutateLog?: MutateLogEntry[]; };
   const [queryHistory, setQueryHistory] = useState<QHEntry[]>([]);
   const [activeHistoryIndex, setActiveHistoryIndex] = useState<number>(-1);
-  // Comparison Table 이력 배너 — Option List의 queryHistory/mutateLog와 같은 목적이지만,
-  // ComparisonTable은 "페이지"가 아니라 하나의 표가 계속 갱신되는 구조라 별도 페이지 배열 없이
-  // "현재 표를 만든 질문" + "그 뒤로 이어진 mutate 꼬리 질문" 두 가지만 추적한다.
+  // Comparison Table 이력 배너 — Option List의 queryHistory/activeHistoryIndex와 동일한 패턴.
+  // 새로 비교하려는 제품이 현재 페이지 제품과 하나도 안 겹치면 새 페이지, 겹치면(기준
+  // 추가/삭제, 제품 일부 추가/교체, handleCompare의 누적 비교 등 기존 비교의 연장) 같은
+  // 페이지를 계속 갱신한다.
   type CompTableMutateLogEntry = { id: string; summary: string; op: string; userQuery?: string };
-  const [compTableQuery, setCompTableQuery] = useState<string>('');
-  const [compTableMutateLog, setCompTableMutateLog] = useState<CompTableMutateLogEntry[]>([]);
+  type CTHEntry = { id: string; query: string; timestamp: Date; spec: any; mutateLog: CompTableMutateLogEntry[] };
+  const [compTableHistory, setCompTableHistory] = useState<CTHEntry[]>([]);
+  const [activeCompTableHistoryIndex, setActiveCompTableHistoryIndex] = useState<number>(-1);
+  // updateComparisonTable()/autoEnrichForCriteria()처럼 채팅을 거치지 않고 compTableSpec을
+  // 직접 갱신하는 경로들이 공유하는 헬퍼 — 항상 마지막(최신) 페이지의 spec만 패치한다.
+  const patchLastCompTablePage = (spec: any) => {
+    setCompTableHistory((prev) => {
+      if (prev.length === 0) return prev;
+      const lastIdx = prev.length - 1;
+      const updated = [...prev];
+      updated[lastIdx] = { ...updated[lastIdx], spec };
+      return updated;
+    });
+  };
   // productCardListSpec은 "Option List 패널: turn별로 분리된 카드 추적" effect가 매 메시지마다
   // data-option-list-spec 파트만으로 무조건 다시 계산해서 덮어쓰기 때문에, mutateSurface(add/filter/
   // sort)로 반영된 변경사항이 다음 턴이 오면 사라질 수 있다(그 effect는 mutateSurface 결과를 모름).
@@ -883,10 +1132,15 @@ export default function ChatPage() {
   // 거쳐도 안 사라지게 한다. Edit Agent가 대화 히스토리를 못 보므로 이게 유일한 통로다.
   const activeOptionListSearchQueryRef = useRef<string | null>(null);
   useEffect(() => {
-    const active = queryHistory[activeHistoryIndex];
-    activeOptionListCardsRef.current = active?.spec?.props?.cards ?? productCardListSpec?.props?.cards ?? null;
-    activeOptionListSearchQueryRef.current = active?.spec?._searchQuery ?? productCardListSpec?._searchQuery ?? null;
-  }, [queryHistory, activeHistoryIndex, productCardListSpec]);
+    // 항상 마지막(최신) 페이지를 기준으로 삼는다 — 사용자가 화살표로 예전 페이지(예: 1/3)를
+    // 보고 있는 상태에서 수정/추가/삭제를 요청해도, 그 변경은 마지막 페이지(3/3)에 적용되어야
+    // 하기 때문이다(applyToHistory도 항상 prev.length - 1에 적용). activeHistoryIndex를 쓰면
+    // LLM에게 넘기는 "현재 카드 목록"이 보고 있는 페이지 것이라 실제 변경 대상(마지막 페이지)과
+    // 카드 id가 어긋나 매칭 실패/오적용으로 이어진다.
+    const latest = queryHistory[queryHistory.length - 1];
+    activeOptionListCardsRef.current = latest?.spec?.props?.cards ?? productCardListSpec?.props?.cards ?? null;
+    activeOptionListSearchQueryRef.current = latest?.spec?._searchQuery ?? productCardListSpec?._searchQuery ?? null;
+  }, [queryHistory, productCardListSpec]);
   // 스트리밍 중 messages 참조가 계속 바뀌면서 mutateSurface effect가 반복 실행되는 것을 막기 위한
   // "이미 처리한 메시지 id" 기록 (중복 mutateLog 방지)
   const processedMutateMsgIdRef = useRef<string | null>(null);
@@ -910,18 +1164,64 @@ export default function ChatPage() {
   const [panelSlots, setPanelSlots] = useState<Record<SlotId, PanelId>>({
     left: 'exploration', center: 'chat', rightTop: 'criteria', rightBottom: 'options', farRight: 'optionList', compTableSlot: 'compTable',
   });
-  const [panelDragging, setPanelDragging] = useState<PanelId | null>(null);
-  const [panelDropTarget, setPanelDropTarget] = useState<SlotId | null>(null);
+  // 접기/펼치기 — Exploration Journey / Option List / Comparison Table 세 패널만 지원.
+  // (drag-swap으로 자리를 옮기는 panelSlots/panelWidths와 달리) 패널 자체에 붙는 상태라
+  // 어느 슬롯으로 옮겨져도 접힘 여부는 그대로 유지된다.
+  type CollapsiblePanelId = 'exploration' | 'optionList' | 'compTable';
+  const COLLAPSED_SLOT_WIDTH = 44;
+  const [collapsedPanels, setCollapsedPanels] = useState<Partial<Record<CollapsiblePanelId, boolean>>>({});
+  const isCollapsible = (pid: PanelId): pid is CollapsiblePanelId =>
+    pid === 'exploration' || pid === 'optionList' || pid === 'compTable';
 
-  const getSlotOf = (panelId: PanelId): SlotId =>
-    (Object.entries(panelSlots).find(([, p]) => p === panelId)?.[0] as SlotId) ?? 'left';
+  const togglePanelCollapse = (pid: CollapsiblePanelId) => {
+    const collapsing = !collapsedPanels[pid];
+    setCollapsedPanels(prev => ({ ...prev, [pid]: collapsing }));
 
-  const swapPanels = (draggedPanel: PanelId, targetSlot: SlotId) => {
-    setPanelSlots(prev => {
-      const fromSlot = (Object.entries(prev).find(([, p]) => p === draggedPanel)?.[0] as SlotId);
-      const displaced = prev[targetSlot];
-      return { ...prev, [fromSlot]: displaced, [targetSlot]: draggedPanel };
-    });
+    // 세 개 중 하나를 접으면, 남은 두 패널(둘 다 화면에 보이고 접혀있지 않은 경우)의
+    // 가로 폭을 서로 맞춰 균등 분할되게 한다 — 안 그러면 접기 전에 달랐던 폭이 그대로
+    // 남아 한쪽만 넓어 보인다.
+    if (collapsing) {
+      const others = (['exploration', 'optionList', 'compTable'] as CollapsiblePanelId[])
+        .filter(other => other !== pid && isPanelShown(other) && !collapsedPanels[other]);
+      if (others.length === 2) {
+        const avgWidth = Math.round(others.reduce((sum, o) => sum + panelWidths[o], 0) / others.length);
+        setPanelWidths(prev => {
+          const next = { ...prev };
+          others.forEach(o => { next[o] = avgWidth; });
+          return next;
+        });
+      }
+    }
+  };
+  // left/compTableSlot/farRight 폭 계산에 쓰는 헬퍼 — 그 슬롯에 지금 들어있는 패널이
+  // 접혀있으면 panelWidths 대신 고정된 얇은 폭을 쓴다.
+  const DYNAMIC_SLOTS: SlotId[] = ['left', 'compTableSlot', 'farRight'];
+  const getSlotWidth = (slot: SlotId): number => {
+    const pid = panelSlots[slot];
+    if (isCollapsible(pid) && collapsedPanels[pid]) return COLLAPSED_SLOT_WIDTH;
+
+    // 세 동적 슬롯(left/compTableSlot/farRight) 중 펼쳐진(보이고 접히지 않은) 슬롯이
+    // 정확히 두 개면 — 셋 중 하나가 접혀서든, 애초에 두 개만 화면에 떠 있어서든 —
+    // 그 둘의 폭을 동일하게(합을 반으로) 맞춘다.
+    if (DYNAMIC_SLOTS.includes(slot)) {
+      const isSlotShown = (s: SlotId) => {
+        const p = panelSlots[s];
+        if (p === 'exploration') return showExplorationPanel;
+        if (p === 'compTable') return showCompTablePanel;
+        if (p === 'optionList') return showOptionListPanel;
+        return true;
+      };
+      const isSlotExpanded = (s: SlotId) => {
+        const p = panelSlots[s];
+        return isSlotShown(s) && !(isCollapsible(p) && collapsedPanels[p]);
+      };
+      const expandedSlots = DYNAMIC_SLOTS.filter(isSlotExpanded);
+      if (expandedSlots.length === 2 && expandedSlots.includes(slot)) {
+        const total = expandedSlots.reduce((sum, s) => sum + panelWidths[panelSlots[s]], 0);
+        return total / 2;
+      }
+    }
+    return panelWidths[pid];
   };
 
   const visibilityRef = useRef({ exploration: false, compTable: false, optionList: false });
@@ -963,30 +1263,52 @@ export default function ChatPage() {
     return true; // criteria, options are always shown
   };
 
-  const gripHandle = (panelId: PanelId) => (
-    <div
-      draggable
-      onDragStart={(e) => { e.stopPropagation(); setPanelDragging(panelId); e.dataTransfer.setData('application/x-panel', panelId); e.dataTransfer.effectAllowed = 'move'; }}
-      onDragEnd={() => { setPanelDragging(null); setPanelDropTarget(null); }}
-      className="cursor-grab active:cursor-grabbing p-1 rounded hover:bg-slate-100 transition-colors flex-shrink-0"
-      title={locale === 'en' ? 'Drag to move panel' : '드래그하여 패널 이동'}
-    >
-      <GripVertical className="w-3.5 h-3.5 text-slate-300 hover:text-slate-500" />
-    </div>
-  );
+  // 패널 헤더의 정보 아이콘 — exploration/optionList/compTable은 사용자 입력·받을 수 있는
+  // 정보·업데이트 범위를 보여주는 풍부한 팝오버(InfoIconPopover)를, 그 외(chat)는 한 줄
+  // 요약만 있는 기존 HoverTooltip을 쓴다.
+  // (예전엔 이 자리가 패널을 서로 드래그해서 바꿔치는 그립 핸들이었으나 제거됨).
+  const PANEL_INFO_TEXT: Partial<Record<PanelId, { ko: string; en: string }>> = {
+    chat: { ko: '질문하고 답변을 받아요', en: 'Ask questions and get answers' },
+  };
 
-  const slotDropProps = (slotId: SlotId) => ({
-    onDragOver: (e: React.DragEvent) => {
-      if (!e.dataTransfer.types.includes('application/x-panel')) return;
-      e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setPanelDropTarget(slotId);
-    },
-    onDragLeave: (e: React.DragEvent) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setPanelDropTarget(null); },
-    onDrop: (e: React.DragEvent) => {
-      const pid = e.dataTransfer.getData('application/x-panel') as PanelId;
-      if (pid && pid !== panelSlots[slotId]) { e.preventDefault(); e.stopPropagation(); swapPanels(pid, slotId); }
-      setPanelDragging(null); setPanelDropTarget(null);
-    },
-  });
+  const gripHandle = (panelId: PanelId) => {
+    const icon = (
+      <div className="p-1 rounded hover:bg-slate-100 transition-colors flex-shrink-0">
+        <Info className="w-3.5 h-3.5 text-slate-600 hover:text-slate-800" />
+      </div>
+    );
+
+    const richInfo = PANEL_INFO_RICH[panelId as 'exploration' | 'optionList' | 'compTable'];
+    if (richInfo) {
+      return (
+        <InfoIconPopover info={richInfo} locale={locale}>
+          {icon}
+        </InfoIconPopover>
+      );
+    }
+
+    const info = PANEL_INFO_TEXT[panelId];
+    return (
+      <HoverTooltip label={info ? (locale === 'en' ? info.en : info.ko) : ''} side="bottom">
+        {icon}
+      </HoverTooltip>
+    );
+  };
+
+  // 헤더에 넣는 접기 버튼 — 펼쳐진 상태에서만 쓰인다(접힌 상태는 renderCollapsedPanel 자체가 버튼 역할).
+  // title 속성(브라우저 기본 툴팁) 대신, 우측 DC+My Options 패널의 접기/펼치기 버튼과 동일하게
+  // HoverTooltip 컴포넌트를 써서 스타일을 통일한다.
+  const collapseButton = (panelId: CollapsiblePanelId) => (
+    <HoverTooltip label={locale === 'en' ? 'Collapse panel' : '패널 접기'} side="bottom">
+      <button
+        type="button"
+        onClick={() => togglePanelCollapse(panelId)}
+        className="p-1 rounded hover:bg-slate-100 transition-colors flex-shrink-0 text-slate-600 hover:text-slate-800"
+      >
+        <PanelRight className="w-3.5 h-3.5" />
+      </button>
+    </HoverTooltip>
+  );
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -1006,7 +1328,12 @@ export default function ChatPage() {
   // 스트리밍 도중 타이머가 매번 취소되는 일 없이 정확히 턴이 바뀔 때만 애니메이션이 걸린다.)
   type DockTurn = { id: string; displayMsg: string; assistantText: string; summaryLabel: string | null };
   const dockTurns = useMemo(() => buildHistoryTurns(messages), [messages]);
-  const toDockTurn = (t: HistoryTurn | null): DockTurn | null => {
+  // data-action-type 파트는 action_router/template_selector가 결정되는 즉시(실제 생성이 끝나기
+  // 한참 전) 스트리밍된다 — 그래서 아직 진행 중인 마지막 턴(isLive)에 대해 곧바로
+  // actionSummaryLabel("~생성됨")을 계산해버리면 실제로는 안 끝났는데 끝난 것처럼 보이고,
+  // 그 자리를 대신할 loadingLabel(진행률)도 영영 보일 기회가 없다. isLive이고 아직 생성/
+  // 스트리밍 중이면 summaryLabel을 비워서 그 슬롯을 loadingLabel에 양보한다.
+  const toDockTurn = (t: HistoryTurn | null, isLive: boolean = false): DockTurn | null => {
     if (!t) return null;
     const rawText = (t.user as any).content || getMessageText(t.user);
     const displayMsg = extractUserDisplayText(rawText);
@@ -1014,11 +1341,14 @@ export default function ChatPage() {
     const actionData = getActionData(t.assistant);
     const isNoneReply = actionData?.action === 'none';
     const assistantText = isNoneReply ? getMessageText(t.assistant) : "";
-    const summaryLabel = t.assistant && !isNoneReply ? actionSummaryLabel(actionData, locale) : null;
+    const isStillGenerating = status === 'submitted' || status === 'streaming';
+    const summaryLabel = t.assistant && !isNoneReply && !(isLive && isStillGenerating)
+      ? actionSummaryLabel(actionData, locale)
+      : null;
     return { id: t.user.id, displayMsg, assistantText, summaryLabel };
   };
-  const currentDockTurn = toDockTurn(dockTurns[dockTurns.length - 1] ?? null);
-  const previousDockTurn = toDockTurn(dockTurns.length >= 2 ? dockTurns[dockTurns.length - 2] : null);
+  const currentDockTurn = toDockTurn(dockTurns[dockTurns.length - 1] ?? null, true);
+  const previousDockTurn = toDockTurn(dockTurns.length >= 2 ? dockTurns[dockTurns.length - 2] : null, false);
 
   const [showExitingDockTurn, setShowExitingDockTurn] = useState(false);
   const prevTurnCountRef = useRef(dockTurns.length);
@@ -1050,6 +1380,31 @@ export default function ChatPage() {
     ? (lastMessage as any).toolInvocations?.slice(-1)[0]?.toolName
     : null;
 
+  // 입력창 위 미리보기(dock)에서 "비교 테이블 생성 중... (42%)"처럼 보여줄 추정 진행률.
+  // enrichProgress(기준 추가 오버레이)와 동일한 패턴 — 서버가 renderToCompTable/
+  // mutateSurface 등 도구 호출 하나를 단일 요청/응답으로 처리해 중간 진행률을 스트리밍으로
+  // 안 주기 때문에, 90%까지 점근시키다가 실제 완료 시 100%로 스냅한다.
+  const [dockActionProgress, setDockActionProgress] = useState(0);
+  useEffect(() => {
+    if (!isAgentGenerating) {
+      if (dockActionProgress > 0) {
+        setDockActionProgress(100);
+        const resetTimer = setTimeout(() => setDockActionProgress(0), 400);
+        return () => clearTimeout(resetTimer);
+      }
+      return;
+    }
+    setDockActionProgress(4);
+    const tickTimer = setInterval(() => {
+      setDockActionProgress(prev => (prev >= 90 ? prev : prev + (90 - prev) * 0.08));
+    }, 250);
+    return () => clearInterval(tickTimer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAgentGenerating]);
+  const dockLoadingLabel = isAgentGenerating && lastMessage?.role === 'assistant'
+    ? actionInProgressLabel(getActionData(lastMessage), locale)
+    : null;
+
   const resetSession = useCallback(() => {
     localStorage.removeItem('gs_hasStarted');
     localStorage.removeItem('gs_participantId');
@@ -1071,8 +1426,24 @@ export default function ChatPage() {
     setDismissedUncharted(new Set());
     setQueryHistory([]);
     setActiveHistoryIndex(-1);
-    setCompTableQuery('');
-    setCompTableMutateLog([]);
+    setCompTableHistory([]);
+    setActiveCompTableHistoryIndex(-1);
+    // 패널 접힘/폭/배치는 패널 자체에 붙는 상태라 메시지·패널가시성 리셋만으로는 안 풀린다 —
+    // 이전 대화에서 Exploration Journey 등을 접어뒀으면, 새로 "시작하기"를 눌러도 그 패널이
+    // 처음부터 접힌 채로 나타났다(같은 탭에서 SPA 상태가 유지되는 한 계속). 새 세션은 항상
+    // 펼쳐진 기본 배치로 시작해야 하므로 여기서 같이 초기화한다.
+    setCollapsedPanels({});
+    setPanelWidths({
+      exploration: 420,
+      chat: 320,
+      compTable: 600,
+      optionList: 600,
+      criteria: 300,
+      options: 300,
+    });
+    setPanelSlots({
+      left: 'exploration', center: 'chat', rightTop: 'criteria', rightBottom: 'options', farRight: 'optionList', compTableSlot: 'compTable',
+    });
     prevConditionsRef.current = false;
     pendingFetchRef.current = false;
     // 새 세션 시작 직전에 기준 추가 등으로 direct-update가 앞서있던 상태였다면, 그 플래그가 남아
@@ -1123,6 +1494,7 @@ export default function ChatPage() {
           criteria: newCriteria.map((c) => c.name),
           category: productCategory,
           locale,
+          participantId,
           ...(hasValidTable ? {
             currentTableData: compTable,
             // 순위 판단(기준 충족/미달)이 사용자가 명시한 최솟값을 읽을 수 있게 annotation을 유지한 형태.
@@ -1175,7 +1547,13 @@ export default function ChatPage() {
               _unconfirmedCriteria: unconfirmedCrit.length > 0
                 ? [...new Set([...(card._unconfirmedCriteria ?? []), ...unconfirmedCrit])]
                 : (card._unconfirmedCriteria ?? []),
-              _justUpdated: true,
+              // 카드 전체가 아니라 새로 생긴 칩에만 하이라이트를 건다 — _justUpdated을 true로
+              // 두면 ProductCard가 카드 전체에 테두리+오버레이(isHighlighted)까지 같이 씌워서
+              // 아래 _justAddedChips(칩 단위 하이라이트)와 이중으로 겹쳐 보였다.
+              _justUpdated: false,
+              // 이번 배치에서 새로 나타난 칩 텍스트(스펙 문구 + 미확인 기준명) — ProductCard가
+              // 이 목록에 있는 칩에만 개별 보라색 하이라이트를 건다.
+              _justAddedChips: [...cardUpdates.map((u) => u.spec_phrase), ...unconfirmedCrit],
             };
           }
 
@@ -1185,11 +1563,12 @@ export default function ChatPage() {
               ...card,
               _notFoundCriteria: [...new Set([...(card._notFoundCriteria ?? []), ...notFoundCrit])],
               _justUpdated: false,
+              _justAddedChips: notFoundCrit,
             };
           }
 
-          if (card._justUpdated) {
-            return { ...card, _justUpdated: false };
+          if (card._justUpdated || (card._justAddedChips && card._justAddedChips.length > 0)) {
+            return { ...card, _justUpdated: false, _justAddedChips: [] };
           }
           return card;
         });
@@ -1202,13 +1581,19 @@ export default function ChatPage() {
         return next;
       });
 
-      setQueryHistory((prevHistory: any[]) =>
-        prevHistory.map((entry: any) => {
-          if (!entry?.spec?.props?.cards) return entry;
-          const updatedCards = applyCardUpdates(entry.spec.props.cards);
-          return { ...entry, spec: { ...entry.spec, props: { ...entry.spec.props, cards: updatedCards } } };
-        })
-      );
+      // 페이지가 여러 개 쌓여 있어도(1/3, 2/3, ...) 스펙 보강은 항상 마지막(최신) 페이지에만
+      // 적용한다 — 예전엔 .map()으로 모든 페이지를 훑어 같은 이름의 카드를 전부 갱신했는데,
+      // 그러면 기준 칩 하나 추가했을 뿐인데 이미 지나간 1페이지까지 조용히 바뀌어버렸다.
+      setQueryHistory((prevHistory: any[]) => {
+        if (prevHistory.length === 0) return prevHistory;
+        const lastIdx = prevHistory.length - 1;
+        const last = prevHistory[lastIdx];
+        if (!last?.spec?.props?.cards) return prevHistory;
+        const updatedCards = applyCardUpdates(last.spec.props.cards);
+        const updated = [...prevHistory];
+        updated[lastIdx] = { ...last, spec: { ...last.spec, props: { ...last.spec.props, cards: updatedCards } } };
+        return updated;
+      });
 
       // 같은 응답에 실려온 Comparison Table 갱신 결과 반영 — updateComparisonTable()의
       // 응답 처리와 동일한 방식(이미지 URL 보존 + 낡은 응답 무시).
@@ -1228,6 +1613,7 @@ export default function ChatPage() {
           }
           setCompTableSpec(tableJson);
           compTableSpecRef.current = tableJson;
+          patchLastCompTablePage(tableJson);
           directTableUpdateAheadRef.current = true;
           console.log("[auto-enrich] ✅ Comparison Table 갱신 완료 (같은 요청에서 처리)");
         }
@@ -1239,6 +1625,26 @@ export default function ChatPage() {
       if (hasValidTable) setIsUpdatingTable(false);
     }
   };
+
+  // enrichingCriterion이 켜져 있는 동안 90%까지 점근하는 추정 진행률 애니메이션. 실제
+  // 완료(enrichingCriterion → null)는 별개 타이밍이라, 여기서는 그 시점에 100%로 스냅한 뒤
+  // 오버레이가 사라질 잠깐의 여유(600ms)를 두고 0으로 리셋한다.
+  useEffect(() => {
+    if (!enrichingCriterion) {
+      if (enrichProgress > 0) {
+        setEnrichProgress(100);
+        const resetTimer = setTimeout(() => setEnrichProgress(0), 600);
+        return () => clearTimeout(resetTimer);
+      }
+      return;
+    }
+    setEnrichProgress(4);
+    const tickTimer = setInterval(() => {
+      setEnrichProgress(prev => (prev >= 90 ? prev : prev + (90 - prev) * 0.08));
+    }, 250);
+    return () => clearInterval(tickTimer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enrichingCriterion]);
 
   const updateComparisonTable = async (
     criteria: { name: string; min?: string }[],
@@ -1276,6 +1682,7 @@ export default function ChatPage() {
           locale: locale,
           userContext, // 서버가 순위를 이 사용자의 구매 상황/목적 기준으로 판단하는 데 필요
           prefetchedValues, // Option List(auto-enrich)가 이번 기준 변경 사이클에서 이미 찾아둔 값 — 재검색 방지
+          participantId,
         }),
       });
 
@@ -1304,6 +1711,7 @@ export default function ChatPage() {
 
         setCompTableSpec(newSpec);
         compTableSpecRef.current = newSpec;
+        patchLastCompTablePage(newSpec);
         directTableUpdateAheadRef.current = true;
         console.log("[update-table] 갱신 ??료");
       }
@@ -1321,12 +1729,17 @@ export default function ChatPage() {
     const prev = prevDroppedCriteriaRef.current;
     const curr = droppedCriteria;
 
-    // [1] 새로 추가된 기준 or min 값 변경
-    const newCriteria = curr.filter(c => {
+    // [1] 새로 추가된 기준(이름 자체가 prev에 없음) — 카드에 아직 값이 없으므로 조회가 필요하다.
+    const newCriteria = curr.filter(c => !prev.some(prevC => prevC.name === c.name));
+    // [1-b] 이미 있던 기준의 min만 바뀐 경우 — 칩의 연필 아이콘으로 "5,000pa 이상" 같은
+    // 임계값만 고친 것으로, 그 기준의 스펙 값 자체는 카드에 이미 있다(재조회 불필요).
+    // 바뀌는 건 표의 "[기준 충족]/[기준 미달]" 판정과 순위뿐이라, 카드 재검색(auto-enrich)
+    // 없이 표 순위만 가볍게 다시 계산하면 된다 — 그런데도 새 기준과 똑같이 auto-enrich를
+    // 태우고 있어서, 안 그래도 되는데 Option List에 "OO 정보를 추가하고 있습니다..." 로딩이
+    // 떴었다.
+    const minOnlyChangedCriteria = curr.filter(c => {
       const p = prev.find(prevC => prevC.name === c.name);
-      if (!p) return true;
-      if (p.min !== (c as any).min) return true;
-      return false;
+      return !!p && p.min !== (c as any).min;
     });
 
     // 기?? ref ??데??트 (먼??)
@@ -1362,7 +1775,13 @@ export default function ChatPage() {
     // 지금은 검색을 /api/auto-enrich 안에서 한 번만 하고, 카드/표 패치를 같은 응답으로
     // 동시에 받아 동시에 반영한다(전역 캐시 아님 — 이 요청 하나의 생명주기 안에서만 공유).
     if (newCriteria.length > 0) {
-      const currentCards = (productCardListSpecRef.current as any)?.props?.cards ?? [];
+      // productCardListSpecRef는 "여러 페이지를 이름 기준으로 합친 누적본"이라 최초 한 번
+      // 설정된 뒤로는 사실상 갱신되지 않는다(2919-2925행의 isSameBaseList 보호 로직 때문에
+      // 새 페이지 카드 이름이 기존과 하나라도 겹치면 옛 값을 그대로 유지) — 그래서 이걸 그대로
+      // 쓰면 조회 자체가 옛(마지막이 아닌) 페이지의 카드 이름을 기준으로 나간다. 마지막 페이지를
+      // 보장하는 activeOptionListCardsRef를 우선 사용해야 아래 결과 반영(마지막 페이지에만 패치)과
+      // 짝이 맞는다.
+      const currentCards = activeOptionListCardsRef.current ?? (productCardListSpecRef.current as any)?.props?.cards ?? [];
       console.log(`[auto-enrich] 신기준 감지: [${newCriteria.map(c => c.name).join(', ')}] | 카드 수 ${currentCards.length}`);
       if (currentCards.length > 0) {
         autoEnrichForCriteria(newCriteria, currentCards, curr);
@@ -1370,6 +1789,15 @@ export default function ChatPage() {
         console.log(`[auto-enrich] 카드 없음 — Option List가 아직 없음`);
         updateComparisonTable(curr);
       }
+      return;
+    }
+
+    // [1-b] min만 바뀐 기준이 있으면(새 기준은 없음) — Option List는 그대로 두고
+    // Comparison Table의 순위만 가볍게 재계산한다(/api/update-table STRATEGY A,
+    // 이미 있는 기준이라 스펙 재조회 없이 순위만 다시 매김).
+    if (minOnlyChangedCriteria.length > 0) {
+      console.log(`[update-table] min 변경 감지(재조회 없음): [${minOnlyChangedCriteria.map(c => `${c.name}→${(c as any).min}`).join(', ')}]`);
+      updateComparisonTable(curr);
       return;
     }
 
@@ -1397,13 +1825,15 @@ export default function ChatPage() {
       if (preTranslated.tradeoffs) setTradeoffSpecs(prev => ({ ...prev, ...preTranslated.tradeoffs }));
       if (preTranslated.droppedItems) setDroppedItems(preTranslated.droppedItems);
       if (preTranslated.queryHistory) setQueryHistory(preTranslated.queryHistory);
+      if (preTranslated.compTableHistory) setCompTableHistory(preTranslated.compTableHistory);
       // The cache snapshot was taken when streaming last ended — anything added afterward
       // (e.g. an item saved to My Options after the search finished) isn't in it. Only skip
       // the on-demand fallback below when the cache actually covers everything currently on screen.
       const cacheMissedDroppedItems = droppedItems.length > 0 && !preTranslated.droppedItems;
       const cacheMissedQueryHistory = queryHistory.some((entry) => entry?.spec) && !preTranslated.queryHistory;
+      const cacheMissedCompTableHistory = compTableHistory.some((entry) => entry?.spec) && !preTranslated.compTableHistory;
       setPreTranslated(null); // ??용 ????리
-      if (!cacheMissedDroppedItems && !cacheMissedQueryHistory) return;
+      if (!cacheMissedDroppedItems && !cacheMissedQueryHistory && !cacheMissedCompTableHistory) return;
     }
 
     // ??Cache miss: on-demand 번역 (fallback)
@@ -1427,6 +1857,11 @@ export default function ChatPage() {
         // panel keeps showing the untranslated turn snapshot even after productCardListSpec updates.
         queryHistory.forEach((entry, i) => {
           if (entry?.spec) specsToTranslate[`qh_${i}`] = entry.spec;
+        });
+        // Comparison Table도 이제 Option List처럼 여러 페이지를 갖는다 — 뷰잉 중인(마지막이
+        // 아닌) 옛 페이지가 번역 없이 그대로 남지 않도록 페이지별로 같이 보낸다.
+        compTableHistory.forEach((entry, i) => {
+          if (entry?.spec) specsToTranslate[`cth_${i}`] = entry.spec;
         });
 
         if (Object.keys(specsToTranslate).length === 0) return;
@@ -1455,6 +1890,9 @@ export default function ChatPage() {
         if (result.droppedItems?.props?.cards) setDroppedItems(result.droppedItems.props.cards);
         if (queryHistory.some((entry) => entry?.spec)) {
           setQueryHistory((prev) => prev.map((entry, i) => (result[`qh_${i}`] ? { ...entry, spec: result[`qh_${i}`] } : entry)));
+        }
+        if (compTableHistory.some((entry) => entry?.spec)) {
+          setCompTableHistory((prev) => prev.map((entry, i) => (result[`cth_${i}`] ? { ...entry, spec: result[`cth_${i}`] } : entry)));
         }
       } finally {
         setIsTranslating(false);
@@ -1528,6 +1966,9 @@ export default function ChatPage() {
     queryHistory.forEach((entry, i) => {
       if (entry?.spec) specsToTranslate[`qh_${i}`] = entry.spec;
     });
+    compTableHistory.forEach((entry, i) => {
+      if (entry?.spec) specsToTranslate[`cth_${i}`] = entry.spec;
+    });
 
     if (Object.keys(specsToTranslate).length === 0) return;
     if (isPreTranslatingRef.current) return;
@@ -1551,6 +1992,9 @@ export default function ChatPage() {
         const translatedQueryHistory = queryHistory.some((entry) => entry?.spec)
           ? queryHistory.map((entry, i) => (result[`qh_${i}`] ? { ...entry, spec: result[`qh_${i}`] } : entry))
           : undefined;
+        const translatedCompTableHistory = compTableHistory.some((entry) => entry?.spec)
+          ? compTableHistory.map((entry, i) => (result[`cth_${i}`] ? { ...entry, spec: result[`cth_${i}`] } : entry))
+          : undefined;
         setPreTranslated({
           locale: oppositeLocale,
           criteriaMap: result.criteriaMap,
@@ -1561,6 +2005,7 @@ export default function ChatPage() {
           tradeoffs: Object.keys(translatedTradeoffs).length > 0 ? translatedTradeoffs : undefined,
           droppedItems: result.droppedItems?.props?.cards,
           queryHistory: translatedQueryHistory,
+          compTableHistory: translatedCompTableHistory,
         });
         console.log(`[Pre-translation] ${oppositeLocale} 번역 완료 -> locale 전환 후 즉시 사용 가능`);
       })
@@ -2268,6 +2713,9 @@ export default function ChatPage() {
       const spec = await res.json();
       setTradeoffSpecs(prev => ({ ...prev, [newCriterion.name]: spec }));
       if (spec?.type === "TradeoffHint") {
+        // 패널이 접혀 있었다면 펼치는 width 트랜지션(0.3s)이 끝난 뒤에 스크롤해야
+        // 카드 위치가 트랜지션 도중 값으로 잘못 계산되지 않는다.
+        const wasCollapsed = rightPanelCollapsed;
         setRightPanelCollapsed(false);
         logEvent({
           type: 'feature_event',
@@ -2276,6 +2724,11 @@ export default function ChatPage() {
           payload: { newCriterion: newCriterion.name, conflictsWith: spec?.props?.conflictsWith ?? null },
           turnIndex: messages.length,
         });
+        // 새로 뜬 TradeoffHint 카드가 화면 밖(스크롤 아래)에 있어도 바로 보이도록 스크롤.
+        setTimeout(() => {
+          document.getElementById(`tradeoff-hint-${newCriterion.name}`)
+            ?.scrollIntoView({ behavior: "smooth", block: "center" });
+        }, wasCollapsed ? 350 : 50);
       }
     } catch (err) {
       console.error("[checkTradeoff] failed:", err);
@@ -2391,17 +2844,8 @@ export default function ChatPage() {
     const isNewChatDrivenTableEvent = compTableOccurrences.length > prevCompTableOccurrenceCountRef.current;
     prevCompTableOccurrenceCountRef.current = compTableOccurrences.length;
 
-    if (isNewChatDrivenTableEvent) {
-      directTableUpdateAheadRef.current = false;
-      setCompTableSpec(latestSpec);
-      compTableSpecRef.current = latestSpec;
-    } else if (!directTableUpdateAheadRef.current) {
-      setCompTableSpec(latestSpec);
-      compTableSpecRef.current = latestSpec;
-    }
-
-    // 이력 배너: 가장 최근 "새 생성"(renderToCompTable, non-mutate) 지점을 찾아 그 직전 사용자
-    // 질문을 표 제목으로 쓰고, 그 뒤로 이어진 mutateComparisonTable 호출들을 꼬리 질문으로 기록한다.
+    // 이력 배너: "새 생성"(renderToCompTable, non-mutate) 지점을 찾아 그 직전 사용자 질문을
+    // 표 제목으로 쓰고, 그 뒤로 이어진 mutateComparisonTable 호출들을 꼬리 질문으로 기록한다.
     const extractUserQueryBefore = (msgId: string): string => {
       const idx = messages.findIndex(m => m.id === msgId);
       if (idx === -1) return '';
@@ -2425,28 +2869,63 @@ export default function ChatPage() {
       return '';
     };
 
-    if (compTableOccurrences.length === 0) {
-      setCompTableQuery('');
-      setCompTableMutateLog([]);
-    } else {
-      let lastFreshIdx = -1;
-      for (let i = compTableOccurrences.length - 1; i >= 0; i--) {
-        if (!compTableOccurrences[i].data?.props?._isMutateResult) { lastFreshIdx = i; break; }
+    // 페이지 분리: Option List(queryHistory)와 동일한 원칙 — 새로 비교하려는 제품 구성이
+    // 현재 페이지의 제품과 하나도 안 겹치면(완전히 다른 비교) 새 페이지를 만들고, 하나라도
+    // 겹치면(기준 추가/삭제, 제품 일부 추가/교체, handleCompare의 누적 비교 등 기존 비교의
+    // 연장) 같은 페이지를 계속 갱신한다.
+    const productNamesOf = (spec: any): Set<string> =>
+      new Set(((spec?.props?.columns ?? []) as any[])
+        .filter((c) => c.key !== 'criterion')
+        .map((c) => c.label));
+
+    type CTPage = { id: string; query: string; spec: any; mutateLog: CompTableMutateLogEntry[] };
+    const ctPages: CTPage[] = [];
+    for (const occ of compTableOccurrences) {
+      const lastPage = ctPages[ctPages.length - 1];
+      const isMutate = !!occ.data?.props?._isMutateResult;
+      // 겹침 판단은 fresh/mutate 구분 없이 항상 적용한다 — "제품을 완전히 교체해줘" 같은
+      // 요청도 백엔드에서는 mutateComparisonTable(_isMutateResult=true)로 처리될 수 있는데,
+      // 그 결과의 제품 구성이 현재 페이지와 하나도 안 겹치면 실질적으로는 새 비교이므로
+      // fresh 판정과 동일하게 새 페이지로 취급해야 한다. mutate 플래그는 아래에서
+      // "이어지는 페이지의 꼬리 로그를 남길지" 여부에만 쓴다.
+      const overlaps = lastPage
+        ? [...productNamesOf(occ.data)].some((n) => productNamesOf(lastPage.spec).has(n))
+        : false;
+
+      if (lastPage && overlaps) {
+        lastPage.spec = occ.data;
+        if (isMutate && occ.data?.props?._lastMutateOpSummary) {
+          lastPage.mutateLog.push({
+            id: occ.msgId,
+            summary: occ.data.props._lastMutateOpSummary,
+            op: occ.data.props._lastMutateOp ?? '',
+            userQuery: extractUserQueryBefore(occ.msgId) || undefined,
+          });
+        }
+      } else {
+        ctPages.push({ id: occ.msgId, query: extractUserQueryBefore(occ.msgId), spec: occ.data, mutateLog: [] });
       }
-      if (lastFreshIdx !== -1) {
-        setCompTableQuery(extractUserQueryBefore(compTableOccurrences[lastFreshIdx].msgId));
-        setCompTableMutateLog(
-          compTableOccurrences
-            .slice(lastFreshIdx + 1)
-            .filter(o => o.data?.props?._isMutateResult && o.data?.props?._lastMutateOpSummary)
-            .map(o => ({
-              id: o.msgId,
-              summary: o.data.props._lastMutateOpSummary,
-              op: o.data.props._lastMutateOp ?? '',
-              userQuery: extractUserQueryBefore(o.msgId) || undefined,
-            }))
-        );
-      }
+    }
+    // 마지막 페이지는 위 "활성 기준 행 복구" 병합을 거친 최종 latestSpec으로 맞춘다 —
+    // compTableSpec(항상 최신)과 compTableHistory의 마지막 페이지가 다른 내용을 갖지 않게.
+    if (ctPages.length > 0) ctPages[ctPages.length - 1].spec = latestSpec;
+
+    const applyCompTableHistory = () => {
+      setCompTableHistory((prev) =>
+        ctPages.map((p, i) => ({ id: p.id, query: p.query, spec: p.spec, mutateLog: p.mutateLog, timestamp: prev[i]?.timestamp ?? new Date() }))
+      );
+      setActiveCompTableHistoryIndex(ctPages.length - 1);
+    };
+
+    if (isNewChatDrivenTableEvent) {
+      directTableUpdateAheadRef.current = false;
+      setCompTableSpec(latestSpec);
+      compTableSpecRef.current = latestSpec;
+      applyCompTableHistory();
+    } else if (!directTableUpdateAheadRef.current) {
+      setCompTableSpec(latestSpec);
+      compTableSpecRef.current = latestSpec;
+      applyCompTableHistory();
     }
     // droppedCriteria는 latestDroppedCriteriaRef로 읽는다 — 의존성에 넣으면 기준 추가/삭제만으로
     // 이 effect가 재실행되어 messages에서 재추출한 스펙으로 compTableSpec을 덮어써버린다
@@ -2811,13 +3290,16 @@ export default function ChatPage() {
 
       if (newCards.length > 0) {
         const appendNew = (cards: any[]) => {
-          const existingNames = new Set(cards.map((c: any) => c.name));
-          const toAppend = newCards
-            .filter((c: any) => !existingNames.has(c.name))
-            .map((c: any) => ({
-              ...c,
-              imageUrl: c.imageUrl ?? c.image ?? "",
-            }));
+          // newCards 안에서도 이름이 겹칠 수 있어(예: 서로 다른 검색어가 같은 제품으로 매칭됨)
+          // seenNames를 누적하며 걸러야 한다 — 기존 cards와만 비교하면 newCards 내부 중복은
+          // 그대로 통과해 React key 중복(같은 이름 카드 두 장)으로 이어진다.
+          const seenNames = new Set(cards.map((c: any) => c.name));
+          const toAppend: any[] = [];
+          for (const c of newCards) {
+            if (!c.name || seenNames.has(c.name)) continue;
+            seenNames.add(c.name);
+            toAppend.push({ ...c, imageUrl: c.imageUrl ?? c.image ?? "" });
+          }
           return [...toAppend, ...cards];
         };
         setProductCardListSpec((prev: any) => applyToSpec(prev, appendNew));
@@ -2849,26 +3331,6 @@ export default function ChatPage() {
         };
         setProductCardListSpec((prev: any) => applyToSpec(prev, applyFields));
         applyToHistory(applyFields);
-      }
-    } else if (op === 'remove_field') {
-      // add의 field_updates와 반대 방향 — 조회 없이 이미 있는 스펙 줄만 지운다.
-      const fieldRemovals: any[] = mutationResult.field_removals ?? [];
-      if (fieldRemovals.length > 0) {
-        const removeFields = (cards: any[]) => {
-          return cards.map((card: any) => {
-            const removals = fieldRemovals.filter((r: any) => r?.product_name && findCard([card], r.product_name));
-            if (removals.length === 0) return card;
-            let specsCopy: string[] = [...(card.specs ?? [])];
-            for (const r of removals) {
-              const key = (r.field_key ?? '').toLowerCase();
-              if (!key) continue;
-              specsCopy = specsCopy.filter(s => !s.toLowerCase().includes(key));
-            }
-            return { ...card, specs: specsCopy };
-          });
-        };
-        setProductCardListSpec((prev: any) => applyToSpec(prev, removeFields));
-        applyToHistory(removeFields);
       }
     }
 
@@ -2916,9 +3378,29 @@ export default function ChatPage() {
     }
   }, [isOptionListActive, showOptionListPanel]);
 
+  // 세 패널(exploration/optionList/compTable)이 전부 화면에 떠 있고(펼쳐진 상태) 접힌 것도
+  // 없으면, 폭을 서로 맞춰 균등 분할한다 — togglePanelCollapse가 "하나를 접으면 남은 둘을
+  // 맞춘다"와 대칭되는 규칙: "셋 다 뜨면 셋을 맞춘다". 셋 중 하나라도 새로 나타나거나
+  // 접힘/펼침 상태가 바뀔 때만 재계산하므로, 사용자가 드래그로 직접 조정한 폭은 이 세
+  // 불리언이 그대로인 한 건드리지 않는다.
+  useEffect(() => {
+    const allVisible = showExplorationPanel && showCompTablePanel && showOptionListPanel;
+    const noneCollapsed = !collapsedPanels.exploration && !collapsedPanels.optionList && !collapsedPanels.compTable;
+    if (!allVisible || !noneCollapsed) return;
+    const ids: CollapsiblePanelId[] = ['exploration', 'optionList', 'compTable'];
+    setPanelWidths(prev => {
+      const avgWidth = Math.round(ids.reduce((sum, id) => sum + prev[id], 0) / ids.length);
+      if (ids.every(id => prev[id] === avgWidth)) return prev;
+      const next = { ...prev };
+      ids.forEach(id => { next[id] = avgWidth; });
+      return next;
+    });
+  }, [showExplorationPanel, showCompTablePanel, showOptionListPanel, collapsedPanels.exploration, collapsedPanels.optionList, collapsedPanels.compTable]);
+
   if (!isMounted) return null;
 
   if (!hasStarted) {
+    const isContextLongEnough = userContext.trim().length >= MIN_CONTEXT_LENGTH;
     return (
       <div className="h-screen w-full flex items-center justify-center bg-[#FAFAFA]">
         <div className="w-full max-w-lg flex flex-col gap-10 px-8">
@@ -2949,7 +3431,7 @@ export default function ChatPage() {
               type="text"
               value={participantId}
               onChange={(e) => setParticipantId(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && participantId.trim() && assignedItem && userContext.trim()) setHasStarted(true); }}
+              onKeyDown={(e) => { if (e.key === "Enter" && participantId.trim() && assignedItem && isContextLongEnough) setHasStarted(true); }}
               placeholder="P1"
               className="w-full border border-slate-200 rounded-[8px] px-5 py-4 text-[18px] font-medium text-slate-800 placeholder:text-slate-300 outline-none focus:border-slate-400 transition-colors bg-[#FAFAFA]"
               autoFocus
@@ -2995,12 +3477,15 @@ export default function ChatPage() {
               rows={3}
               className="w-full border border-slate-200 rounded-[8px] px-5 py-4 text-[15px] font-medium text-slate-800 placeholder:text-slate-300 outline-none focus:border-slate-400 transition-colors bg-[#FAFAFA] resize-none leading-relaxed"
             />
+            <span className={`text-[12px] font-medium ${isContextLongEnough ? 'text-emerald-500' : 'text-slate-400'}`}>
+              {T.contextMinHint(userContext.trim().length)}
+            </span>
           </div>
 
           {/* Start button */}
           <button
             onClick={() => {
-              if (participantId.trim() && assignedItem && userContext.trim()) {
+              if (participantId.trim() && assignedItem && isContextLongEnough) {
                 const assignedItemLabel = assignedItem === "B" ? "로봇 청소기" : assignedItem === "C" ? "카메라" : assignedItem;
                 fetch('/api/log-event', {
                   method: 'POST',
@@ -3015,7 +3500,7 @@ export default function ChatPage() {
                 setHasStarted(true);
               }
             }}
-            disabled={!participantId.trim() || !assignedItem || !userContext.trim()}
+            disabled={!participantId.trim() || !assignedItem || !isContextLongEnough}
             className="w-full py-4 rounded-[8px] text-white text-[16px] font-semibold tracking-tight active:scale-[0.98] transition-all disabled:opacity-30 disabled:cursor-not-allowed"
             style={{ backgroundColor: "#000000" }}
           >
@@ -3033,6 +3518,7 @@ export default function ChatPage() {
       <div className="flex flex-wrap items-center justify-between mb-4 flex-shrink-0 border-b border-slate-100 pb-3 gap-y-3 gap-x-2">
         <div className="flex items-center gap-2 flex-1">
           {gripHandle('exploration')}
+          {collapseButton('exploration')}
           <p className="text-[12.5px] font-black text-slate-600 tracking-widest uppercase whitespace-nowrap">🧭 Exploration Journey</p>
           {activeToolName === "renderToExplorationJourney" && (
             <span className="ml-auto text-[10px] text-slate-400 animate-pulse flex items-center gap-1 bg-slate-50 px-2 py-1 rounded-md border border-slate-100 whitespace-nowrap">
@@ -3129,7 +3615,7 @@ export default function ChatPage() {
             </div>
           ) : (<div className="flex-1 flex items-center justify-center"><p className="text-[12.5px] text-slate-300 font-medium text-center leading-relaxed">{T.criteriaEmpty.split('\n').map((line, i) => <span key={i}>{line}{i === 0 && <br />}</span>)}</p></div>)}
           {/* TradeoffHints — criteria 칩 바로 아래, 스크롤 영역 내부 */}
-          {(() => { const activeHints = droppedCriteria.filter(c => { const spec = tradeoffSpecs[c.name]; return spec?.type === "TradeoffHint" && !dismissedTradeoffs.has(c.name) && !tradeoffLoading.has(c.name); }); if (activeHints.length === 0) return null; const TradeoffHintComp = manualRegistry.TradeoffHint; return (<div className="flex flex-col gap-2 pt-3 mt-1 border-t border-slate-100 w-full shrink-0">{activeHints.map(criterion => (<TradeoffHintComp key={criterion.name} props={{ ...tradeoffSpecs[criterion.name].props, onDismiss: () => setDismissedTradeoffs(prev => new Set([...prev, criterion.name])), onResolve: () => { setDismissedTradeoffs(prev => new Set([...prev, criterion.name])); const spec = tradeoffSpecs[criterion.name].props; handleResolveTradeoff(spec.newCriterion, spec.conflictsWith); } }} />))}</div>); })()}
+          {(() => { const activeHints = droppedCriteria.filter(c => { const spec = tradeoffSpecs[c.name]; return spec?.type === "TradeoffHint" && !dismissedTradeoffs.has(c.name) && !tradeoffLoading.has(c.name); }); if (activeHints.length === 0) return null; const TradeoffHintComp = manualRegistry.TradeoffHint; return (<div className="flex flex-col gap-2 pt-3 mt-1 border-t border-slate-100 w-full shrink-0">{activeHints.map(criterion => (<div key={criterion.name} id={`tradeoff-hint-${criterion.name}`}><TradeoffHintComp props={{ ...tradeoffSpecs[criterion.name].props, onDismiss: () => setDismissedTradeoffs(prev => new Set([...prev, criterion.name])), onResolve: () => { setDismissedTradeoffs(prev => new Set([...prev, criterion.name])); const spec = tradeoffSpecs[criterion.name].props; handleResolveTradeoff(spec.newCriterion, spec.conflictsWith); } }} /></div>))}</div>); })()}
         </div>
       </div>
     );
@@ -3216,20 +3702,15 @@ export default function ChatPage() {
         {/* Header */}
         <div className="flex-shrink-0 flex items-center gap-2 px-6 pt-6 pb-3 border-b border-slate-50">
           {gripHandle('optionList')}
-          <p className="text-[12.5px] font-black text-slate-600 tracking-widest uppercase">📦 OPTION LIST</p>
+          {collapseButton('optionList')}
+          <p className="text-[12.5px] font-black text-slate-600 tracking-widest uppercase whitespace-nowrap flex-shrink-0">📦 OPTION LIST</p>
           {(activeToolName === "renderToOptionList" || activeToolName === "mutateSurface") && (
-            <span className="ml-auto text-[10px] text-slate-400 animate-pulse flex items-center gap-1 bg-slate-50 px-2 py-1 rounded-md border border-slate-100">
-              <span className="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce inline-block" />
+            <span className="ml-auto min-w-0 text-[10px] text-slate-400 animate-pulse flex items-center gap-1 bg-slate-50 px-2 py-1 rounded-md border border-slate-100 whitespace-nowrap overflow-hidden text-ellipsis">
+              <span className="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce inline-block flex-shrink-0" />
               {locale === 'en' ? 'AI is analyzing...' : 'AI 분석 중...'}
             </span>
           )}
-          {enrichingCriterion && !(activeToolName === "renderToOptionList" || activeToolName === "mutateSurface") && (
-            <span className="ml-auto text-[10px] text-slate-400 animate-pulse flex items-center gap-1 bg-slate-50 px-2 py-1 rounded-md border border-slate-100">
-              <span className="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce inline-block" />
-              <span className="font-semibold text-slate-400">[{enrichingCriterion}]</span>
-              {locale === 'en' ? ' adding info...' : ' 정보를 추가하고 있습니다...'}
-            </span>
-          )}
+          {/* enrichingCriterion 진행 표시는 헤더의 작은 배지 대신 카드 영역 전체를 덮는 오버레이(아래 "Product cards area" 참고)로 보여준다. */}
         </div>
 
         {/* 기?? ??규모 교체 감?? 배너 */}
@@ -3276,6 +3757,7 @@ export default function ChatPage() {
                 <ShrinkToFitText
                   text={activeEntry.query}
                   baseSizePx={11.5}
+                  minSizePx={11.5}
                   className="font-semibold text-slate-700 leading-snug flex-1 min-w-0"
                 />
 
@@ -3306,20 +3788,44 @@ export default function ChatPage() {
         )}
 
         {/* Product cards area ??카드????크??*/}
-        <div className="flex-1 overflow-y-auto overflow-x-hidden styled-scrollbar p-4 pt-0 flex flex-col gap-3 relative">
-          {coverageNoticeSpec && manualRegistry.CoverageNotice && (
-            manualRegistry.CoverageNotice({ props: coverageNoticeSpec.props, bindings: { locale } })
-          )}
+        <div className="relative flex-1 flex flex-col overflow-hidden">
+          <div className="flex-1 overflow-y-auto overflow-x-hidden styled-scrollbar p-4 pt-0 flex flex-col gap-3">
+            {coverageNoticeSpec && manualRegistry.CoverageNotice && (
+              manualRegistry.CoverageNotice({ props: coverageNoticeSpec.props, bindings: { locale } })
+            )}
 
-          {specToShow ? (
-            <ExplorerRenderer
-              spec={specToShow}
-              bindings={bubbleBindings}
-            />
-          ) : (
-            <div className="flex flex-col items-center justify-center h-full gap-2">
-              <p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">
-                {T.optionListEmpty.split('\n').map((line, i) => <span key={i}>{line}{i === 0 && <br />}</span>)}
+            {specToShow ? (
+              <ExplorerRenderer
+                spec={specToShow}
+                bindings={bubbleBindings}
+              />
+            ) : (
+              <div className="flex flex-col items-center justify-center h-full gap-2">
+                <p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">
+                  {T.optionListEmpty.split('\n').map((line, i) => <span key={i}>{line}{i === 0 && <br />}</span>)}
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* 기준 추가로 카드 스펙을 일괄 보강하는 동안 카드 영역 전체를 덮는 진행률 오버레이.
+              헤더는 그대로 둬서 패널 접기/그립 등은 계속 조작 가능하다. */}
+          {enrichingCriterion && !(activeToolName === "renderToOptionList" || activeToolName === "mutateSurface") && (
+            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-white/70 backdrop-blur-[2px] animate-in fade-in duration-200">
+              <div className="flex items-center gap-1.5 h-7">
+                <span className="w-2 h-2 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+                <span className="w-2 h-2 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+                <span className="w-2 h-2 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+              </div>
+              <p className="text-[13px] font-semibold text-slate-700 leading-snug text-center px-6">
+                {locale === 'en'
+                  ? `Adding ${enrichingCriterion} info`
+                  : `${enrichingCriterion} 정보를 추가하고 있어요`}
+              </p>
+              <p className="text-[11.5px] text-slate-400">
+                {locale === 'en'
+                  ? `Please wait.. (${Math.round(enrichProgress)}%)`
+                  : `잠시만 기다려주세요.. (${Math.round(enrichProgress)}%)`}
               </p>
             </div>
           )}
@@ -3331,57 +3837,138 @@ export default function ChatPage() {
 
 
 
-  const renderCompTable = () => (
-    <div data-tour="compTable" className="flex flex-col gap-4 p-6 flex-1 overflow-auto no-scrollbar">
-      <div className="flex items-center gap-2">
+  const renderCompTable = () => {
+    const activeCTEntry = compTableHistory[activeCompTableHistoryIndex] ?? null;
+    const specToShowCompTable = activeCTEntry?.spec ?? compTableSpec;
+    const ctTotal = compTableHistory.length;
+
+    return (
+    <div data-tour="compTable" className="flex flex-col p-6 flex-1 overflow-hidden">
+      <div className="flex items-center gap-2 flex-shrink-0 mb-4">
         {gripHandle('compTable')}
-        <p className="text-[12.5px] font-black text-slate-600 tracking-widest uppercase">⚖️ COMPARISON TABLE</p>
+        {collapseButton('compTable')}
+        <p className="text-[12.5px] font-black text-slate-600 tracking-widest uppercase whitespace-nowrap flex-shrink-0">⚖️ COMPARISON TABLE</p>
         {activeToolName === "renderToCompTable" && !isUpdatingTable && (
-          <span className="ml-auto text-[10px] text-slate-400 animate-pulse flex items-center gap-1 bg-slate-50 px-2 py-1 rounded-md border border-slate-100 whitespace-nowrap">
-            <span className="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce inline-block" />
+          <span className="ml-auto min-w-0 text-[10px] text-slate-400 animate-pulse flex items-center gap-1 bg-slate-50 px-2 py-1 rounded-md border border-slate-100 whitespace-nowrap overflow-hidden text-ellipsis">
+            <span className="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce inline-block flex-shrink-0" />
             {locale === 'en' ? 'AI is analyzing...' : 'AI 분석 중...'}
-          </span>
-        )}
-        {isUpdatingTable && (
-          <span className="ml-auto text-[10px] text-slate-400 font-medium animate-pulse flex items-center gap-1 bg-slate-50 px-2 py-1 rounded-md border border-slate-100 whitespace-nowrap transition-all duration-300">
-            <span className="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce inline-block" />
-            {locale === 'en' ? 'Updating ranks & table...' : '기준에 맞춰 순위 재평가 중..'}
           </span>
         )}
       </div>
 
-      {/* History Banner — 표를 만든 질문 + 그 뒤로 이어진 mutate(기준/제품 추가·삭제) 꼬리 질문 */}
-      {compTableSpec && compTableQuery && (
-        <div className="flex-shrink-0 rounded-[8px] border border-slate-200 bg-white px-3 py-2 flex flex-col gap-1.5">
-          <div className="flex items-center gap-1.5">
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-slate-400 flex-shrink-0"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
-            <ShrinkToFitText
-              text={compTableQuery}
-              baseSizePx={11.5}
-              className="font-semibold text-slate-700 leading-snug flex-1 min-w-0"
+      <div className="relative flex flex-col gap-4 flex-1 overflow-auto no-scrollbar">
+        {/* History Banner — 표를 만든 질문 + N/N 페이지 네비게이션 */}
+        {activeCTEntry && activeCTEntry.query && (
+          <div className="flex-shrink-0 rounded-[8px] border border-slate-200 bg-white px-3 py-2 flex flex-col gap-1.5">
+            <div className="flex items-center gap-1.5">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-slate-400 flex-shrink-0"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+              <ShrinkToFitText
+                text={activeCTEntry.query}
+                baseSizePx={11.5}
+                minSizePx={11.5}
+                className="font-semibold text-slate-700 leading-snug flex-1 min-w-0"
+              />
+
+              {ctTotal > 1 && (
+                <div className="flex items-center gap-0.5 flex-shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => { const p = activeCompTableHistoryIndex - 1; if (p >= 0) setActiveCompTableHistoryIndex(p); }}
+                    disabled={activeCompTableHistoryIndex <= 0}
+                    className="w-5 h-5 flex items-center justify-center rounded transition-all duration-150 disabled:opacity-25 hover:bg-slate-200 text-slate-500"
+                  >
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+                  </button>
+                  <span className="text-[10px] font-semibold text-slate-400 tabular-nums px-0.5">{activeCompTableHistoryIndex + 1}/{ctTotal}</span>
+                  <button
+                    type="button"
+                    onClick={() => { const n = activeCompTableHistoryIndex + 1; if (n < ctTotal) setActiveCompTableHistoryIndex(n); }}
+                    disabled={activeCompTableHistoryIndex >= ctTotal - 1}
+                    className="w-5 h-5 flex items-center justify-center rounded transition-all duration-150 disabled:opacity-25 hover:bg-slate-200 text-slate-500"
+                  >
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {specToShowCompTable ? (
+          <div className="flex-1 overflow-auto no-scrollbar">
+            <ExplorerRenderer
+              spec={specToShowCompTable}
+              bindings={bubbleBindings}
             />
           </div>
-        </div>
-      )}
+        ) : (
+          <div className="flex-1 flex items-center justify-center">
+            <p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">
+              제품 비교를 요청하면<br />여기에 비교표가 표시됩니다
+            </p>
+          </div>
+        )}
 
-      {compTableSpec ? (
-        <div className="flex-1 overflow-auto no-scrollbar">
-          <ExplorerRenderer
-            spec={compTableSpec}
-            bindings={bubbleBindings}
-          />
-        </div>
-      ) : (
-        <div className="flex-1 flex items-center justify-center">
-          <p className="text-[12px] text-slate-300 font-medium text-center leading-relaxed">
-            제품 비교를 요청하면<br />여기에 비교표가 표시됩니다
-          </p>
-        </div>
-      )}
+        {/* 기준 변경으로 표 순위를 재평가하는 동안 표 영역 전체를 덮는 진행률 오버레이 —
+            Option List의 enrichingCriterion 오버레이와 동일한 요청(autoEnrichForCriteria)이
+            구동하므로 enrichProgress를 그대로 재사용한다. */}
+        {isUpdatingTable && (
+          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-white/70 backdrop-blur-[2px] animate-in fade-in duration-200">
+            <div className="flex items-center gap-1.5 h-7">
+              <span className="w-2 h-2 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+              <span className="w-2 h-2 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+              <span className="w-2 h-2 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+            </div>
+            <p className="text-[13px] font-semibold text-slate-700 leading-snug text-center px-6">
+              {locale === 'en' ? 'Updating ranks & table' : '기준에 맞춰 순위를 재평가하고 있어요'}
+            </p>
+            <p className="text-[11.5px] text-slate-400">
+              {locale === 'en'
+                ? `Please wait.. (${Math.round(enrichProgress)}%)`
+                : `잠시만 기다려주세요.. (${Math.round(enrichProgress)}%)`}
+            </p>
+          </div>
+        )}
+      </div>
     </div>
-  );
+    );
+  };
+
+  const COLLAPSIBLE_PANEL_META: Record<CollapsiblePanelId, { icon: string; label: string }> = {
+    exploration: { icon: '🧭', label: 'Exploration Journey' },
+    optionList: { icon: '📦', label: 'Option List' },
+    compTable: { icon: '⚖️', label: 'Comparison Table' },
+  };
+
+  // 접힌 패널은 얇은 세로 탭 하나만 남긴다 — rightPanelCollapsed(우측 DC+My Options 패널)가
+  // 쓰는 것과 같은 패턴(고정 폭 + 펼치기 버튼)을 세 패널에도 동일하게 적용.
+  const renderCollapsedPanel = (pid: CollapsiblePanelId) => {
+    const meta = COLLAPSIBLE_PANEL_META[pid];
+    return (
+      <button
+        type="button"
+        onClick={() => togglePanelCollapse(pid)}
+        className="flex flex-col items-center gap-3 h-full w-full py-4 text-slate-400 hover:text-slate-600 hover:bg-slate-50 transition-colors"
+      >
+        {/* 툴팁을 버튼 전체(h-full)가 아니라 아이콘 하나에만 걸어서, 옆 패널과 맞닿아 있어도
+            아이콘 바로 옆(위쪽)에서만 뜨게 한다 — 버튼 전체에 걸면 세로 중앙 기준으로 위치가
+            잡혀 옆 패널 헤더/말풍선 위에 겹쳐 보였다. */}
+        <HoverTooltip label={locale === 'en' ? 'Expand panel' : '패널 펼치기'} side="right">
+          <PanelLeft className="w-4 h-4 flex-shrink-0" />
+        </HoverTooltip>
+        <span className="text-[15px] leading-none">{meta.icon}</span>
+        <span
+          className="text-[10px] font-black tracking-widest uppercase"
+          style={{ writingMode: 'vertical-rl' }}
+        >
+          {meta.label}
+        </span>
+      </button>
+    );
+  };
 
   const renderPanel = (pid: PanelId): React.ReactNode => {
+    if (isCollapsible(pid) && collapsedPanels[pid]) return renderCollapsedPanel(pid);
     if (pid === 'exploration') return renderExploration();
     if (pid === 'chat') return renderChat();
     if (pid === 'criteria') return renderCriteriaContent();
@@ -3554,7 +4141,7 @@ export default function ChatPage() {
 
       {/* ???? ???? ??이드 레일: ??토리??+ ??화 ??록 ??? */}
       <div className="fixed left-4 top-1/2 -translate-y-1/2 z-40 flex flex-col items-center gap-1 bg-white border border-slate-200 rounded-full shadow-lg p-1.5">
-        <HoverTooltip label={locale === 'en' ? 'Interface guide' : '인터페이스 안내'} side="right">
+        <HoverTooltip label={locale === 'en' ? 'Interface guide' : '인터페이스 둘러보기'} side="right">
           <button
             onClick={() => setShowTour(true)}
             className="w-9 h-9 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-100 hover:text-slate-800 transition-colors"
@@ -3563,7 +4150,7 @@ export default function ChatPage() {
           </button>
         </HoverTooltip>
         <div className="w-5 h-px bg-slate-100" />
-        <HoverTooltip label={locale === 'en' ? 'Conversation history' : '대화 기록'} side="right">
+        <HoverTooltip label={locale === 'en' ? 'Conversation history' : '대화 기록 보기'} side="right">
           <button
             onClick={() => setShowHistoryDrawer(true)}
             className="relative w-9 h-9 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-100 hover:text-slate-800 transition-colors"
@@ -3767,7 +4354,7 @@ export default function ChatPage() {
             )}
 
             {/* SLOT 1 (LEFT) */}
-            <aside {...slotDropProps('left')} className={`bg-white z-10 flex flex-col overflow-hidden rounded-2xl shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_16px_-8px_rgba(15,23,42,0.12)] ${isPanelShown(panelSlots.left) ? 'border border-slate-200' : 'border-0'} ${panelDropTarget === 'left' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`} style={{ width: isPanelShown(panelSlots.left) ? panelWidths[panelSlots.left] : 0, flexShrink: 1, transition: isResizing ? 'none' : 'width 0.45s cubic-bezier(0.4,0,0.2,1)' }}>
+            <aside className={`bg-white z-10 flex flex-col overflow-hidden rounded-2xl shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_16px_-8px_rgba(15,23,42,0.12)] ${isPanelShown(panelSlots.left) ? 'border border-slate-200' : 'border-0'}`} style={{ width: isPanelShown(panelSlots.left) ? getSlotWidth('left') : 0, flexShrink: 1, transition: isResizing ? 'none' : 'width 0.45s cubic-bezier(0.4,0,0.2,1)' }}>
               {isPanelShown(panelSlots.left) && renderPanel(panelSlots.left)}
             </aside>
 
@@ -3786,9 +4373,8 @@ export default function ChatPage() {
 
             {/* SLOT 2 (COMP TABLE SLOT) */}
             <aside
-              {...slotDropProps('compTableSlot')}
-              className={`bg-white overflow-hidden flex flex-col rounded-2xl shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_16px_-8px_rgba(15,23,42,0.12)] h-full ${isPanelShown(panelSlots.compTableSlot) ? 'border border-slate-200' : 'border-0'} ${panelDropTarget === 'compTableSlot' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`}
-              style={{ width: isPanelShown(panelSlots.compTableSlot) ? panelWidths[panelSlots.compTableSlot] : 0, flexShrink: isPanelShown(panelSlots.compTableSlot) ? 0 : 1, transition: isResizing ? 'none' : 'width 0.45s cubic-bezier(0.4,0,0.2,1)' }}
+              className={`bg-white overflow-hidden flex flex-col rounded-2xl shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_16px_-8px_rgba(15,23,42,0.12)] h-full ${isPanelShown(panelSlots.compTableSlot) ? 'border border-slate-200' : 'border-0'}`}
+              style={{ width: isPanelShown(panelSlots.compTableSlot) ? getSlotWidth('compTableSlot') : 0, flexShrink: 1, transition: isResizing ? 'none' : 'width 0.45s cubic-bezier(0.4,0,0.2,1)' }}
             >
               {isPanelShown(panelSlots.compTableSlot) && renderPanel(panelSlots.compTableSlot)}
             </aside>
@@ -3807,9 +4393,8 @@ export default function ChatPage() {
 
             {/* SLOT 3 (FAR RIGHT SLOT) */}
             <aside
-              {...slotDropProps('farRight')}
-              className={`bg-white overflow-hidden flex flex-col rounded-2xl shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_16px_-8px_rgba(15,23,42,0.12)] h-full ${isPanelShown(panelSlots.farRight) ? 'border border-slate-200' : 'border-0'} ${panelDropTarget === 'farRight' ? 'ring-2 ring-blue-400/40 ring-inset' : ''}`}
-              style={{ width: isPanelShown(panelSlots.farRight) ? panelWidths[panelSlots.farRight] : 0, flexShrink: 1, transition: isResizing ? 'none' : 'width 0.45s cubic-bezier(0.4,0,0.2,1)' }}
+              className={`bg-white overflow-hidden flex flex-col rounded-2xl shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_16px_-8px_rgba(15,23,42,0.12)] h-full ${isPanelShown(panelSlots.farRight) ? 'border border-slate-200' : 'border-0'}`}
+              style={{ width: isPanelShown(panelSlots.farRight) ? getSlotWidth('farRight') : 0, flexShrink: 1, transition: isResizing ? 'none' : 'width 0.45s cubic-bezier(0.4,0,0.2,1)' }}
             >
               {isPanelShown(panelSlots.farRight) && renderPanel(panelSlots.farRight)}
             </aside>
@@ -3849,18 +4434,36 @@ export default function ChatPage() {
 
             <aside
               className={`relative overflow-hidden flex flex-col rounded-2xl h-full transition-all duration-300 ${rightPanelCollapsed ? 'bg-white border border-transparent shadow-[0_2px_8px_rgba(0,0,0,0.04)]' : 'bg-white/95 backdrop-blur-sm border border-slate-200 shadow-2xl'}`}
-              style={{ width: rightPanelCollapsed ? 36 : rightWidth, flexShrink: 0, transition: isResizing ? 'none' : 'width 0.3s cubic-bezier(0.4,0,0.2,1)', pointerEvents: 'auto' }}
+              style={{ width: rightPanelCollapsed ? COLLAPSED_SLOT_WIDTH : rightWidth, flexShrink: 0, transition: isResizing ? 'none' : 'width 0.3s cubic-bezier(0.4,0,0.2,1)', pointerEvents: 'auto' }}
             >
               {rightPanelCollapsed ? (
-                /* ??힌 ??태: 36px ??트????단 중앙 */
-                <HoverTooltip label={locale === 'en' ? 'Expand panel' : '패널 펼치기'} side="left" className="absolute top-3 left-1/2 -translate-x-1/2">
-                  <button
-                    onClick={() => setRightPanelCollapsed(false)}
-                    className="p-1.5 rounded-md text-slate-600 hover:bg-slate-100 transition-colors"
-                  >
-                    <PanelLeft className="w-4 h-4" />
-                  </button>
-                </HoverTooltip>
+                /* 접힌 상태 — Exploration Journey/Option List/Comparison Table의 renderCollapsedPanel과
+                   동일한 패턴(아이콘 + 이모지 + 세로 문구)을 적용. 이 패널은 Decision Criteria와
+                   My Options 두 섹션을 함께 담고 있어 문구 두 개를 구분선으로 나눠 보여준다.
+                   툴팁은 버튼 전체(h-full — 사실상 화면 세로 전체를 덮는 빈 공간까지 포함)가 아니라
+                   아이콘 하나에만 건다 — 버튼 전체에 걸면 그 아래 빈 공간 아무 데나 마우스가 머물러도
+                   툴팁이 계속 떠 있어서, 아이콘과 동떨어진 위치에 툴팁이 "붙어있는" 것처럼 보였다. */
+                <button
+                  onClick={() => setRightPanelCollapsed(false)}
+                  className="flex flex-col items-center h-full w-full py-4 text-slate-400 hover:text-slate-600 hover:bg-slate-50 transition-colors"
+                >
+                  <HoverTooltip label={locale === 'en' ? 'Expand panel' : '패널 펼치기'} side="left" className="mb-3">
+                    <PanelLeft className="w-4 h-4 flex-shrink-0" />
+                  </HoverTooltip>
+                  <div className="flex flex-col items-center gap-3">
+                    <span className="text-[15px] leading-none">🎯</span>
+                    <span className="text-[10px] font-black tracking-widest uppercase" style={{ writingMode: 'vertical-rl' }}>
+                      Decision Criteria
+                    </span>
+                  </div>
+                  <div className="w-4 h-px bg-slate-200 my-4 flex-shrink-0" />
+                  <div className="flex flex-col items-center gap-3">
+                    <span className="text-[15px] leading-none">🛒</span>
+                    <span className="text-[10px] font-black tracking-widest uppercase" style={{ writingMode: 'vertical-rl' }}>
+                      {locale === 'en' ? 'My Options' : 'My Options'}
+                    </span>
+                  </div>
+                </button>
               ) : (
                 <>
                   {/* ??기 버튼 */}
@@ -3917,6 +4520,8 @@ export default function ChatPage() {
                     turn={currentDockTurn}
                     userLabel="User"
                     streaming={isStreaming && lastMessage?.role === 'assistant'}
+                    loadingLabel={dockLoadingLabel}
+                    loadingProgress={dockActionProgress}
                     className="[grid-area:1/1] animate-in fade-in slide-in-from-bottom-3 duration-500 ease-out"
                   />
                 )}

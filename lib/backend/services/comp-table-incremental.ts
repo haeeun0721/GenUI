@@ -8,9 +8,10 @@
  * 프로세스 안에서 이미 구한 값을 prefetchedValues로 넘겨 재사용하는 구조는 그대로 유지).
  */
 
-import { findProductInLocalDB } from "../agents/data_agent";
+import { findProductInLocalDB, expandCriterionMeta, findExactMatchingProduct } from "../agents/data_agent";
 import { computeRankingAndReasoning } from "../agents/generators/comp_table";
 import { lookupProductSpec } from "./spec-lookup";
+import { getCachedSpec, setCachedSpec } from "./spec-cache";
 import { time } from "../timing";
 
 export interface PrefetchedValue {
@@ -62,7 +63,8 @@ export async function buildIncrementalTableUpdate(
   locale: string,
   removedCriteriaNames: string[] = [],
   prefetchedValues: PrefetchedValue[] = [],
-  requestId: string = ""
+  requestId: string = "",
+  participantId: string = ""
 ): Promise<any> {
   const normKey = (criterion: string, productName: string) =>
     `${cleanCriterionLabel(criterion).replace(/\s+/g, "").toLowerCase()}__${productName.replace(/\s+/g, "").toLowerCase()}`;
@@ -107,21 +109,46 @@ export async function buildIncrementalTableUpdate(
   const fullNameMap = new Map<string, string>();
   for (const col of productCols) {
     const shortLabel = col.label;
-    const matchCard = currentCards?.find(
-      (c: any) => c.name?.includes(shortLabel) || shortLabel.includes(c.name)
-    );
+    // 후보가 여럿이면(예: "로보락 S10 MaxV Slim"과 "...Slim 직배수"처럼 실제로 다른 두
+    // 제품이 서로를 포함하는 경우) 확신할 수 없으므로 매칭하지 않는다 — 잘못 매칭해서
+    // 다른 제품의 스펙 값을 이 컬럼에 붙이는 것보다, 아래 로컬 DB/원래 라벨 폴백으로
+    // 넘어가는 게 안전하다.
+    const cardCandidates = (currentCards ?? []).filter((c: any) => c?.name);
+    const matchCard = findExactMatchingProduct(shortLabel, cardCandidates);
     if (matchCard?.name) {
       fullNameMap.set(shortLabel, matchCard.name);
       continue;
     }
+    // 카드 매칭이 실패했을 때, 그게 "후보가 아예 없어서"인지 "후보가 둘 이상이라 애매해서"인지
+    // 구분해서 로그로 남긴다 — 후자만 findExactMatchingProduct 도입으로 새로 생긴 케이스다.
+    const looseCandidateCount = cardCandidates.filter((c: any) => {
+      const a = c.name.toLowerCase().replace(/\s+/g, "");
+      const b = shortLabel.toLowerCase().replace(/\s+/g, "");
+      return a.includes(b) || b.includes(a);
+    }).length;
+    if (looseCandidateCount >= 2) {
+      console.warn(`[comp-table-incremental] fullNameMap: "${shortLabel}" → 카드 후보 ${looseCandidateCount}개가 애매하게 겹쳐 매칭 보류 (동명이인 방지)`);
+    }
+
     const dbEntry = findProductInLocalDB(category, shortLabel);
     if (dbEntry) {
       const nameMatch = dbEntry.match(/Name:\s*(.+)/);
       fullNameMap.set(shortLabel, nameMatch ? nameMatch[1].trim() : shortLabel);
+      console.log(`[comp-table-incremental] fullNameMap: "${shortLabel}" → DB 매칭 "${fullNameMap.get(shortLabel)}"`);
     } else {
+      // 화면 카드/로컬 DB 어디에서도 확신할 수 있는 이름을 못 찾음 — 짧은 라벨 그대로
+      // 검색어로 쓴다(정보가 부실할 수 있는 케이스). 얼마나 자주 여기로 떨어지는지
+      // 추적하기 위한 로그 — findExactMatchingProduct 도입 후 "정보 없음" 비율이
+      // 늘었는지 확인할 때 이 로그 빈도를 본다.
       fullNameMap.set(shortLabel, shortLabel);
+      console.warn(`[comp-table-incremental] fullNameMap: "${shortLabel}" → 매칭 실패, 라벨 그대로 검색 (카드/DB 모두 확신 가능한 후보 없음)`);
     }
   }
+
+  // "소음 수준"/"흡입력"처럼 청소 모드에 따라 다르게 보고되는 기준은 힌트 없이 제품마다
+  // 독립 검색하면 서로 다른 모드의 값을 주워와 비교가 불공정해진다 — prefetchedValues로
+  // 못 채운 셀(아래 lookupProductSpec 폴백)에 대비해 여기서도 미리 구해둔다.
+  const criterionMeta = await expandCriterionMeta(newCriteria.map(cleanCriterionLabel));
 
   // 새 기준 × 각 제품 → lookupProductSpec (캐시→DB→Tavily 3단계+검증, mutate-comptable.ts와 공유)
   // 예전엔 기준을 for-of로 하나씩 순회하며 그 안에서만 제품끼리 병렬 조회했다 — 기준이
@@ -133,6 +160,7 @@ export async function buildIncrementalTableUpdate(
       newCriteria.map(async (criterion) => {
         const cleanLabel = cleanCriterionLabel(criterion);
         const newRow: Record<string, string> = { criterion: cleanLabel };
+        const meta = criterionMeta[cleanLabel];
 
         await Promise.all(
           productCols.map(async (col) => {
@@ -146,9 +174,19 @@ export async function buildIncrementalTableUpdate(
               return;
             }
 
-            const result = await lookupProductSpec(fullName, cleanLabel, category, locale);
+            // 이 요청 안에 없어도, 같은 참가자가 예전 턴/다른 패널에서 이미 조회해둔
+            // 값이 있으면 재사용한다(spec-cache.ts, 참가자별로 격리됨).
+            const cached = await getCachedSpec(participantId, fullName, cleanLabel);
+            if (cached) {
+              newRow[col.key] = cached;
+              console.log(`[comp-table-incremental] "${fullName}" × "${cleanLabel}" → "${cached}" (source=participant-cache)`);
+              return;
+            }
+
+            const result = await lookupProductSpec(fullName, cleanLabel, category, locale, meta?.formatHint, meta?.canonicalUnit, meta?.preferredCondition, meta?.type);
             newRow[col.key] = result.uncertain && result.value !== "-" ? `${result.value} (추정)` : result.value;
             console.log(`[comp-table-incremental] "${fullName}" × "${cleanLabel}" → "${newRow[col.key]}" (source=${result.source}${result.uncertain ? ", 불확실" : ""})`);
+            if (!result.uncertain && result.value !== "-") void setCachedSpec(participantId, fullName, cleanLabel, result.value);
           })
         );
 

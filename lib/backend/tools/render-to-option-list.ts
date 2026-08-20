@@ -15,6 +15,8 @@ import {
   currentProductCategory,
   currentLocale,
   currentComparisonTableCells,
+  setCurrentProductCategory,
+  setCurrentLocale,
 } from "./sidebar-store";
 
 // ---------------------------------------------------------------------------
@@ -26,6 +28,16 @@ import {
 // CriteriaMap의 cat_N/item_N과 동일한 이유). 여기서 항상 실제 고유값으로 덮어쓴다.
 function stampCardIds(uiSpec: any): any {
   if (Array.isArray(uiSpec?.props?.cards)) {
+    // 카드 생성 LLM이 (드물게) 같은 제품을 두 번 내놓을 수 있다 — 프론트가 카드 name을
+    // React key로 쓰므로(ProductCardList) 중복이 그대로 넘어가면 키 충돌로 이어진다.
+    // reRankByAI의 인덱스 중복은 이미 소스에서 막아뒀지만, 여기가 화면에 나가기 전
+    // 마지막 관문이라 한 번 더 걸러둔다.
+    const seenNames = new Set<string>();
+    uiSpec.props.cards = uiSpec.props.cards.filter((card: any) => {
+      if (!card?.name || seenNames.has(card.name)) return false;
+      seenNames.add(card.name);
+      return true;
+    });
     const stamp = Date.now();
     uiSpec.props.cards.forEach((card: any, i: number) => {
       card.id = `card-${stamp}-${i}`;
@@ -34,7 +46,7 @@ function stampCardIds(uiSpec: any): any {
   return uiSpec;
 }
 
-function parseAndPush(uiSpecString: string): any {
+function parseAndPush(uiSpecString: string, requestId: string): any {
   const firstBrace = uiSpecString.indexOf("{");
   if (firstBrace !== -1) {
     let lastBrace = -1;
@@ -46,13 +58,13 @@ function parseAndPush(uiSpecString: string): any {
     }
     if (lastBrace !== -1) {
       const uiSpec = stampCardIds(JSON.parse(uiSpecString.substring(firstBrace, lastBrace + 1)));
-      if (currentRequestId) pushOptionListResult(currentRequestId, uiSpec);
+      if (requestId) pushOptionListResult(requestId, uiSpec);
       return uiSpec;
     }
   }
   const cleanStr = uiSpecString.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "").trim();
   const uiSpec = stampCardIds(JSON.parse(cleanStr));
-  if (currentRequestId) pushOptionListResult(currentRequestId, uiSpec);
+  if (requestId) pushOptionListResult(requestId, uiSpec);
   return uiSpec;
 }
 
@@ -115,17 +127,34 @@ export const renderToOptionList = tool({
       .describe("Always 'ProductCardList' for Product Recommendation."),
   }),
   execute: async ({ search_query, intent_summary, ui_intent_category }) => {
+    // ⚠️ currentRequestId는 전역 변수 — execute 시작 시점에 캡처해야 다른 요청이 동시에
+    // 시작해 전역을 덮어쓰더라도 올바른 requestId를 사용한다(render-to-comp-table.ts/
+    // mutate-comptable.ts와 동일한 패턴). 이 함수는 아래에서 RAG 검색+재랭킹+Tavily
+    // 보강+UI 생성까지 10초 이상 걸리는 await를 여러 번 거치는데, 그동안 다른 요청이
+    // 시작되면 그 요청의 route.ts가 setCurrentRequestId()로 전역을 새 값으로 덮어써서,
+    // 이 요청이 다 끝난 뒤 결과를 push할 때 엉뚱한(나중) 요청의 결과 버킷에 꽂혀
+    // 그 요청의 화면에 잘못 나타나는 문제가 있었다.
+    const capturedRequestId = currentRequestId;
+    // 나머지 전역도 같은 이유로 시작 시점에 캡처한다 — 이 함수는 RAG 검색+재랭킹+Tavily
+    // 보강+UI 생성까지 10초 이상 걸리는데, 그 사이 다른 요청이 setCurrent*()로 전역을
+    // 덮어써도 이 요청은 자기 값을 계속 쓰도록.
+    const capturedUserContext = currentUserContext;
+    const capturedSavedItems = currentSavedItems;
+    const capturedDecisionCriteria = currentDecisionCriteria;
+    const capturedProductCategory = currentProductCategory;
+    const capturedLocale = currentLocale;
+    const capturedComparisonTableCells = currentComparisonTableCells;
     console.log(
       [
         "[Tool: renderToOptionList] CALLED",
         `  category     : ${ui_intent_category}`,
         `  intent       : ${intent_summary}`,
         `  search_query : ${search_query.slice(0, 100)}`,
-        `  criteria     : [${currentDecisionCriteria.join(", ")}]`,
+        `  criteria     : [${capturedDecisionCriteria.join(", ")}]`,
       ].join("\n")
     );
 
-    const alreadyShownNames = currentSavedItems.map((item) => {
+    const alreadyShownNames = capturedSavedItems.map((item) => {
       const pipeIdx = item.indexOf("|");
       return pipeIdx !== -1 ? item.slice(0, pipeIdx).trim() : item.trim();
     });
@@ -221,7 +250,7 @@ export const renderToOptionList = tool({
 
       const nameOnlyCriteria = specCriteria.map(p => p.nameOnly);
       const coverageResults = nameOnlyCriteria.length > 0
-        ? checkDbCoverage(nameOnlyCriteria, currentProductCategory || "유모차")
+        ? checkDbCoverage(nameOnlyCriteria, capturedProductCategory || "유모차")
         : [];
 
       // 커버된 기준의 annotated 버전(값 포함) → Reranker에 전달
@@ -243,10 +272,10 @@ export const renderToOptionList = tool({
 
       // ── Step 1: RAG 벡터 검색 ────────────────────────────────────────────
       console.log(`[renderToOptionList] RAG 검색: "${search_query}"`);
-      const candidates: ProductData[] = await time("option_list.rag_search", currentRequestId ?? "", () =>
+      const candidates: ProductData[] = await time("option_list.rag_search", capturedRequestId ?? "", () =>
         ragSearch(
           `${search_query} ${intent_summary}`.trim(),
-          currentProductCategory || "유모차",
+          capturedProductCategory || "유모차",
           20,
           alreadyShownNames
         )
@@ -257,11 +286,11 @@ export const renderToOptionList = tool({
 
       if (candidates.length > 0) {
         // ── Step 2: AI Reranker — 정성적 기준만 전달 (가격/브랜드는 하드필터에서 이미 처리됨) ───────────
-        const ranked = await time("option_list.rerank", currentRequestId ?? "", () =>
+        const ranked = await time("option_list.rerank", capturedRequestId ?? "", () =>
           reRankByAI(
             candidates,
             `${search_query} ${intent_summary}`.trim(),
-            currentProductCategory,
+            capturedProductCategory,
             6,
             coveredAnnotated  // DB 커버 스펙 기준만 전달 (수치/가격/브랜드 조건은 하드필터에서 완료)
           )
@@ -325,15 +354,15 @@ export const renderToOptionList = tool({
       // 찾고, 없는 기준만 Tavily로 검색해 검증된 값을 WebSpecs로 덧붙인다. 이렇게
       // 하지 않으면 카드 생성 LLM이 부족한 스펙을 자기 사전지식으로 메꿔서, 같은
       // 제품의 같은 필드가 비교표와 카드에서 다르게 표시되는 문제가 생긴다.
-      if (resolvedContext.trim() && currentDecisionCriteria.length > 0) {
-        console.log(`[renderToOptionList] DB→Tavily 보강 시작 (기준: ${currentDecisionCriteria.join(", ")})`);
-        const { enriched } = await time("option_list.tavily_enrich", currentRequestId ?? "", () =>
+      if (resolvedContext.trim() && capturedDecisionCriteria.length > 0) {
+        console.log(`[renderToOptionList] DB→Tavily 보강 시작 (기준: ${capturedDecisionCriteria.join(", ")})`);
+        const { enriched } = await time("option_list.tavily_enrich", capturedRequestId ?? "", () =>
           enrichContextWithTavily(
             resolvedContext,
-            currentDecisionCriteria,
-            currentProductCategory || "유모차",
-            currentLocale,
-            currentComparisonTableCells
+            capturedDecisionCriteria,
+            capturedProductCategory || "유모차",
+            capturedLocale,
+            capturedComparisonTableCells
           )
         );
         resolvedContext = enriched;
@@ -347,21 +376,26 @@ export const renderToOptionList = tool({
           props: {},
           _ragNotFound: true,
           _ragNotFoundMessage:
-            `"${currentProductCategory || search_query}" 카테고리 데이터가 로컬 DB에 없습니다. ` +
+            `"${capturedProductCategory || search_query}" 카테고리 데이터가 로컬 DB에 없습니다. ` +
             `카테고리 크롤링 후 다시 시도해 주세요.`,
         };
       }
 
       // ── Step 4: UI Agent → ProductCardList ─────────────────────────────────
-      const uiSpecString = await time("option_list.ui_agent", currentRequestId ?? "", () =>
+      // generateProductCardList(product_card_list.ts)는 locale/productCategory를 파라미터로
+      // 안 받고 전역을 직접 읽는다 — 위에서 캡처해둔 안전한 값으로 호출 직전에 다시 써서,
+      // 그 사이 다른 요청이 전역을 덮어썼더라도 이 요청의 값을 쓰게 한다.
+      setCurrentProductCategory(capturedProductCategory);
+      setCurrentLocale(capturedLocale);
+      const uiSpecString = await time("option_list.ui_agent", capturedRequestId ?? "", () =>
         generateUISpec(
           resolvedContext,
           intent_summary,
           ui_intent_category,
           1,
-          currentUserContext,
-          currentSavedItems,
-          currentDecisionCriteria
+          capturedUserContext,
+          capturedSavedItems,
+          capturedDecisionCriteria
         )
       );
 
@@ -379,11 +413,11 @@ export const renderToOptionList = tool({
               skippedCriteria: skippedCriteria,
             },
           };
-          if (currentRequestId) pushOptionListResult(currentRequestId, coverageNoticeSpec);
+          if (capturedRequestId) pushOptionListResult(capturedRequestId, coverageNoticeSpec);
           console.log(`\x1b[33m[renderToOptionList] CoverageNotice push: 미반영 [${skippedCriteria.join(", ")}]\x1b[0m`);
         }
 
-        const parsed = parseAndPush(uiSpecString);
+        const parsed = parseAndPush(uiSpecString, capturedRequestId);
         // 이 리스트를 만들 때 쓴 검색 제약(예: "흡입력 4,500pa 이상")을 리스트 자체에 붙여
         // 화면 상태의 일부로 계속 들고 다닌다 — 나중에 "다른 브랜드도 보여줘" 같은 후속
         // add 요청이 왔을 때, Edit Agent가 대화 히스토리 없이도(원래 못 봄) 이 필드를 그대로

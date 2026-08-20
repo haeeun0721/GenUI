@@ -21,7 +21,7 @@
  */
 
 import { generateText } from "ai";
-import { openai } from "@ai-sdk/openai";
+import { anthropic } from "@ai-sdk/anthropic";
 import { currentLocale as _currentLocale, currentUserContext as _currentUserContext, currentRequestId } from "../../tools/sidebar-store";
 import { buildAndAssembleTable, enrichCompTableCells } from "../data_agent";
 import type { CompTableJson } from "../data_agent";
@@ -162,47 +162,39 @@ export async function computeRankingAndReasoning(
   console.log(`         user_context: ${userContext}`);
 
   try {
-    // LLM에게 그대로 보여주고 "복사"만 시킬 원본 테이블 (순위 행은 "-" 플레이스홀더 상태)
-    const inputTableForLLM = {
-      type: tableJson.type ?? "Table",
-      props: {
-        columns: tableJson.props?.columns ?? [],
-        rows: finalRows,
-      },
-    };
+    // 제품 열 키↔라벨 매핑 — LLM이 rank 오브젝트를 그 키로 채우도록.
+    const productKeyLines = productCols.map(c => `- ${c.key}: ${c.label}`).join("\n");
 
     const { text } = await generateText({
       // gpt-4o-mini로 실측 테스트해봤더니 순위 라벨은 정상 반환했지만 _rankReasoning
       // 필드가 3/3 재현으로 빈 문자열이었다(스키마상 "필수"가 아니라 프롬프트 지시일
       // 뿐이라 mini가 조용히 누락시킴 — 별도 예외/에러 없이 통과되어 발견이 늦어짐).
       // 사용자에게 "왜 이 순위인지" 설명이 아예 안 보이게 되는 실질적 품질 저하라 되돌림.
-      model: openai("gpt-4o"),
+      model: anthropic("claude-haiku-4-5"),
       system: `
 [Component]
 ComparisonTable — Ranking
 
 [Role]
-You are a shopping advisor who ranks products for THIS SPECIFIC USER's purchase situation and outputs the complete, updated comparison table — using exclusively the data already resolved in the input table, never external knowledge or invented specs.
+You are a shopping advisor who ranks products for THIS SPECIFIC USER's purchase situation — using exclusively
+the data already resolved in reference_table, never external knowledge or invented specs.
 
 [Input]
 - user_context: the user's stated purchase situation and purpose.
 - decision_criteria: the criteria the user cares about.
-- reference_table: a human-readable version of the table, annotated with any user-specified minimum requirements — for judgment only.
-  Where a numeric requirement could be checked, each value is ALSO tagged "[기준 충족]"/"[기준 미달]" —
-  this tag is a pre-computed, authoritative verdict. NEVER recompute or second-guess it by comparing the raw
-  numbers yourself (numbers that look similar, e.g. "2,500" vs "25,000", are easy to misread) — always defer
-  to the tag when present.
-- comparison_table: the full Table JSON ({ type, props: { columns, rows } }) already resolved and verified. The "순위"/"Rank" row's cells are placeholders ("-") for you to fill in.
+- product_keys: the stable key for each product column — use these exact keys in your output, never the labels.
+- reference_table: a human-readable version of the table, annotated with any user-specified minimum requirements —
+  for judgment only. Where a numeric requirement could be checked, each value is ALSO tagged "[기준 충족]"/
+  "[기준 미달]" — this tag is a pre-computed, authoritative verdict. NEVER recompute or second-guess it by
+  comparing the raw numbers yourself (numbers that look similar, e.g. "2,500" vs "25,000", are easy to misread) —
+  always defer to the tag when present.
 
 [Task]
-1. Copy \`columns\` and every row EXCEPT the "순위"/"Rank" row EXACTLY as given in comparison_table — do not
-   alter, reformat, add, or remove any key or value.
+1. Decide each product's rank label using ONLY the criterion values shown in reference_table. Never invent,
+   guess, or add information not explicitly shown; ignore any cell marked "미확인" or "-" rather than
+   inferring what it might mean. Do NOT output anything except the [Output] JSON below — no table copy needed.
 
-2. For the "순위"/"Rank" row only: decide each product's rank label using ONLY the criterion values shown
-   in the other rows. Never invent, guess, or add information not explicitly shown in the table; ignore
-   any cell marked "미확인" or "-" rather than inferring what it might mean.
-
-3. Sufficiency-based evaluation — for EVERY criterion, judge whether each value is "enough" for the
+2. Sufficiency-based evaluation — for EVERY criterion, judge whether each value is "enough" for the
    user's context and purpose, not which value is numerically higher:
    a. Infer what level would be "enough" given user_context and decision_criteria. If reference_table
       notes a user-specified minimum for this criterion, that minimum IS the "enough" level — and a
@@ -214,10 +206,17 @@ You are a shopping advisor who ranks products for THIS SPECIFIC USER's purchase 
    c. Only products falling below "enough" should be differentiated, and only by how much the shortfall
       matters to the user's situation — not by the raw number gap.
 
-4. If products are genuinely too close to call overall, give them the same tied label (e.g. "공동 1위"/
+3. If products are genuinely too close to call overall, give them the same tied label (e.g. "공동 1위"/
    "Tied #1") — do not force an artificial ordering.
 
-5. Every product column key in the "순위"/"Rank" row must receive a label — none left as "-".
+4. Incommensurable specs — if a criterion's values across products are expressed in different units,
+   measurement bases, or attribute types (e.g. a number vs. a qualitative description, or two metrics
+   that aren't measuring the same thing) such that they cannot be directly compared, do NOT judge one
+   product as better than another on that criterion. Describe each product's characteristic on it
+   independently and neutrally, and do NOT use that criterion as grounds for ranking one product over
+   another in _rankReasoning.
+
+5. Every key in product_keys must receive a label in "rank" — none left out or "-".
 
 6. Do NOT use markdown formatting (no **, *, #, _) in _rankReasoning — plain text only.
 
@@ -228,58 +227,33 @@ You are a shopping advisor who ranks products for THIS SPECIFIC USER's purchase 
    "(not specified)", fall back to referencing decision_criteria instead.
 
 [Output]
+Respond with ONLY this JSON object — no table, no extra fields:
 {
-  "type": "Table",
-  "props": {
-    "columns": <copied EXACTLY from comparison_table.props.columns>,
-    "rows": <copied EXACTLY from comparison_table.props.rows, with the "순위"/"Rank" row's product values filled in>,
-    "_rankReasoning": "<2-3 plain-text ${lang} sentences explaining why the top-ranked product(s) fit best>"
-  }
+  "rank": { "<product_key>": "<rank label, e.g. '1위' or '공동 1위'>", ... one entry per product_key ... },
+  "_rankReasoning": "<2-3 plain-text ${lang} sentences explaining why the top-ranked product(s) fit best>"
 }`,
       prompt: `user_context: ${userContext}
 
 decision_criteria: ${criteriaNames}
 
-products: ${productNames.join(", ")}
+product_keys:
+${productKeyLines}
 
 reference_table (for judgment):
 ${fullTableLines}
 
-comparison_table:
-${JSON.stringify(inputTableForLLM, null, 2)}
-
-Output the complete updated table JSON as specified in [Output].`,
+Output the rank + reasoning JSON as specified in [Output].`,
       temperature: 0.3,
     });
 
     const parsed = extractJsonObject(text);
-    const parsedRows: any[] = Array.isArray(parsed?.props?.rows) ? parsed.props.rows : [];
-    const parsedRankRow = parsedRows.find(r => r?.criterion === "순위" || r?.criterion === "Rank");
-    if (!parsed || !parsedRankRow) throw new Error("LLM 응답에서 유효한 순위 행을 찾지 못함");
-
-    // 무결성 검증(감시 전용 로그) — 순위 행 이외의 셀은 LLM이 뭐라고 답했든
-    // 절대 신뢰하지 않고 아래 tableJson.props.rows 갱신에서 원본 값만 사용한다.
-    for (const origRow of dataRows) {
-      const echoedRow = parsedRows.find(
-        (r: any) => (origRow.id && r?.id === origRow.id) || r?.criterion === origRow.criterion
-      );
-      if (!echoedRow) {
-        console.warn(`\x1b[33m[CompTable STEP 5] ⚠️ LLM 응답에서 행 누락 (원본 유지): "${origRow.criterion}"\x1b[0m`);
-        continue;
-      }
-      for (const col of productCols) {
-        const origVal = String((origRow as Record<string, string>)[col.key] ?? "-");
-        const echoedVal = String(echoedRow[col.key] ?? "-");
-        if (origVal !== echoedVal) {
-          console.warn(`\x1b[33m[CompTable STEP 5] ⚠️ 셀 값 불일치 감지, 원본 유지 — "${origRow.criterion}" × "${col.label}": 원본="${origVal}" LLM="${echoedVal}"\x1b[0m`);
-        }
-      }
-    }
+    const rankObj = parsed?.rank && typeof parsed.rank === "object" ? parsed.rank as Record<string, unknown> : null;
+    if (!parsed || !rankObj) throw new Error("LLM 응답에서 유효한 순위 결과를 찾지 못함");
 
     // 순위 라벨 추출 + 누락 제품 안전장치 (표시 누락 방지)
     const rankUpdates: Record<string, string> = {};
     for (const col of productCols) {
-      const val = parsedRankRow[col.key];
+      const val = rankObj[col.key];
       const clean = (val != null && String(val).trim() && val !== "-") ? String(val).trim() : "";
       if (clean) rankUpdates[col.key] = clean;
     }
@@ -299,7 +273,7 @@ Output the complete updated table JSON as specified in [Output].`,
       return { ...row, ...rankUpdates };
     });
 
-    const rawReasoning = String(parsed.props?._rankReasoning ?? "");
+    const rawReasoning = String(parsed._rankReasoning ?? "");
     const cleanReasoning = rawReasoning.trim()
       .replace(/\*\*/g, "").replace(/\*/g, "").replace(/^#+\s*/gm, "").replace(/_/g, "");
     return { reasoning: cleanReasoning };

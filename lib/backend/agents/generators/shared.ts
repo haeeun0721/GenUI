@@ -4,9 +4,11 @@
  */
 
 import { generateText } from "ai";
-import { openai } from "@ai-sdk/openai";
+import { anthropic } from "@ai-sdk/anthropic";
 
-export const UI_AGENT_MODEL = "gpt-4o-mini" as const;
+// claude-3-5-sonnet-20241022는 이 API 키에서 retired(404). claude-sonnet-4-5도 써봤지만
+// CriteriaMap 하나 생성하는 데 20s+ 걸려서, 더 가벼운 Haiku로 속도를 우선했다.
+export const UI_AGENT_MODEL = "claude-haiku-4-5" as const;
 
 export type Locale = "ko" | "en";
 
@@ -30,7 +32,7 @@ export async function callLLM(system: string, prompt: string): Promise<string> {
   console.log(`\n\x1b[35m========== [3] UI Generator: ${componentName} ==========\x1b[0m`);
   
   const { text } = await generateText({
-    model: openai(UI_AGENT_MODEL),
+    model: anthropic(UI_AGENT_MODEL),
     system,
     prompt,
     temperature: 0,

@@ -7,9 +7,9 @@ import {
   currentProductCategory,
   currentLocale,
 } from "./sidebar-store";
-import { findProductInLocalDB } from "../agents/data_agent";
+import { findProductInLocalDB, expandCriterionMeta, normalizeCriterionRowAcrossProducts, NOT_APPLICABLE_TEXT } from "../agents/data_agent";
 import { computeRankingAndReasoning } from "../agents/generators/comp_table";
-import { ragSearch } from "../rag/search";
+import { ragSearch, findExactProduct } from "../rag/search";
 import { resolveSpecValue } from "../services/spec-lookup";
 import { time } from "../timing";
 
@@ -51,6 +51,39 @@ function makeCriterionIdGenerator(rows: any[]): () => string {
   return () => `crit_${++next}`;
 }
 
+/**
+ * data_agent.ts의 enrichCompTableCells(STEP 5)와 동일한 기준별 교차 정규화 — 단위를
+ * 하나로 통일하고(mm/cm, mAh/Ah 등), "8.0스톱" vs "5축광학식"처럼 애초에 다른 개념/형식으로
+ * 보고된 값들도 서로 비교 가능한 형태로 맞춘다. 이 파일(mutate 경로)은 셀을 제품×기준별로
+ * 하나씩 독립 조회하기 때문에, 다른 제품과 나란히 놓고 봐야만 드러나는 이 불일치를 원래는
+ * 스스로 걸러내지 못했다 — 새 파이프라인(enrichCompTableCells)에만 있던 이 단계를 여기서도
+ * 재사용한다.
+ */
+async function normalizeRows(rowsToNormalize: any[], allProductCols: any[], locale: string): Promise<void> {
+  const criteria = [...new Set(
+    rowsToNormalize.map((r) => String(r.criterion ?? "")).filter((c) => c && c !== "순위" && c !== "Rank")
+  )];
+  await Promise.all(
+    criteria.map(async (criterion) => {
+      const row = rowsToNormalize.find((r) => r.criterion === criterion);
+      if (!row) return;
+      const entries = allProductCols
+        .map((col: any) => ({ colKey: col.key, label: col.label, value: String(row[col.key] ?? "-") }))
+        .filter((e) => e.value && e.value !== "-" && e.value !== "○" && e.value !== "X" && !Object.values(NOT_APPLICABLE_TEXT).includes(e.value));
+      if (entries.length < 2) return;
+
+      const updates = await normalizeCriterionRowAcrossProducts(criterion, entries, locale);
+      for (const e of entries) {
+        const updated = updates[e.colKey]?.trim();
+        if (updated && updated !== e.value) {
+          row[e.colKey] = updated;
+          console.log(`[mutateComparisonTable] 🔁 정규화 "${criterion}" × "${e.label}": "${e.value}" → "${updated}"`);
+        }
+      }
+    })
+  );
+}
+
 export const mutateComparisonTable = tool({
   description: `
 Add or remove criterion ROWS, or add/remove product COLUMNS, on the CURRENTLY DISPLAYED ComparisonTable.
@@ -58,16 +91,21 @@ Only use when [CURRENT_COMPARISON_TABLE] is present. Cannot re-check a single ce
 `.trim(),
   inputSchema: z.object({
     surface: z.literal("comparisonTable"),
-    op: z.enum(["add_criteria", "remove_criteria", "add_product", "remove_product"]),
+    op: z.enum(["add_criteria", "remove_criteria", "add_product", "remove_product", "replace_products"]),
     current_table: z.any().describe("The current Table spec JSON ({ props: { columns, rows } }) to patch in place."),
     criteria_to_add: z.array(z.string()).optional(),
     criteria_to_remove: z.array(z.string()).optional().describe("remove_criteria: row `id`s (e.g. 'crit_1') copied from CURRENT_COMPARISON_TABLE — falls back to label matching if an id isn't recognized."),
-    products_to_add: z.array(z.string()).optional().describe("add_product: product names/brands/queries to search for (RAG) and add as new columns."),
+    products_to_add: z.array(z.string()).optional().describe("add_product: product names/brands/queries to search for (RAG) and add as new columns. replace_products: same field, but the full replacement set — existing columns not listed are dropped."),
     products_to_remove: z.array(z.string()).optional().describe("remove_product: column `key`s (e.g. 'prod_1') copied from CURRENT_COMPARISON_TABLE — falls back to label matching if a key isn't recognized."),
     op_summary: z.string().describe("Brief user-facing description of the action, in the response locale."),
   }),
   execute: async (args) => {
+    // ⚠️ 아래 여러 await(RAG 검색/스펙 조회/순위 재계산) 도중 다른 요청이 시작돼
+    // 전역을 덮어써도 이 요청은 계속 자기 값을 쓰도록 시작 시점에 캡처한다.
     const capturedRequestId = currentRequestId;
+    const capturedProductCategory = currentProductCategory;
+    const capturedLocale = currentLocale;
+    const capturedDecisionCriteria = currentDecisionCriteria;
     console.log(`[mutateComparisonTable] op=${args.op} | ${args.op_summary}`);
 
     const tableJson = JSON.parse(JSON.stringify(args.current_table ?? { props: { columns: [], rows: [] } }));
@@ -102,30 +140,53 @@ Only use when [CURRENT_COMPARISON_TABLE] is present. Cannot re-check a single ce
       // 제품 컬럼 라벨 → 전체 제품명 매핑 (update-table/route.ts STRATEGY A와 동일한 패턴)
       const fullNameMap = new Map<string, string>();
       for (const col of productCols) {
-        const dbEntry = findProductInLocalDB(currentProductCategory, col.label);
+        const dbEntry = findProductInLocalDB(capturedProductCategory, col.label);
         const nameMatch = dbEntry?.match(/Name:\s*(.+)/);
         fullNameMap.set(col.label, nameMatch ? nameMatch[1].trim() : col.label);
       }
 
-      for (const criterion of toAdd) {
+      const newRows = toAdd.map((criterion) => {
         const newRow: Record<string, string> = { id: genRowId(), criterion };
         for (const col of productCols) newRow[col.key] = "-";
+        return newRow;
+      });
 
-        await time("mutate_comp_table.add_criteria_lookup", capturedRequestId, () =>
-          Promise.all(
+      // "소음 수준"/"흡입력"처럼 청소 모드(조용/일반/강력)에 따라 다르게 보고되는 기준은,
+      // 힌트 없이 각 제품을 독립적으로 검색하면 제품마다 다른 모드의 값을 주워와 비교가
+      // 불공정해진다(예: A는 최저소음 모드 63dB, B는 일반 모드 65dB). renderToCompTable
+      // 최초 생성 경로(data_agent.ts enrichCompTableCells)는 이미 expandCriterionMeta로
+      // preferredCondition을 구해 검색·추출에 반영하는데, 이 add_criteria 경로는 그 계산을
+      // 아예 안 하고 있었다 — 여기서도 같은 힌트를 구해 resolveSpecValue에 그대로 흘려보낸다.
+      const criterionMeta = await expandCriterionMeta(toAdd);
+
+      // (신규기준×제품) 전체 조합을 하나의 Promise.all로 동시에 조회한다 — comp-table-incremental.ts와
+      // 동일한 패턴. 예전엔 기준마다 순서대로 기다렸어서(기준 안에서만 제품 병렬), 기준을
+      // 여러 개 한 번에 추가하면 그 개수만큼 순차 barrier가 쌓였다.
+      await time("mutate_comp_table.add_criteria_lookup", capturedRequestId, () =>
+        Promise.all(
+          newRows.flatMap((newRow) =>
             productCols.map(async (col: any) => {
+              const criterion = newRow.criterion;
               const fullName = fullNameMap.get(col.label) ?? col.label;
-              const result = await resolveSpecValue(fullName, criterion, currentProductCategory, currentLocale);
+              const meta = criterionMeta[criterion];
+              const result = await resolveSpecValue(fullName, criterion, capturedProductCategory, capturedLocale, meta?.formatHint, meta?.canonicalUnit, meta?.preferredCondition, meta?.type);
               newRow[col.key] = result.uncertain && result.value !== "-" ? `${result.value} (추정)` : result.value;
               console.log(`[mutateComparisonTable] "${fullName}" × "${criterion}" → "${newRow[col.key]}" (source=${result.source}${result.uncertain ? ", 불확실" : ""})`);
             })
           )
-        );
+        )
+      );
 
+      // 새로 채운 각 행을 제품끼리 교차 비교해 단위/형식을 통일한다 (위 helper 설명 참고).
+      await time("mutate_comp_table.add_criteria_normalize", capturedRequestId, () =>
+        normalizeRows(newRows, productCols, capturedLocale)
+      );
+
+      for (const newRow of newRows) {
         const rankIdx = rows.findIndex((r: any) => r.criterion === "순위" || r.criterion === "Rank");
         if (rankIdx === -1) rows.push(newRow);
         else rows.splice(rankIdx + 1, 0, newRow);
-        console.log(`[mutateComparisonTable] 새 행 추가: "${criterion}"`);
+        console.log(`[mutateComparisonTable] 새 행 추가: "${newRow.criterion}"`);
       }
     } else if (args.op === "remove_product") {
       const raw = (args.products_to_remove ?? []).map((p) => String(p).trim()).filter(Boolean);
@@ -150,15 +211,45 @@ Only use when [CURRENT_COMPARISON_TABLE] is present. Cannot re-check a single ce
         });
         console.log(`[mutateComparisonTable] 제품 컬럼 삭제: ${removedCols.map((c: any) => c.label).join(", ")}`);
       }
-    } else if (args.op === "add_product") {
+    } else if (args.op === "add_product" || args.op === "replace_products") {
+      if (args.op === "replace_products") {
+        // "add_product"처럼 기존 제품 위에 얹지 않고, 닫힌 집합으로 교체한다 — 기존 제품
+        // 컬럼과 그 셀 값을 전부 지운 뒤 요청받은 제품들로만 다시 채운다. edit_agent는
+        // 사용자가 가산 표현("~도"/"추가로") 없이 특정 제품들을 닫힌 목록으로 지목했을
+        // 때만 이 op을 고른다 — 예: "A, B, C 비교해줘"(닫힌 목록 → 여기) vs
+        // "A도 비교해줘"(가산 → add_product, 위 분기와 공유하지 않고 그대로 유지).
+        const criterionCol = cols.find((c: any) => c.key === "criterion");
+        const removedKeys = new Set(cols.filter((c: any) => c.key !== "criterion").map((c: any) => c.key));
+        cols.length = 0;
+        if (criterionCol) cols.push(criterionCol);
+        rows = rows.map((r: any) => {
+          const next = { ...r };
+          removedKeys.forEach((k) => { delete next[k]; });
+          return next;
+        });
+        console.log(`[mutateComparisonTable/replace_products] 기존 제품 컬럼 ${removedKeys.size}개 제거`);
+      }
+
       const requested = (args.products_to_add ?? []).map((s) => s.trim()).filter(Boolean);
-      const existingLabelsLower = new Set(productCols.map((c: any) => c.label.toLowerCase()));
+      // add_product는 기존 컬럼을 유지하므로 위쪽의 productCols(요청 시작 시점 스냅샷)를 그대로
+      // 쓰면 되지만, replace_products는 방금 cols를 비웠으므로 반드시 지금 시점의 cols에서
+      // 다시 읽어야 한다 — 두 op이 이 지점부터 로직을 공유하기 위해 항상 다시 계산한다.
+      const currentProductCols = cols.filter((c: any) => c.key !== "criterion");
+      const existingLabelsLower = new Set(currentProductCols.map((c: any) => c.label.toLowerCase()));
 
       const searchResults = await time("mutate_comp_table.rag_search", capturedRequestId, () =>
         Promise.all(
           requested.map(async (q) => {
             try {
-              const found = await ragSearch(q, currentProductCategory, 5, productCols.map((c: any) => c.label));
+              // 사용자가 이미 정확한 제품명("로보락 S10 MaxV Slim 직배수" 등)을 말한 경우,
+              // 임베딩 유사도 순위에 기대지 않고 로컬 DB에서 결정론적으로 먼저 찾는다 —
+              // "직배수"/"Ultra"/"Slim"처럼 이름이 거의 같은 변형이 여러 개 있으면 임베딩
+              // 순위가 top-K 밖으로 밀어낼 수 있어서(아래 filtered()가 걸러낼 기회조차
+              // 없이 found[0](엉뚱한 변형)로 폴백), 정확 매칭이 있으면 그걸로 확정한다.
+              const exact = findExactProduct(q, capturedProductCategory);
+              if (exact) return exact;
+
+              const found = await ragSearch(q, capturedProductCategory, 20, currentProductCols.map((c: any) => c.label));
               const qLower = q.toLowerCase();
               const filtered = found.filter((p) =>
                 p.name?.toLowerCase().includes(qLower) ||
@@ -185,24 +276,49 @@ Only use when [CURRENT_COMPARISON_TABLE] is present. Cannot re-check a single ce
 
       const criterionRows = rows.filter((r: any) => r.criterion && r.criterion !== "순위" && r.criterion !== "Rank");
 
-      for (const prod of newProducts) {
+      // 새 컬럼 key를 먼저 전부 확정한다 — 반복문 안에서 cols.push 직후 다음 idx를
+      // 다시 찾던 방식은 순차 진행에 의존해서 병렬화할 수 없었다.
+      const usedKeys = new Set(cols.map((c: any) => c.key));
+      const newCols = newProducts.map((prod) => {
         let idx = 0;
-        while (cols.some((c: any) => c.key === `prod_${idx}`)) idx++;
-        const newKey = `prod_${idx}`;
-        cols.push({ key: newKey, label: prod.name, imageUrl: (prod as any).image ?? "" });
+        while (usedKeys.has(`prod_${idx}`)) idx++;
+        const key = `prod_${idx}`;
+        usedKeys.add(key);
+        return { key, label: prod.name, imageUrl: (prod as any).image ?? "", prod };
+      });
+      cols.push(...newCols.map(({ key, label, imageUrl }) => ({ key, label, imageUrl })));
 
-        await time("mutate_comp_table.add_product_lookup", capturedRequestId, () =>
-          Promise.all(
+      // add_criteria와 동일한 이유 — 새로 들어오는 제품이 기존 기준(예: 소음 수준)에서
+      // 다른 제품들과 다른 모드로 조회되지 않도록, 기존 행들에 대해서도 preferredCondition
+      // 힌트를 구해 넘긴다.
+      const criterionMeta = await expandCriterionMeta(criterionRows.map((r: any) => String(r.criterion ?? "")));
+
+      // (신규제품×기준) 전체 조합을 하나의 Promise.all로 동시에 조회한다 — comp-table-incremental.ts와
+      // 동일한 패턴. 예전엔 제품마다 순서대로 기다렸어서(제품 안에서만 기준 병렬), 제품을
+      // 여러 개 한 번에 추가하면 그 개수만큼 순차 barrier가 쌓였다.
+      await time("mutate_comp_table.add_product_lookup", capturedRequestId, () =>
+        Promise.all(
+          newCols.flatMap(({ key: newKey, prod }) =>
             criterionRows.map(async (row: any) => {
               const criterion = String(row.criterion ?? "");
-              const result = await resolveSpecValue(prod.name, criterion, currentProductCategory, currentLocale);
+              const meta = criterionMeta[criterion];
+              const result = await resolveSpecValue(prod.name, criterion, capturedProductCategory, capturedLocale, meta?.formatHint, meta?.canonicalUnit, meta?.preferredCondition, meta?.type);
               row[newKey] = result.uncertain && result.value !== "-" ? `${result.value} (추정)` : result.value;
               console.log(`[mutateComparisonTable/add_product] "${prod.name}" × "${criterion}" → "${row[newKey]}" (source=${result.source}${result.uncertain ? ", 불확실" : ""})`);
             })
           )
-        );
-        console.log(`[mutateComparisonTable/add_product] 새 제품 컬럼 추가: "${prod.name}"`);
-      }
+        )
+      );
+
+      // 새로 채워진 값(추가 제품 컬럼)까지 포함해 각 행을 제품끼리 교차 비교해 단위/형식을
+      // 통일한다. replace_products는 컬럼을 통째로 비웠다가 다시 채웠으므로, 여기서 cols를
+      // 다시 읽어야 실제로 화면에 남는 전체 제품 컬럼 기준으로 정규화된다.
+      const allProductColsNow = cols.filter((c: any) => c.key !== "criterion");
+      await time("mutate_comp_table.add_product_normalize", capturedRequestId, () =>
+        normalizeRows(criterionRows, allProductColsNow, capturedLocale)
+      );
+
+      for (const { label } of newCols) console.log(`[mutateComparisonTable/add_product] 새 제품 컬럼 추가: "${label}"`);
     }
 
     tableJson.props.rows = rows;
@@ -217,7 +333,7 @@ Only use when [CURRENT_COMPARISON_TABLE] is present. Cannot re-check a single ce
 
     try {
       const { reasoning } = await time("mutate_comp_table.ranking_llm", capturedRequestId, () =>
-        computeRankingAndReasoning(tableJson, currentDecisionCriteria, currentLocale)
+        computeRankingAndReasoning(tableJson, capturedDecisionCriteria, capturedLocale)
       );
       if (reasoning) tableJson.props._rankReasoning = reasoning;
     } catch (err) {

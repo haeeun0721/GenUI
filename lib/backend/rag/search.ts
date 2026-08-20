@@ -260,6 +260,47 @@ function applyHardFilter(products: StoredProduct[], constraints: NumericConstrai
 }
 
 // ---------------------------------------------------------------------------
+// Exact Name Lookup — 임베딩 유사도 없이 로컬 DB에서 이름을 직접 대조한다.
+// "로보락 S10 MaxV Slim"과 "로보락 S10 MaxV Slim 직배수"처럼 이름이 거의 동일한 변형이
+// 여러 개 있으면, 임베딩만으로는 정확한 변형이 top-K 밖으로 밀려날 수 있다(제품명이
+// "잘려서"/다른 변형으로 대체돼 저장되는 문제). 사용자가 이미 정확한 제품명을 알고 있는
+// 경우(채팅에 직접 이름을 쓴 경우, 또는 화면에 이미 떠 있는 카드 이름을 그대로 재사용하는
+// 경우)엔 여기서 결정론적으로 먼저 찾고, 못 찾을 때만 ragSearch(임베딩)로 넘어간다.
+// ---------------------------------------------------------------------------
+
+function normalizeProductName(s: string): string {
+  return s.toLowerCase().replace(/\s+/g, "");
+}
+
+export function findExactProduct(query: string, category: string): ProductData | null {
+  const data = loadData(category);
+  if (!data) return null;
+  const qNorm = normalizeProductName(query);
+  if (!qNorm) return null;
+
+  // 1) 정확히 일치 (공백/대소문자 차이만 허용)
+  let match = data.products.find((p) => normalizeProductName(p.name) === qNorm);
+  // 2) DB 이름이 쿼리를 통째로 포함 (쿼리가 DB 이름의 일부 — 흔치 않음)
+  if (!match) match = data.products.find((p) => normalizeProductName(p.name).includes(qNorm));
+  // 3) 쿼리가 DB 이름을 통째로 포함 (쿼리에 수식어가 더 붙은 경우)
+  if (!match) match = data.products.find((p) => qNorm.includes(normalizeProductName(p.name)));
+  if (!match) return null;
+
+  console.log(`[RAG] 정확한 이름 매칭: "${query}" → "${match.name}"`);
+  return {
+    id: match.id,
+    name: match.name,
+    price: match.price,
+    image: match.image,
+    link: match.link,
+    brand: match.brand,
+    mallName: "다나와",
+    specs: match.specs,
+    description: match.description,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Main RAG Search
 // ---------------------------------------------------------------------------
 

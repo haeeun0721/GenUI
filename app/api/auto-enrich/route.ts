@@ -15,9 +15,10 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { lookupProductSpec, buildSpecPhrase } from "@/lib/backend/services/spec-lookup";
+import { getCachedSpec, setCachedSpec } from "@/lib/backend/services/spec-cache";
 import { expandCriterionMeta, normalizeCriterionRowAcrossProducts } from "@/lib/backend/agents/data_agent";
 import { buildIncrementalTableUpdate, isValidTableSeed, type PrefetchedValue } from "@/lib/backend/services/comp-table-incremental";
-import { setCurrentLocale, setCurrentUserContext } from "@/lib/backend/tools/sidebar-store";
+import { setCurrentLocale, setCurrentUserContext, setCurrentParticipantId } from "@/lib/backend/tools/sidebar-store";
 import { time } from "@/lib/backend/timing";
 
 export const maxDuration = 60;
@@ -36,6 +37,7 @@ export async function POST(req: NextRequest) {
       // findCriterionMin) — 반면 카드 스펙 검색(criteria)은 annotation 없는 순수 필드명이어야
       // lookupProductSpec/Tavily 쿼리가 오염되지 않는다. 그래서 둘을 분리해서 받는다.
       tableCriteria,
+      participantId = "",
     } = await req.json() as {
       cards:      { name: string; price?: string; specs: string[] }[];
       criteria:   string[];
@@ -45,11 +47,17 @@ export async function POST(req: NextRequest) {
       removedCriteriaNames?: string[];
       userContext?: string;
       tableCriteria?: string[];
+      participantId?: string;
     };
 
     if (!cards?.length || !criteria?.length || !category) {
       return NextResponse.json({ updates: [], unconfirmed: [], notFound: [] });
     }
+
+    // spec-cache.ts(참가자별 스펙 캐시)가 읽는 전역 — Comparison Table 생성 경로와 동일한
+    // 참가자 스코프를 공유해, Option List가 여기서 처음 조회한 값을 표가 그대로 재사용하고
+    // (반대 방향도 마찬가지) 다른 참가자에게는 절대 섞이지 않게 한다.
+    setCurrentParticipantId(participantId);
 
     const requestId = `autoenrich-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     console.log(`\n[auto-enrich] req=${requestId} [${criteria.join(", ")}] | ${cards.length}개 카드: ${cards.map(c => c.name).join(" / ")}`);
@@ -82,8 +90,19 @@ export async function POST(req: NextRequest) {
           if (alreadyHas) return { card, fieldKey, isPrice, specPhrase: null, uncertain: false, value: null, skip: true };
 
           const meta = criterionMeta[fieldKey];
-          const result = await lookupProductSpec(card.name, fieldKey, category, locale, meta?.formatHint, meta?.canonicalUnit, meta?.preferredCondition);
+
+          // 이 참가자가 예전 턴/Comparison Table에서 이미 같은 제품×기준을 조회해뒀으면
+          // 그 값을 그대로 쓴다 — Option List가 여기서 새로 검색하면 표와 다른 값이
+          // 나올 수 있다(예: 소음 수준이 표엔 60dB, 카드엔 64dB).
+          const cached = await getCachedSpec(participantId, card.name, fieldKey);
+          if (cached) {
+            const specPhrase = buildSpecPhrase(fieldKey, cached);
+            return { card, fieldKey, isPrice, specPhrase, uncertain: false, value: cached, skip: false };
+          }
+
+          const result = await lookupProductSpec(card.name, fieldKey, category, locale, meta?.formatHint, meta?.canonicalUnit, meta?.preferredCondition, meta?.type);
           if (result.value === "-") return { card, fieldKey, isPrice, specPhrase: null, uncertain: false, value: null };
+          if (!result.uncertain) void setCachedSpec(participantId, card.name, fieldKey, result.value);
 
           const specPhrase = buildSpecPhrase(fieldKey, result.value);
 
@@ -185,7 +204,8 @@ export async function POST(req: NextRequest) {
           locale,
           removedCriteriaNames,
           prefetchedValues,
-          requestId
+          requestId,
+          participantId
         )
       );
       console.log("[auto-enrich] ✅ Comparison Table도 같은 요청에서 갱신 완료");

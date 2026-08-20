@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { findProductInLocalDB } from "@/lib/backend/agents/data_agent";
+import { findProductInLocalDB, findExactMatchingProduct } from "@/lib/backend/agents/data_agent";
 import { enrichContextWithTavily, type KnownProductSpecs } from "@/lib/backend/services/spec-lookup";
 import { buildIncrementalTableUpdate, isValidTableSeed } from "@/lib/backend/services/comp-table-incremental";
 import { generateUISpec } from "@/lib/backend/agents/ui_agent";
 import { writeCompTableLog } from "@/lib/backend/logger";
-import { setCurrentLocale, setCurrentUserContext } from "@/lib/backend/tools/sidebar-store";
+import { setCurrentLocale, setCurrentUserContext, setCurrentParticipantId } from "@/lib/backend/tools/sidebar-store";
 
 export const maxDuration = 60;
 
@@ -28,6 +28,7 @@ export async function POST(req: NextRequest) {
       // update-table 요청 body에 실어 보내는 방식 — 이 요청 하나의 생명주기 밖으로 절대
       // 새어나가지 않는다.
       prefetchedValues = [],
+      participantId = "",
     } = await req.json() as {
       savedItems: string[];
       criteria: string[];
@@ -39,6 +40,7 @@ export async function POST(req: NextRequest) {
       removedCriteriaNames?: string[];
       userContext?: string;
       prefetchedValues?: { product_name: string; field_key: string; value: string | null }[];
+      participantId?: string;
     };
 
     if (!savedItems?.length) {
@@ -50,6 +52,7 @@ export async function POST(req: NextRequest) {
     // 이 라우트는 매 요청마다 이 값을 최신으로 맞춰줘야 순위 판단이 이 사용자 상황을 반영한다.
     setCurrentLocale(locale === "en" ? "en" : "ko");
     setCurrentUserContext(userContext);
+    setCurrentParticipantId(participantId);
 
     const requestId = `updatetable-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     console.log(`[update-table] req=${requestId} ${savedItems.length}개 제품, ${criteria.length}개 기준`);
@@ -68,7 +71,8 @@ export async function POST(req: NextRequest) {
         locale,
         removedCriteriaNames,
         prefetchedValues,
-        requestId
+        requestId,
+        participantId
       );
       console.log("[update-table] ✅ 증분 업데이트 완료");
       return NextResponse.json(tableJson);
@@ -80,9 +84,16 @@ export async function POST(req: NextRequest) {
     // 1. Build local DB context
     const summaries: string[] = [];
     for (const shortName of savedItems) {
-      const matchCard = currentCards?.find((c: any) =>
-        c.name?.includes(shortName) || shortName.includes(c.name)
-      );
+      const cardCandidates = (currentCards ?? []).filter((c: any) => c?.name);
+      const matchCard = findExactMatchingProduct(shortName, cardCandidates);
+      if (!matchCard) {
+        const looseCount = cardCandidates.filter((c: any) => {
+          const a = c.name.toLowerCase().replace(/\s+/g, "");
+          const b = shortName.toLowerCase().replace(/\s+/g, "");
+          return a.includes(b) || b.includes(a);
+        }).length;
+        if (looseCount >= 2) console.warn(`[update-table] "${shortName}" — 카드 후보 ${looseCount}개가 애매하게 겹쳐 매칭 보류 (동명이인 방지)`);
+      }
       const fullName = matchCard?.name ?? shortName;
 
       const dbSummary =
@@ -190,9 +201,7 @@ export async function POST(req: NextRequest) {
     if (uiSpec.props?.columns && currentCards.length > 0) {
       for (const col of uiSpec.props.columns) {
         if (col.key.startsWith("prod_")) {
-          const matchCard = currentCards.find(
-            (c: any) => c.name?.includes(col.label) || col.label?.includes(c.name)
-          );
+          const matchCard = findExactMatchingProduct(col.label ?? "", currentCards.filter((c: any) => c?.name));
           if (matchCard && (matchCard.imageUrl || matchCard.image) && !col.imageUrl) {
             col.imageUrl = matchCard.imageUrl || matchCard.image;
           }

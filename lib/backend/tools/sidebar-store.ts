@@ -153,3 +153,10 @@ export let currentComparisonTableCells: { name: string; specs: string[] }[] = []
 export function setCurrentComparisonTableCells(cells: { name: string; specs: string[] }[]) {
   currentComparisonTableCells = cells;
 }
+
+/** 참가자 ID("[PARTICIPANT ID: ...]" 태그) — spec-cache.ts가 조회 값을 참가자별로 격리해
+ *  캐싱하는 데 쓴다(참가자 간 데이터 누출 방지). session-memory.ts와 동일한 키 소스. */
+export let currentParticipantId: string = "";
+export function setCurrentParticipantId(id: string) {
+  currentParticipantId = id;
+}

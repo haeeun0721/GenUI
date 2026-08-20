@@ -19,7 +19,7 @@ import {
   type UIMessage,
   type ModelMessage,
 } from "ai";
-import { openai } from "@ai-sdk/openai";
+import { anthropic } from "@ai-sdk/anthropic";
 import { SPEC_DATA_PART_TYPE } from "@json-render/core";
 import { headers } from "next/headers";
 import {
@@ -43,6 +43,7 @@ import {
   setCurrentLocale,
   setCurrentOptionListCards,
   setCurrentComparisonTableCells,
+  setCurrentParticipantId,
 } from "@/lib/backend/tools/sidebar-store";
 import { findProductInLocalDB } from "@/lib/backend/agents/data_agent";
 import { streamChatReply } from "@/lib/backend/agents/chat_agent";
@@ -61,6 +62,13 @@ export const maxDuration = 60;
  * 예전엔 이 세 곳 모두 원본 modelMessages를 그대로 받아서, 이전 턴에 생성된 상품 카드/표
  * JSON이 반복적으로 등장하는 걸 모델이 "지금 이 턴의 주제"로 착각해 최신 메시지와 무관한
  * 응답을 내는 문제가 있었다(예: 옛 검색 조건이 최신 질문의 user_goal로 잘못 나옴).
+ *
+ * renderToOptionList/renderToCompTable처럼 텍스트 없이 tool-call만 있는 턴은(=화면 결과만
+ * 만들고 말로 답하지 않은 턴) 아래에서 통째로 걸러지는데, 그러면 그 직전 사용자 메시지가
+ * "답변을 하나도 못 받은 질문"처럼 히스토리에 붕 뜬 채로 남는다. 이런 턴이 여러 번 쌓이면
+ * (예: 흡입력 조건 검색을 반복) 다음 "none" 잡담 응답이 최신 질문에 답하기 전에 그 옛
+ * "안 끝난 것처럼 보이는" 질문부터 다시 짚고 넘어가려다 최신 질문과 무관한 내용이 답변
+ * 앞부분에 섞여 나오는 원인이 됐다 — 완전히 지우는 대신 최소한의 자리표시자를 남긴다.
  */
 function buildCompactHistory(messages: ModelMessage[]): ModelMessage[] {
   const compact: ModelMessage[] = [];
@@ -68,11 +76,15 @@ function buildCompactHistory(messages: ModelMessage[]): ModelMessage[] {
     if (msg.role === "tool") continue; // 순수 tool-result 캐리어 — 텍스트 대화 흐름에 불필요
     if (msg.role === "assistant") {
       if (typeof msg.content === "string") {
-        if (msg.content.trim()) compact.push(msg);
+        compact.push(msg.content.trim() ? msg : { ...msg, content: "(화면을 갱신했습니다)" });
         continue;
       }
       const textParts = (msg.content as any[]).filter((p) => p?.type === "text" && p.text?.trim());
-      if (textParts.length > 0) compact.push({ ...msg, content: textParts } as ModelMessage);
+      if (textParts.length > 0) {
+        compact.push({ ...msg, content: textParts } as ModelMessage);
+      } else if ((msg.content as any[]).some((p) => p?.type === "tool-call")) {
+        compact.push({ ...msg, content: "(화면을 갱신했습니다)" } as ModelMessage);
+      }
       continue;
     }
     compact.push(msg); // user/system 메시지는 이미 STRIP_PATTERNS로 정제됨 — 그대로 유지
@@ -134,14 +146,29 @@ export async function POST(req: Request) {
   const locale = (localeCookie?.split("=")[1]?.trim() ?? "ko") as "ko" | "en";
   setCurrentLocale(locale);
 
+  // "[Decision Criteria : ...]" (검색창에 기준 칩을 끌어놓았을 때 붙는 표시용 prefix — app/page.tsx
+  // handleSubmit의 visibleCriteria)를 자연어로 정규화한다. 대소문자·콜론 앞 공백이 아래 전역
+  // "[DECISION CRITERIA: ...]" (사이드패널 저장 기준 목록) 태그와 달라 STRIP_PATTERNS 어디에도
+  // 안 걸려 그대로 새어나갔었다 — Intent Analyzer/Action Router/Edit Agent가 이 대괄호 태그
+  // 원문을 사용자 발화로 그대로 받아 criteriaMap 항목("가격대")에 대한 edit 요청으로 오분류하는
+  // 원인이 됐다. app/page.tsx의 extractUserDisplayText(표시 전용 정규화)와 동일한 치환을
+  // 백엔드로 넘어가는 텍스트에도 적용해 LLM에는 항상 자연어만 보이게 한다. ^ 앵커로 문자열
+  // 맨 앞에서만 매칭하므로, 항상 "\n\n"이 앞에 붙는 전역 "[DECISION CRITERIA: ...]" 태그와는
+  // 섞이지 않는다.
+  const normalizeDecisionCriteriaPrefix = (text: string) =>
+    text.replace(/^\[Decision Criteria\s*:([^\]]*)\]\s*/i, '"$1" ');
+
   // Extract USER CONTEXT directly from the latest user message (bypasses LLM)
   const latestUserMsg = [...uiMessages].reverse().find(m => m.role === "user");
-  const latestText = latestUserMsg?.parts
-    ?.filter((p: any) => p.type === "text")
-    .map((p: any) => p.text)
-    .join("") ?? "";
+  const latestText = normalizeDecisionCriteriaPrefix(
+    latestUserMsg?.parts
+      ?.filter((p: any) => p.type === "text")
+      .map((p: any) => p.text)
+      .join("") ?? ""
+  );
   const userContextMatch = latestText.match(/\[USER CONTEXT:\s*([^\]]+)\]/);
-  setCurrentUserContext(userContextMatch ? userContextMatch[1].trim() : "");
+  const userContext = userContextMatch ? userContextMatch[1].trim() : "";
+  setCurrentUserContext(userContext);
 
   // Extract MY ITEMS with specs from message text
   const myItemsMatch = latestText.match(/\[CONTEXT: User has these items in 'MY ITEMS' cart: ([^\]]+)\]/);
@@ -179,6 +206,7 @@ export async function POST(req: Request) {
   // Extract PARTICIPANT ID — 참가자별 공유 메모리(session-memory.ts)의 키.
   const participantIdMatch = latestText.match(/\[PARTICIPANT ID:\s*([^\]]+)\]/);
   const participantId = participantIdMatch ? participantIdMatch[1].trim() : "";
+  setCurrentParticipantId(participantId);
 
   // Pre-fetch My Items product data BEFORE the Conversation Agent runs.
   const myItemsTagMatch = latestText.match(/\[My items\s*:\s*([^\]]+)\]/i);
@@ -187,6 +215,7 @@ export async function POST(req: Request) {
     : [];
   setCurrentMyItemsRaw(myItemsRaw);
 
+  let myItemsContextSummary = "";
   if (myItemsRaw.length > 0) {
     console.log(`[Route] Looking up ${myItemsRaw.length} My Items from local DB...`);
     const summaries: string[] = [];
@@ -206,7 +235,8 @@ export async function POST(req: Request) {
         console.warn(`[LocalDB] Not found: "${name}" — skipping`);
       }
     }
-    setCurrentMyItemsContextSummary(summaries.join("\n\n"));
+    myItemsContextSummary = summaries.join("\n\n");
+    setCurrentMyItemsContextSummary(myItemsContextSummary);
     console.log(`[Route] Local DB lookup complete. ${summaries.length}/${myItemsRaw.length} products found.`);
   } else {
     setCurrentMyItemsContextSummary("");
@@ -224,19 +254,27 @@ export async function POST(req: Request) {
     /\n{0,2}\[CURRENT_COMPARISON_TABLE\]\n[\s\S]*?(?=\n\[|$)/g,
     /\n{0,2}\[CURRENT_OPTION_LIST\]\n[\s\S]*?(?=\n\[|$)/g,
     /\n{0,2}\[USER CONTEXT:[^\]]+\]/g,
-    /\n{0,2}\[My items\s*:[^\]]+\]/gi,
     /\n{0,2}\[DECISION CRITERIA:(?:[^\[\]]|\[[^\]]*\])*\]/gi,
     /\n{0,2}\[CONTEXT:[^\]]+\]/gi,
     /\n{0,2}\[ASSIGNED ITEM:[^\]]+\]/gi,
     /\n{0,2}\[PARTICIPANT ID:[^\]]+\]/gi,
   ];
+  // [My items: ...] 태그는 다른 태그와 달리 그냥 지우지 않고 사람이 읽을 수 있는 이름
+  // 목록으로 치환한다 — 그냥 지우면 제품 칩을 클릭해 "이 세 가지 제품을 비교해줘"처럼
+  // 지시대명사로 말한 과거 턴이 히스토리에서 어떤 제품이었는지 통째로 사라져, 이후 턴에서
+  // intent_analyzer/edit_agent 등이 그 맥락을 다시 못 찾는다.
+  const MY_ITEMS_PATTERN = /\n{0,2}\[My items\s*:([^\]]+)\]/gi;
   const sanitizedMessages: typeof uiMessages = uiMessages.map(msg => {
     if (msg.role !== "user") return msg;
     return {
       ...msg,
       parts: msg.parts.map((p: any) => {
         if (p.type !== "text") return p;
-        let text = p.text;
+        let text = normalizeDecisionCriteriaPrefix(p.text);
+        text = text.replace(MY_ITEMS_PATTERN, (_m: string, list: string) => {
+          const names = list.split(',').map((s: string) => s.split('|')[0].trim()).filter(Boolean);
+          return names.length > 0 ? ` "${names.join(', ')}"` : '';
+        });
         for (const pattern of STRIP_PATTERNS) text = text.replace(pattern, "");
         return { ...p, text };
       }),
@@ -278,9 +316,18 @@ export async function POST(req: Request) {
   const currentProductNames = currentProducts.map(p => p.name);
   console.log(`[Route] Turn ${uiMessages.length} | requestId: ${requestId.slice(0, 10)} | CURRENT_OPTION_LIST: ${hasOptionList ? '✅ 있음' : '❌ 없음'} | products: [${currentProductNames.join(', ')}]`);
 
+  // Option List 카드는 가격을 specs 배열이 아니라 별도 price 필드로 들고 있다 — 그걸 그대로
+  // 빼고 넘기면(specs만) lookupKnownSpecValue가 "가격" 기준을 찾을 때 카드에 가격이 뻔히
+  // 보이는데도 화면에 없는 것처럼 판단해 불필요한 Tavily 재검색을 돌리고, 그마저 실패하면
+  // "-"(증거 없음)로 표시된다 — 가격을 스펙 문구로 접어 넣어 화면-known 값으로 인식되게 한다.
+  const optionListCardsWithPrice = currentProducts.map(p => ({
+    name: p.name,
+    specs: p.priceStr ? [`가격: ${p.priceStr}`, ...p.specs] : p.specs,
+  }));
+
   // Option List 카드가 이미 화면에 보여준 스펙 칩을 renderToCompTable/render-to-option-list가
   // 재검색 없이 재사용할 수 있게 sidebar-store에 실어둔다(요청마다 덮어씀 — 영속 캐시 아님).
-  setCurrentOptionListCards(currentProducts.map(p => ({ name: p.name, specs: p.specs })));
+  setCurrentOptionListCards(optionListCardsWithPrice);
 
   // Parse existing CriteriaMap categories from CURRENT_CRITERIA_MAP tag.
   // This tag is always appended last (see app/page.tsx handleSubmit), and its content
@@ -356,13 +403,20 @@ export async function POST(req: Request) {
     : '(nothing on screen yet)';
 
   // ─── Criteria-Only Pre-filter ──────────────────────────────────────────────
+  // [My items: ...] 태그는 "이름|링크" 원문을 담고 있는데, 그냥 지워버리면(예전 코드) 사용자가
+  // 제품 칩을 클릭해 "이 세 가지 제품을 비교해줘"처럼 지시대명사로 말한 문장에서 실제로 어떤
+  // 제품인지가 통째로 사라진다 — 그 결과를 쓰는 intent_analyzer/edit_agent/action_router/
+  // template_selector 등 strippedLatest를 참조하는 모든 곳이 엉뚱한(또는 화면의 다른) 제품을
+  // 비교 대상으로 오인했다. 프론트(app/page.tsx)가 채팅에 표시할 때 하는 것과 동일하게, 지우는
+  // 대신 사람이 읽을 수 있는 따옴표 붙은 이름 목록으로 치환한다.
+  const myItemsNamesForText = myItemsRaw.map((e) => e.split('|')[0].trim()).filter(Boolean);
   const strippedLatest = latestText
     .replace(/\[CURRENT_CRITERIA_MAP\][\s\S]*$/, '') // always the trailing tag; strip to end-of-string first
     .replace(/\[CURRENT_COMPARISON_TABLE\]\n[\s\S]*?(?=\n\[|$)/, '')
     .replace(/\[CURRENT_OPTION_LIST\]\n[\s\S]*?(?=\n\[|$)/, '')
     .replace(/\n{0,2}\[DECISION CRITERIA:(?:[^\[\]]|\[[^\]]*\])*\]/gi, '')
     .replace(/\[USER CONTEXT:[^\]]*\]/gi, '')
-    .replace(/\[My items\s*:[^\]]*\]/gi, '')
+    .replace(/\[My items\s*:[^\]]*\]/gi, myItemsNamesForText.length > 0 ? `"${myItemsNamesForText.join(', ')}"` : '')
     .replace(/\[ASSIGNED ITEM:[^\]]*\]/gi, '')
     .replace(/\[PARTICIPANT ID:[^\]]*\]/gi, '')
     .replace(/\[CONTEXT:[^\]]*\]/gi, '')
@@ -430,6 +484,39 @@ export async function POST(req: Request) {
     compactModelMessages,
   };
 
+  // ⚠️ sidebar-store.ts의 current*는 요청 시작 시 한 번만 설정되는 프로세스 전역 변수라,
+  // 이 요청이 이후 여러 LLM await(intent_analyzer → action_router/template_selector/
+  // edit_agent 경합, 그리고 각 도구의 내부 await)를 거치는 동안 다른 요청이 끼어들어
+  // setCurrent*()로 값을 덮어쓸 수 있다. 그러면 이 요청이 나중에 도구를 실행할 때
+  // 엉뚱한(다른 요청의) 값을 읽게 된다 — render-to-option-list.ts에서 실제로 이 문제로
+  // ProductCardList 결과가 다른 턴의 질문에 잘못 라벨링되는 버그가 있었다. 위에서 이미
+  // 안전하게 계산해둔 로컬 값들로 전역을 다시 써서, 그 직후 이어지는 동기 구간(다음
+  // await 전까지)에서는 항상 이 요청의 값을 보장한다. LLM 경합 시작 직전과 각 도구
+  // 실행 직전, 두 지점에서 호출한다.
+  const reapplyRequestGlobals = () => {
+    setCurrentRequestId(requestId);
+    setCurrentParticipantId(participantId);
+    setCurrentLocale(locale);
+    setCurrentUserContext(userContext);
+    setCurrentSavedItems(myItemsList);
+    setCurrentDecisionCriteria(decisionCriteriaList);
+    setCurrentProductCategory(productCategory);
+    setCurrentMyItemsRaw(myItemsRaw);
+    setCurrentMyItemsContextSummary(myItemsContextSummary);
+    setCurrentOptionListCards(optionListCardsWithPrice);
+    setCurrentComparisonTableCells(
+      comparisonTableProducts.map((col) => ({
+        name: col.label,
+        specs: tableDataRows
+          .map((r: any) => {
+            const val = r[col.key];
+            return val && val !== "-" ? `${r.criterion}: ${val}` : null;
+          })
+          .filter((s: string | null): s is string => s !== null),
+      }))
+    );
+  };
+
   // ─── [1] Intent Agent Fast: 의도 분류 (text_reply 없음, ~0.5–1s) ────────────
   // stream은 분류 중 즉시 열려 TTFB 개선. Cat 1a/1b는 text reply를 generator와 병렬 생성.
   const stream = createUIMessageStream({
@@ -466,6 +553,10 @@ export async function POST(req: Request) {
         return;
       }
 
+      // intent_analyzer의 await 도중 다른 요청이 전역을 덮어썼을 수 있으니, edit_agent(planEdit)가
+      // 곧바로 전역을 읽기 전에(아래 editPlanPromise) 다시 이 요청의 값으로 되돌려놓는다.
+      reapplyRequestGlobals();
+
       // ── [2] Action Router + [속도 최적화] Template Selector/Edit Planner 추측 실행 ─────────
       // template_selector와 edit_agent는 실제로는 actionRoute의 "값"에 의존하지 않는다 —
       // 둘 다 intentAnalysis + ctx만 있으면 되고, 그동안은 actionRoute.action==='generate'/
@@ -484,7 +575,8 @@ export async function POST(req: Request) {
         routeAction(
           intentAnalysis,
           { hasOptionList: ctx.hasOptionList, hasComparisonTable: ctx.hasComparisonTable, hasCriteriaMap: ctx.hasCriteriaMap },
-          ctx.screenSummary
+          ctx.screenSummary,
+          ctx.strippedLatest
         )
       );
       const templateSelectionPromise = time("template_selector", requestId, () =>
@@ -577,7 +669,7 @@ export async function POST(req: Request) {
 
           const uiStreamStartedAt = Date.now();
           const { textStream } = streamText({
-            model: openai(UI_AGENT_MODEL),
+            model: anthropic(UI_AGENT_MODEL),
             system: systemStr,
             messages: extendedMessages as any,
             maxOutputTokens: 2500,
@@ -648,6 +740,7 @@ export async function POST(req: Request) {
           // ── Generate: ComparisonTable ──────────────────────────────────────────────────────
         } else if (template === 'ComparisonTable') {
           const renderCompTableStartedAt = Date.now();
+          reapplyRequestGlobals();
           const compTableSpec = await (renderToCompTable as any).execute({
             intent_summary: intentAnalysis.user_goal,
             ui_intent_category: 'ComparisonTable',
@@ -668,8 +761,16 @@ export async function POST(req: Request) {
           // ── Generate: ProductCardList ──────────────────────────────────────────────────────
         } else if (template === 'ProductCardList') {
           const renderOptionListStartedAt = Date.now();
+          reapplyRequestGlobals();
+          // search_query는 반드시 사용자 원문(ctx.strippedLatest)이어야 한다 — ragSearch의
+          // parseConstraints()가 하드 필터(가격/무게/흡입력 등)를 "50만원 이하" 같은 한국어
+          // 수치 패턴으로만 정규식 매칭한다. intentAnalysis.user_goal(LLM이 쓴 영어 요약)을
+          // 넘기면 이 패턴이 전혀 매칭되지 않아 가격 상한이 조용히 무시되고, 게다가 Haiku가
+          // "50만원"(50×10,000원)을 "50 million won"으로 잘못 환산해 리랭커에게도 잘못된
+          // 예산 인식을 심어준다 — 그 결과 50만원 이하를 요청했는데 수백만원짜리 카메라가
+          // 추천되는 사고로 이어졌다. intent_summary는 부가 설명용이라 기존처럼 유지한다.
           const optionListSpec = await (renderToOptionList as any).execute({
-            search_query: intentAnalysis.user_goal,
+            search_query: ctx.strippedLatest || intentAnalysis.user_goal,
             intent_summary: intentAnalysis.user_goal,
             ui_intent_category: 'ProductCardList',
           });
@@ -703,10 +804,16 @@ export async function POST(req: Request) {
         }
 
         if (editPlan.target_surface === 'optionList') {
-          if (editPlan.op === 'filter' && !ctx.hasOptionList) {
-            // filter로 판단됐지만 화면에 리스트가 없는 방어적 케이스 → fresh 검색으로 전환
-            console.log('[Route] filter op + no existing list → renderToOptionList로 전환');
+          if ((editPlan.op === 'filter' || editPlan.op === 'add') && !ctx.hasOptionList) {
+            // filter/add로 판단됐지만 화면에 리스트가 없는 방어적 케이스 → fresh 검색으로 전환.
+            // mutateSurface(add)는 "기존 리스트에 카드를 이어붙이는" diff(new_cards)만 반환하고,
+            // 프론트의 mutate 핸들러(app/page.tsx applyToSpec)도 기존 productCardListSpec이
+            // 있을 때만 patch를 적용한다 — prev가 null이면 그대로 버린다. 그 결과 화면에
+            // 리스트가 없는 상태에서 add로 라우팅되면 백엔드는 RAG 검색까지 성공해도 프론트가
+            // 적용할 대상이 없어 카드가 통째로 유실되고 아무것도 렌더되지 않았다.
+            console.log(`[Route] ${editPlan.op} op + no existing list → renderToOptionList로 전환`);
             const filterQuery = editPlan.original_query ?? intentAnalysis.user_goal;
+            reapplyRequestGlobals();
             await time("render_option_list_fallback", requestId, () =>
               (renderToOptionList as any).execute({
                 search_query: filterQuery,
@@ -715,6 +822,7 @@ export async function POST(req: Request) {
               })
             );
           } else {
+            reapplyRequestGlobals();
             await time("mutate_option_list", requestId, () =>
               (mutateSurface as any).execute({
                 surface: 'optionList',
@@ -733,8 +841,21 @@ export async function POST(req: Request) {
 
         } else if (editPlan.target_surface === 'comparisonTable') {
           if (!ctx.currentComparisonTable) {
-            console.warn('[Route] target_surface=comparisonTable이지만 지원 범위를 벗어남(현재 테이블 없음) — edit 스킵');
+            // comparisonTable로 판단됐지만 화면에 테이블이 없는 방어적 케이스 → fresh 생성으로 전환.
+            // optionList의 filter/add + 리스트 없음 폴백(위)과 동일한 이유: action_router가 edit으로
+            // 오분류해도(예: "이 두 가지 제품을 비교해줘" — hasComparisonTable=false인데 edit으로 옴)
+            // 사용자에게 빈 응답 대신 실제 비교표를 보여준다.
+            console.log('[Route] target_surface=comparisonTable이지만 화면에 테이블 없음 → renderToCompTable로 전환');
+            generatedTemplate = 'ComparisonTable';
+            reapplyRequestGlobals();
+            await time("render_comp_table_fallback", requestId, () =>
+              (renderToCompTable as any).execute({
+                intent_summary: intentAnalysis.user_goal,
+                ui_intent_category: 'ComparisonTable',
+              })
+            );
           } else {
+            reapplyRequestGlobals();
             await time("mutate_comparison_table", requestId, () =>
               (mutateComparisonTable as any).execute({
                 surface: 'comparisonTable',
@@ -771,7 +892,9 @@ export async function POST(req: Request) {
         writer.write({ type: "data-action-type", data: { action: "none" } } as any);
         writer.write({ type: "text-start", id: textId } as any);
         const noneStreamStartedAt = Date.now();
-        const { textStream: noneStream } = streamChatReply(ctx.locale, await memoryPromptBlock, ctx.compactModelMessages as any, ctx.screenDetail);
+        const memoryPrompt = await memoryPromptBlock;
+        reapplyRequestGlobals();
+        const { textStream: noneStream } = streamChatReply(ctx.locale, memoryPrompt, ctx.compactModelMessages as any, ctx.screenDetail);
         let noneReplyText = "";
         for await (const delta of noneStream) {
           noneReplyText += delta;

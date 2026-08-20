@@ -142,7 +142,7 @@ const T = {
 
 const SPEC_COLLAPSED_COUNT = 4;
 
-function SpecChips({ specs, locale = "ko" }: { specs: string[]; locale?: UILocale }) {
+function SpecChips({ specs, locale = "ko", newSpecs }: { specs: string[]; locale?: UILocale; newSpecs?: Set<string> }) {
   const [expanded, setExpanded] = useState(false);
   const t = T[locale];
   if (!Array.isArray(specs) || specs.length === 0) return null;
@@ -151,14 +151,18 @@ function SpecChips({ specs, locale = "ko" }: { specs: string[]; locale?: UILocal
   const hasMore = hiddenCount > 0;
   return (
     <div className="flex flex-wrap gap-1 mt-0.5">
-      {visible.map((spec: string, i: number) => (
-        <span
-          key={i}
-          className="text-[9px] text-[#666666] bg-[#F5F5F5] px-1.5 py-0.5 rounded-full max-w-full break-words"
-        >
-          {spec}
-        </span>
-      ))}
+      {visible.map((spec: string, i: number) => {
+        const isNewChip = !!newSpecs?.has(spec);
+        return (
+          <span
+            key={i}
+            className={`text-[9px] text-[#666666] bg-[#F5F5F5] px-1.5 py-0.5 rounded-full max-w-full break-words${isNewChip ? " animate-highlight-wrap" : ""}`}
+            style={isNewChip ? { boxShadow: "0 0 0 2px rgba(165,186,232,0.85)", backgroundColor: "rgba(165,186,232,0.18)" } : undefined}
+          >
+            {spec}
+          </span>
+        );
+      })}
       {hasMore && (
         <button
           type="button"
@@ -393,6 +397,8 @@ export const manualRegistry: Record<string, any> = {
           });
         });
 
+        // 최초 생성이든 이후 추가든 새로 나타난 카테고리/칩은 항상 박스로 표시한다
+        // (스크롤 자동 이동만 최초 생성 시에는 억제 — 아래 참조).
         if (hasNew) {
           setAnimatingKeys(prev => {
             const next = new Set(prev);
@@ -501,127 +507,209 @@ export const manualRegistry: Record<string, any> = {
           )}
 
           {/* Normal Categories Section */}
-          {normalCategories.map((cat: any, ci: number) => {
-            const items: any[] = Array.isArray(cat.items) ? cat.items : [];
-            const isCollapsed = collapsed[ci] ?? false;
+          {(() => {
+            // 카테고리 하나(header + chips)의 본문만 렌더링 — 바깥 테두리/하이라이트는
+            // 호출부(단일 vs 묶음)가 각자 다르게 씌운다. roundedSelf: 이 카테고리가 자체
+            // 테두리를 갖는 단일 박스일 때만 상/하단 모서리를 둥글린다(묶음일 땐 바깥
+            // wrapper의 rounded+overflow-hidden이 첫/마지막 항목의 모서리를 대신 잘라준다).
+            // dividerTop: 묶음 안에서 두 번째 이후 카테고리 위에 구분선을 넣는다.
+            const renderCategoryBody = (cat: any, ci: number, isCatNew: boolean, roundedSelf: boolean, dividerTop: boolean) => {
+              const items: any[] = Array.isArray(cat.items) ? cat.items : [];
+              const isCollapsed = collapsed[ci] ?? false;
 
-            const isCatNew = animatingKeys.has(`cat::${cat.label}`);
-
-            return (
-              <div
-                key={ci}
-                className={`border border-slate-200 rounded-[8px]${isCatNew ? " animate-highlight-wrap" : ""}`}
-                style={isCatNew ? { animationDelay: `${ci * 0.07}s` } : undefined}
-                onAnimationEnd={(e) => {
-                  if (isCatNew && e.animationName === 'highlight-wrap') {
-                    setAnimatingKeys(prev => {
-                      const next = new Set(prev);
-                      next.delete(`cat::${cat.label}`);
-                      return next;
-                    });
-                  }
-                }}
-              >
-                {/* Accordion header */}
-                <button
-                  type="button"
-                  onClick={() => setCollapsed(prev => ({ ...prev, [ci]: !isCollapsed }))}
-                  className="w-full flex items-center justify-between px-4 py-3 bg-white hover:bg-slate-50 transition-colors rounded-[8px]"
-                >
-                  <span className="text-[13.5px] font-semibold text-slate-800 text-left">
-                    {cat.label}
-                  </span>
-                  <ChevronDown
-                    className={`w-4 h-4 text-slate-400 transition-transform duration-250 ${isCollapsed ? "" : "rotate-180"}`}
-                  />
-                </button>
-
-                {/* Chips — max-height transition */}
+              return (
                 <div
-                  style={{
-                    maxHeight: isCollapsed ? 0 : 500,
-                    overflow: isCollapsed ? "hidden" : "visible",
-                    transition: "max-height 0.28s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease",
-                    opacity: isCollapsed ? 0 : 1,
-                  }}
+                  key={ci}
+                  ref={(el) => { categoryElRefs.current[cat.label] = el; }}
+                  className={dividerTop ? "border-t border-slate-100" : undefined}
                 >
-                  <div className="px-4 pb-3 pt-2 flex flex-wrap gap-2 border-t border-slate-100 bg-white rounded-b-[8px]">
+                  {/* Accordion header */}
+                  <button
+                    type="button"
+                    onClick={() => setCollapsed(prev => ({ ...prev, [ci]: !isCollapsed }))}
+                    className={`w-full flex items-center justify-between px-4 py-3 bg-white hover:bg-slate-50 transition-colors${roundedSelf ? " rounded-t-[8px]" : ""}`}
+                    style={isCatNew ? { backgroundColor: 'rgba(165,186,232,0.18)' } : undefined}
+                  >
+                    <span className="text-[13.5px] font-semibold text-slate-800 text-left">
+                      {cat.label}
+                    </span>
+                    <ChevronDown
+                      className={`w-4 h-4 text-slate-400 transition-transform duration-250 ${isCollapsed ? "" : "rotate-180"}`}
+                    />
+                  </button>
 
-                    {items.map((item: any, ii: number) => {
-                      const chipKey = `${cat.label}::${item.name}`;
-                      const isNew = animatingKeys.has(`chip::${chipKey}`);
+                  {/* Chips — max-height transition */}
+                  <div
+                    style={{
+                      maxHeight: isCollapsed ? 0 : 500,
+                      overflow: isCollapsed ? "hidden" : "visible",
+                      transition: "max-height 0.28s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease",
+                      opacity: isCollapsed ? 0 : 1,
+                    }}
+                  >
+                    <div
+                      className={`px-4 pb-3 pt-2 flex flex-wrap gap-2 border-t border-slate-100 bg-white${roundedSelf ? " rounded-b-[8px]" : ""}`}
+                      style={isCatNew ? { backgroundColor: 'rgba(165,186,232,0.18)' } : undefined}
+                    >
 
-                      const isSelected = allProps.bindings?.droppedCriteria?.some(
-                        (c: any) => c.name === item.name
-                      );
-                      const isImportant = !!item.important;
+                      {items.map((item: any, ii: number) => {
+                        const chipKey = `${cat.label}::${item.name}`;
+                        // 카테고리 자체가 이번에 새로 생긴 경우엔 박스 전체가 이미 하이라이트되므로
+                        // 그 안의 칩까지 개별적으로 또 반짝이면 중복이다 — 기존 카테고리에 새
+                        // 항목만 추가됐을 때만(isCatNew=false) 칩 단위 하이라이트를 켠다.
+                        const isNew = !isCatNew && animatingKeys.has(`chip::${chipKey}`);
 
-                      return (
-                        <div
-                          key={`${ci}-${ii}-${item.name}`}
-                          className={`relative rounded-full${isNew ? " animate-highlight-wrap" : ""}`}
-                          style={isNew ? { animationDelay: `${ii * 0.05}s` } : undefined}
-                          onAnimationEnd={(e) => {
-                            if (isNew && e.animationName === 'highlight-wrap') {
-                              setAnimatingKeys(prev => {
-                                const next = new Set(prev);
-                                next.delete(`chip::${chipKey}`);
-                                return next;
-                              });
-                            }
-                          }}
-                          onMouseEnter={isImportant && item.reason ? (e) => {
-                            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                            setTooltip({
-                              text: item.reason,
-                              x: rect.left + rect.width / 2,
-                              y: rect.top - 10,
-                            });
-                          } : undefined}
-                          onMouseLeave={isImportant && item.reason ? () => setTooltip(null) : undefined}
-                          draggable
-                          onDragStart={(e) => {
-                            e.dataTransfer.setData("application/json", JSON.stringify(item));
-                            e.dataTransfer.setData("text/plain", item.name);
-                            e.dataTransfer.effectAllowed = "copy";
-                            allProps.bindings?.onDragStartCriteria?.();
-                          }}
-                        >
-                          <button
-                            type="button"
-                            onClick={() => {
-                              allProps.bindings?.onToggleCriteria?.(item);
+                        const isSelected = allProps.bindings?.droppedCriteria?.some(
+                          (c: any) => c.name === item.name
+                        );
+                        const isImportant = !!item.important;
+
+                        return (
+                          <div
+                            key={`${ci}-${ii}-${item.name}`}
+                            className={`relative rounded-full${isNew ? " animate-highlight-wrap" : ""}`}
+                            style={isNew ? { animationDelay: `${ii * 0.05}s`, boxShadow: '0 0 0 2px rgba(165,186,232,0.85)', borderRadius: '9999px' } : undefined}
+                            onAnimationEnd={(e) => {
+                              if (isNew && e.animationName === 'highlight-wrap') {
+                                setAnimatingKeys(prev => {
+                                  const next = new Set(prev);
+                                  next.delete(`chip::${chipKey}`);
+                                  return next;
+                                });
+                              }
                             }}
-                            className={`flex items-center gap-1.5 rounded-full px-3 h-[32px] border transition-all duration-200 cursor-pointer hover:shadow-sm active:scale-[0.97] ${isSelected
-                              ? "bg-slate-100 border-slate-400 text-slate-800"
-                              : "bg-white border-slate-300 text-slate-700 hover:border-slate-500"
-                              }`}
+                            onMouseEnter={isImportant && item.reason ? (e) => {
+                              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                              setTooltip({
+                                text: item.reason,
+                                x: rect.left + rect.width / 2,
+                                y: rect.top - 10,
+                              });
+                            } : undefined}
+                            onMouseLeave={isImportant && item.reason ? () => setTooltip(null) : undefined}
+                            draggable
+                            onDragStart={(e) => {
+                              e.dataTransfer.setData("application/json", JSON.stringify(item));
+                              e.dataTransfer.setData("text/plain", item.name);
+                              e.dataTransfer.effectAllowed = "copy";
+                              allProps.bindings?.onDragStartCriteria?.();
+                            }}
                           >
-                            {isImportant && (
-                              <span className={`text-[9.5px] font-bold rounded-full px-1.5 py-0.5 leading-none select-none whitespace-nowrap ${isSelected
-                                ? "text-rose-400 bg-rose-100"
-                                : "text-rose-400 bg-rose-100"
-                                }`}>
-                                {t.important}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                allProps.bindings?.onToggleCriteria?.(item);
+                              }}
+                              className={`flex items-center gap-1.5 rounded-full px-3 h-[32px] border transition-all duration-200 cursor-pointer hover:shadow-sm active:scale-[0.97] ${isSelected
+                                ? "bg-slate-100 border-slate-400 text-slate-800"
+                                : "bg-white border-slate-300 text-slate-700 hover:border-slate-500"
+                                }`}
+                              style={isNew ? { backgroundColor: 'rgba(165,186,232,0.18)' } : undefined}
+                            >
+                              {isImportant && (
+                                <span className={`text-[9.5px] font-bold rounded-full px-1.5 py-0.5 leading-none select-none whitespace-nowrap ${isSelected
+                                  ? "text-rose-400 bg-rose-100"
+                                  : "text-rose-400 bg-rose-100"
+                                  }`}>
+                                  {t.important}
+                                </span>
+                              )}
+                              <span className={`text-[12.5px] select-none whitespace-nowrap font-medium ${isSelected ? "text-slate-800" : "text-slate-700"}`}>
+                                {item.name}
                               </span>
-                            )}
-                            <span className={`text-[12.5px] select-none whitespace-nowrap font-medium ${isSelected ? "text-slate-800" : "text-slate-700"}`}>
-                              {item.name}
-                            </span>
-                            {item.min && (
-                              <span className={`text-[10.5px] font-medium select-none whitespace-nowrap ${isSelected ? "text-slate-500" : "text-slate-400"}`}>
-                                {item.min}
-                              </span>
-                            )}
-                          </button>
-                        </div>
-                      );
-                    })}
+                              {item.min && (
+                                <span className={`text-[10.5px] font-medium select-none whitespace-nowrap ${isSelected ? "text-slate-500" : "text-slate-400"}`}>
+                                  {item.min}
+                                </span>
+                              )}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            };
+
+            // 연속해서 "새로 생긴" 카테고리는 각자 따로 하이라이트 박스를 두르지 않고, 하나의
+            // 큰 보라색 박스로 묶어서 "이번에 한꺼번에 생긴 묶음"임을 보여준다. 새 카테고리가
+            // 아니거나 다른 새 카테고리와 연속하지 않으면(기존과 동일하게) 단독 박스로 그린다.
+            const blocks: any[] = [];
+            let i = 0;
+            while (i < normalCategories.length) {
+              const cat = normalCategories[i];
+              const isCatNew = animatingKeys.has(`cat::${cat.label}`);
+
+              if (!isCatNew) {
+                blocks.push(
+                  <div key={`single-${i}`} className="border border-slate-200 rounded-[8px]">
+                    {renderCategoryBody(cat, i, false, true, false)}
+                  </div>
+                );
+                i++;
+                continue;
+              }
+
+              const runStart = i;
+              let j = i;
+              while (j < normalCategories.length && animatingKeys.has(`cat::${normalCategories[j].label}`)) j++;
+              const run = normalCategories.slice(runStart, j);
+
+              if (run.length === 1) {
+                blocks.push(
+                  <div
+                    key={`single-${runStart}`}
+                    className="border rounded-[8px] animate-highlight-wrap"
+                    style={{ animationDelay: `${runStart * 0.07}s`, borderColor: 'rgba(129,155,224,0.9)', boxShadow: '0 0 0 3px rgba(165,186,232,0.25)' }}
+                    onAnimationEnd={(e) => {
+                      if (e.animationName !== 'highlight-wrap') return;
+                      setAnimatingKeys(prev => {
+                        const next = new Set(prev);
+                        next.delete(`cat::${cat.label}`);
+                        // 이 카테고리 자체가 새로 생긴 경우 그 안의 칩들은 isCatNew 때문에
+                        // 처음부터 개별 애니메이션이 재생되지 않았다 — chip:: 키를 여기서
+                        // 같이 지우지 않으면 나중에 isCatNew가 false로 바뀐 뒤(다음 렌더부터)
+                        // 그 칩들이 뒤늦게 혼자 반짝이는 것처럼 보인다.
+                        (Array.isArray(cat.items) ? cat.items : []).forEach((item: any) => {
+                          next.delete(`chip::${cat.label}::${item.name}`);
+                        });
+                        return next;
+                      });
+                    }}
+                  >
+                    {renderCategoryBody(cat, runStart, true, true, false)}
+                  </div>
+                );
+              } else {
+                blocks.push(
+                  <div
+                    key={`group-${run.map((c: any) => c.label).join('|')}`}
+                    className="border-2 rounded-[10px] overflow-hidden animate-highlight-wrap"
+                    style={{ borderColor: 'rgba(129,155,224,0.9)', boxShadow: '0 0 0 3px rgba(165,186,232,0.25)' }}
+                    onAnimationEnd={(e) => {
+                      if (e.animationName !== 'highlight-wrap') return;
+                      setAnimatingKeys(prev => {
+                        const next = new Set(prev);
+                        run.forEach((c: any) => {
+                          next.delete(`cat::${c.label}`);
+                          // 위 단일 케이스와 동일한 이유로 그룹에 속한 각 카테고리의 칩 키도 함께 정리.
+                          (Array.isArray(c.items) ? c.items : []).forEach((item: any) => {
+                            next.delete(`chip::${c.label}::${item.name}`);
+                          });
+                        });
+                        return next;
+                      });
+                    }}
+                  >
+                    {run.map((c: any, k: number) => renderCategoryBody(c, runStart + k, true, false, k > 0))}
+                  </div>
+                );
+              }
+              i = j;
+            }
+            return blocks;
+          })()}
         </div>
       );
     };
@@ -664,11 +752,11 @@ export const manualRegistry: Record<string, any> = {
         : productCols;
       const sortedColKeysStr = sortedProductCols.map(c => c.key).join(',');
 
-      // 새로 추가된 행/열만 구분해서 하이라이트하기 위한 상태 (CriteriaMap의 animatingKeys와 동일한 목적)
+      // 새로 추가된 행/열만 구분해서 하이라이트하기 위한 상태 (CriteriaMap의 animatingKeys와 동일한
+      // 목적) — 표가 처음 생성되는 순간이든 이후 add_product/add_criteria로 추가되는 순간이든
+      // 항상 해당 행/열 각각에 개별 표시한다(표 전체를 통째로 감싸는 방식은 쓰지 않는다).
       const [animatingRowKeys, setAnimatingRowKeys] = useState<Set<string>>(new Set());
       const [animatingColKeys, setAnimatingColKeys] = useState<Set<string>>(new Set());
-      // 표 전체가 처음 생성되는 순간에만 켜지는 플래그 — 개별 행/열 대신 표 전체를 감싸서 하이라이트한다.
-      const [justCreated, setJustCreated] = useState(false);
       const tableRef = useRef<HTMLTableElement>(null);
       // 열의 마지막 측정 위치(px) — 새 열 추가가 아니라 "기존 열의 순위가 바뀌어 자리가 이동"할 때
       // FLIP(First-Last-Invert-Play) 기법으로 이동을 보여주기 위해 이전 위치를 기억해둔다.
@@ -683,10 +771,6 @@ export const manualRegistry: Record<string, any> = {
           setAnimatingColKeys(new Set());
           return;
         }
-        // 표가 통째로 처음 채워지는 시점엔 "새로 추가됨"으로 보지 않는다(전부 애니메이션되는 것 방지).
-        // 대신 표 전체를 한 번만 감싸는 하이라이트를 보여준다.
-        const isFirstPopulation = globalSeenRows.size === 0 && globalSeenCols.size === 0;
-
         const newRowKeys = new Set<string>();
         for (const r of transposedDataRows) {
           const key = String(r.criterion ?? '');
@@ -697,14 +781,8 @@ export const manualRegistry: Record<string, any> = {
           if (!globalSeenCols.has(c.key)) { newColKeys.add(c.key); globalSeenCols.add(c.key); }
         }
 
-        if (isFirstPopulation) {
-          setJustCreated(true);
-          const t = setTimeout(() => setJustCreated(false), 2000);
-          return () => clearTimeout(t);
-        } else {
-          if (newRowKeys.size > 0) setAnimatingRowKeys(prev => new Set([...prev, ...newRowKeys]));
-          if (newColKeys.size > 0) setAnimatingColKeys(prev => new Set([...prev, ...newColKeys]));
-        }
+        if (newRowKeys.size > 0) setAnimatingRowKeys(prev => new Set([...prev, ...newRowKeys]));
+        if (newColKeys.size > 0) setAnimatingColKeys(prev => new Set([...prev, ...newColKeys]));
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [rowsColsKey, isTransposed]);
 
@@ -757,7 +835,7 @@ export const manualRegistry: Record<string, any> = {
 
         return (
           <div className="w-full">
-            <div className={`overflow-x-auto pb-2${justCreated ? ' animate-highlight-wrap' : ''}`}>
+            <div className="overflow-x-auto pb-2">
               <table ref={tableRef} className="w-full text-[13px] border-collapse">
                 <thead>
                   <tr>
@@ -779,6 +857,7 @@ export const manualRegistry: Record<string, any> = {
                           key={col.key}
                           data-col-key={col.key}
                           className={`align-top px-3 py-2.5 border-b border-slate-100 text-center ${isFirst ? 'bg-white' : ''}${isColNew ? ' animate-highlight-wrap' : ''}`}
+                          style={isColNew ? { boxShadow: 'inset 0 0 0 2px rgba(165,186,232,0.85)', backgroundColor: 'rgba(165,186,232,0.18)' } : undefined}
                           onAnimationEnd={(e) => {
                             if (isColNew && e.animationName === 'highlight-wrap') {
                               setAnimatingColKeys(prev => { const next = new Set(prev); next.delete(col.key); return next; });
@@ -821,7 +900,10 @@ export const manualRegistry: Record<string, any> = {
                           }
                         }}
                       >
-                        <td className="px-3 py-2.5 text-[12px] font-semibold text-slate-700">{row.criterion}</td>
+                        {/* isRowNew: box-shadow는 <tr>에 직접 주면 렌더링이 안 되는 브라우저가 있어
+                            (테이블 로우 페인팅 특성상), 셀(<td>) 각각에 inset으로 걸어 행 전체가
+                            박스로 이어져 보이게 한다. */}
+                        <td className="px-3 py-2.5 text-[12px] font-semibold text-slate-700" style={isRowNew ? { boxShadow: 'inset 0 2px 0 0 rgba(165,186,232,0.85), inset 0 -2px 0 0 rgba(165,186,232,0.85), inset 2px 0 0 0 rgba(165,186,232,0.85)', backgroundColor: 'rgba(165,186,232,0.18)' } : undefined}>{row.criterion}</td>
                         {sortedProductCols.map((col, ci) => {
                           const val = String(row[col.key] ?? '-');
                           const rankVal = rankRow ? String(rankRow[col.key] ?? '') : '';
@@ -830,8 +912,14 @@ export const manualRegistry: Record<string, any> = {
                           // 값은 그대로 두면 셀을 뒤덮으므로, 헤더의 nameSizeClass와 같은 방식으로
                           // 길이에 따라 글씨를 줄여 한 셀 안에 더 자연스럽게 들어가게 한다.
                           const valSizeClass = val.length > 40 ? 'text-[11px]' : val.length > 22 ? 'text-[12px]' : 'text-[13px]';
+                          const isLastCol = ci === sortedProductCols.length - 1;
                           return (
-                            <td key={col.key} data-col-key={col.key} className={`px-3 py-2.5 text-left font-medium text-slate-700 ${valSizeClass} ${isFirst ? 'bg-slate-50/60' : ''}`}>
+                            <td
+                              key={col.key}
+                              data-col-key={col.key}
+                              className={`px-3 py-2.5 text-left font-medium text-slate-700 ${valSizeClass} ${isFirst ? 'bg-slate-50/60' : ''}`}
+                              style={isRowNew ? { boxShadow: `inset 0 2px 0 0 rgba(165,186,232,0.85), inset 0 -2px 0 0 rgba(165,186,232,0.85)${isLastCol ? ', inset -2px 0 0 0 rgba(165,186,232,0.85)' : ''}`, backgroundColor: 'rgba(165,186,232,0.18)' } : undefined}
+                            >
                               {val === '-'
                                 ? <span className="text-[11px] text-slate-300 font-medium">{t.notFound}</span>
                                 : (val === t.notApplicable) ? <span className="text-[11px] text-slate-400 italic">{t.notApplicable}</span> : val}
@@ -1010,6 +1098,37 @@ export const manualRegistry: Record<string, any> = {
       const [showRowsPanel, setShowRowsPanel] = useState(false);
       const visibleRows = allRows.filter(row => !hiddenRowKeys.has(String(row[firstColKey] ?? '')));
       const currentProductNames = allRows.map(row => String(row[firstColKey] ?? '').toLowerCase());
+
+      // ── NON-TRANSPOSED 하이라이트: transposed와 동일한 목적(animatingRowKeys/animatingColKeys는
+      // 위에서 이미 선언됨)이지만, 이 분기의 축은 반대다 — 행 = 제품(add_product), 열 = 기준
+      // (add_criteria/addColumn). rank/product 열은 구조적 열이라 하이라이트 대상에서 제외한다.
+      const nonTransposedKey = JSON.stringify({
+        rows: allRows.map(r => String(r[firstColKey] ?? '')),
+        cols: allColumns.map(c => c.key),
+      });
+      useEffect(() => {
+        if (isTransposed) return;
+        if (allRows.length === 0 && allColumns.length === 0) {
+          globalSeenRows.clear();
+          globalSeenCols.clear();
+          setAnimatingRowKeys(new Set());
+          setAnimatingColKeys(new Set());
+          return;
+        }
+        const newRowKeys = new Set<string>();
+        for (const row of allRows) {
+          const key = String(row[firstColKey] ?? '');
+          if (key && !globalSeenRows.has(key)) { newRowKeys.add(key); globalSeenRows.add(key); }
+        }
+        const newColKeys = new Set<string>();
+        for (const col of allColumns) {
+          if (col.key === 'rank' || col.key === 'product') continue;
+          if (!globalSeenCols.has(col.key)) { newColKeys.add(col.key); globalSeenCols.add(col.key); }
+        }
+        if (newRowKeys.size > 0) setAnimatingRowKeys(prev => new Set([...prev, ...newRowKeys]));
+        if (newColKeys.size > 0) setAnimatingColKeys(prev => new Set([...prev, ...newColKeys]));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [nonTransposedKey, isTransposed]);
       // 이름이 완전히 일치하지 않을 수 있으므로 부분 매칭으로 비교
       // (LLM이 생성한 짧은 이름 vs My Items의 전체 이름)
       const isAlreadyInTable = (itemName: string) => {
@@ -1159,11 +1278,21 @@ export const manualRegistry: Record<string, any> = {
                     );
 
 
+                    const isColNew = animatingColKeys.has(col.key);
                     return (
                       <th
                         key={col.key}
-                        className="relative text-left text-[11px] font-semibold tracking-wide uppercase px-3 py-2.5 text-slate-400"
-                        style={colWidths[col.key] ? { width: colWidths[col.key], minWidth: colWidths[col.key] } : { whiteSpace: 'nowrap' }}
+                        data-col-key={col.key}
+                        className={`relative text-left text-[11px] font-semibold tracking-wide uppercase px-3 py-2.5 text-slate-400${isColNew ? ' animate-highlight-wrap' : ''}`}
+                        style={{
+                          ...(colWidths[col.key] ? { width: colWidths[col.key], minWidth: colWidths[col.key] } : { whiteSpace: 'nowrap' }),
+                          ...(isColNew ? { boxShadow: 'inset 0 0 0 2px rgba(165,186,232,0.85)', backgroundColor: 'rgba(165,186,232,0.18)' } : {}),
+                        }}
+                        onAnimationEnd={(e) => {
+                          if (isColNew && e.animationName === 'highlight-wrap') {
+                            setAnimatingColKeys(prev => { const next = new Set(prev); next.delete(col.key); return next; });
+                          }
+                        }}
                       >
                         <span>{col.label}</span>
                         {/* Column resize handle */}
@@ -1193,17 +1322,35 @@ export const manualRegistry: Record<string, any> = {
                 </tr>
               </thead>
               <tbody>
-                {visibleRows.map((row, i) => (
-                  <tr key={i} className="border-b border-slate-50 hover:bg-slate-50/50 transition-colors">
+                {visibleRows.map((row, i) => {
+                  const isRowNew = animatingRowKeys.has(String(row[firstColKey] ?? ''));
+                  return (
+                  <tr
+                    key={i}
+                    className={`border-b border-slate-50 hover:bg-slate-50/50 transition-colors${isRowNew ? ' animate-highlight-wrap' : ''}`}
+                    onAnimationEnd={(e) => {
+                      if (isRowNew && e.animationName === 'highlight-wrap') {
+                        setAnimatingRowKeys(prev => { const next = new Set(prev); next.delete(String(row[firstColKey] ?? '')); return next; });
+                      }
+                    }}
+                  >
                     {visibleColumns.map((col, ci) => {
                       const isRankCol = col.key === "rank";
                       const isProductCol = col.key === "product";
                       const rankVal = isRankCol ? String(row["rank"] ?? i + 1) : null;
+                      const isFirstCell = ci === 0;
+                      const isLastCell = ci === visibleColumns.length - 1;
                       return (
                         <td
                           key={col.key}
                           className={`py-2.5 text-slate-700 ${isRankCol ? 'px-2 w-10 text-center' : 'px-3'} ${isProductCol ? 'font-semibold text-slate-900' : 'font-normal'}`}
-                          style={colWidths[col.key] ? { width: colWidths[col.key], minWidth: colWidths[col.key] } : undefined}
+                          style={{
+                            ...(colWidths[col.key] ? { width: colWidths[col.key], minWidth: colWidths[col.key] } : {}),
+                            ...(isRowNew ? {
+                              boxShadow: `inset 0 2px 0 0 rgba(165,186,232,0.85), inset 0 -2px 0 0 rgba(165,186,232,0.85)${isFirstCell ? ', inset 2px 0 0 0 rgba(165,186,232,0.85)' : ''}${isLastCell ? ', inset -2px 0 0 0 rgba(165,186,232,0.85)' : ''}`,
+                              backgroundColor: 'rgba(165,186,232,0.18)',
+                            } : {}),
+                          }}
                         >
                           {isRankCol ? (
                             <span className="inline-flex items-center justify-center w-6 h-6 rounded-full text-[11px] font-bold bg-slate-100 text-slate-500">
@@ -1218,7 +1365,8 @@ export const manualRegistry: Record<string, any> = {
                     {/* Trailing empty td to match phantom resizer th */}
                     <td className="w-3 min-w-[12px] p-0" />
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1269,10 +1417,28 @@ export const manualRegistry: Record<string, any> = {
       }
     }, [justUpdated]);
 
+    // 새 기준이 추가되어 이번 auto-enrich 배치에서 새로 나타난 칩(스펙/미확인/정보없음)만
+    // 개별적으로 보라색 링 하이라이트 — isHighlighted와 동일하게 애니메이션 재생 시간만큼만 켰다가 끈다.
+    const [highlightChips, setHighlightChips] = useState<Set<string>>(new Set());
+    useEffect(() => {
+      const chips: string[] = Array.isArray(p._justAddedChips) ? p._justAddedChips : [];
+      if (chips.length === 0) return;
+      setHighlightChips(new Set(chips));
+      const t = setTimeout(() => setHighlightChips(new Set()), 900);
+      return () => clearTimeout(t);
+    }, [p._justAddedChips]);
+
+    {/* justAdded/isHighlighted: 이 카드 하나만 개별적으로 감싸는 bounding box. 배경 채움을
+        컨테이너 자체에 주면 이미지/태그/뱃지처럼 자체 배경을 가진 자식 요소들에 가려져
+        군데군데만 색이 비치므로, 카드 맨 위(z-order 최상단)에 오버레이를 따로 그려서
+        카드 전체에 고르게 덮이게 한다(overlay는 pointer-events-none이라 클릭/드래그는 그대로). */}
     return (
       <div
         className={`group relative flex flex-col bg-white border rounded-[8px] overflow-hidden transition-all duration-500 hover:shadow-[0_2px_8px_rgba(0,0,0,0.06)] w-full${(justAdded || isHighlighted) ? ' animate-highlight-wrap' : ''} border-[#EBEBEB] hover:border-[#D0D0D0]`}
-        style={delay > 0 ? { animationDelay: `${delay}s` } : undefined}
+        style={{
+          ...(delay > 0 ? { animationDelay: `${delay}s` } : {}),
+          ...((justAdded || isHighlighted) ? { borderColor: 'rgba(129,155,224,0.9)', boxShadow: '0 0 0 3px rgba(165,186,232,0.25)' } : {}),
+        }}
       >
         {/* Product Image (Top) */}
         <div className="relative w-full aspect-[4/3] bg-[#F5F5F5] overflow-hidden">
@@ -1337,24 +1503,32 @@ export const manualRegistry: Record<string, any> = {
           {/* Spec Chips + 미확인 태그 */}
           {(Array.isArray(p.specs) && p.specs.length > 0 || isUnconfirmed) && (
             <div className="flex flex-wrap gap-1">
-              {unconfirmedCriteria.map((criterionName: string) => (
-                <span
-                  key={`u-${criterionName}`}
-                  className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-medium text-[#666666] bg-[#F5F5F5]"
-                >
-                  {criterionName === tr.unverified ? tr.unverified : tr.unverifiedFor(criterionName)}
-                </span>
-              ))}
-              {notFoundCriteria.map((criterionName: string) => (
-                <span
-                  key={`n-${criterionName}`}
-                  className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-medium text-[#666666] bg-[#F5F5F5]"
-                >
-                  {tr.notFoundFor(criterionName)}
-                </span>
-              ))}
+              {unconfirmedCriteria.map((criterionName: string) => {
+                const isNewChip = highlightChips.has(criterionName);
+                return (
+                  <span
+                    key={`u-${criterionName}`}
+                    className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-medium text-[#666666] bg-[#F5F5F5]${isNewChip ? " animate-highlight-wrap" : ""}`}
+                    style={isNewChip ? { boxShadow: "0 0 0 2px rgba(165,186,232,0.85)", backgroundColor: "rgba(165,186,232,0.18)" } : undefined}
+                  >
+                    {criterionName === tr.unverified ? tr.unverified : tr.unverifiedFor(criterionName)}
+                  </span>
+                );
+              })}
+              {notFoundCriteria.map((criterionName: string) => {
+                const isNewChip = highlightChips.has(criterionName);
+                return (
+                  <span
+                    key={`n-${criterionName}`}
+                    className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-medium text-[#666666] bg-[#F5F5F5]${isNewChip ? " animate-highlight-wrap" : ""}`}
+                    style={isNewChip ? { boxShadow: "0 0 0 2px rgba(165,186,232,0.85)", backgroundColor: "rgba(165,186,232,0.18)" } : undefined}
+                  >
+                    {tr.notFoundFor(criterionName)}
+                  </span>
+                );
+              })}
               {Array.isArray(p.specs) && p.specs.length > 0 && (
-                <SpecChips specs={p.specs} locale={resolveLocale(allProps)} />
+                <SpecChips specs={p.specs} locale={resolveLocale(allProps)} newSpecs={highlightChips} />
               )}
             </div>
           )}
@@ -1363,6 +1537,12 @@ export const manualRegistry: Record<string, any> = {
             {p.price}
           </span>
         </div>
+
+        {/* Fill overlay — 항상 맨 마지막 자식으로 둬서(z-order 최상단) 이미지/태그/뱃지 위까지
+            고르게 옅은 색이 덮이게 한다. */}
+        {(justAdded || isHighlighted) && (
+          <div className="absolute inset-0 pointer-events-none" style={{ backgroundColor: 'rgba(165,186,232,0.18)' }} />
+        )}
       </div>
     );
   },
@@ -1378,45 +1558,73 @@ export const manualRegistry: Record<string, any> = {
       const cardNamesKey = cards.map((c: any) => c.name || c.id || '').join('|');
 
       // key를 "이름-인덱스"에서 이름/ID만으로 바꾸면(아래 map), 정렬/필터로 순서만 바뀔 때는
-      // React가 같은 DOM 노드를 재사용해 진입 애니메이션이 재생되지 않고, 진짜 mutateSurface(add)로
-      // 새로 들어온 카드만 마운트되며 애니메이션이 재생된다. 여기 newCardNames는 그 새 카드들에게만
-      // highlight-wrap 글로우를 추가로 씌우기 위한 것 — 최초 목록이 통째로 채워질 때는 제외한다.
+      // React가 같은 DOM 노드를 재사용해 진입 애니메이션이 재생되지 않고, 진짜 새로 들어온
+      // 카드(최초 생성이든 mutateSurface(add)든)만 마운트되며 애니메이션이 재생된다. newCardNames는
+      // 그 새 카드 각각에 개별 하이라이트를 씌우기 위한 것 — 최초 생성/이후 추가를 구분하지 않고
+      // 항상 카드 단위로 개별 표시한다(패널/목록 전체를 통째로 감싸는 방식은 쓰지 않는다).
       const [newCardNames, setNewCardNames] = useState<Set<string>>(new Set());
-      // 목록 전체가 처음 생성되는 순간에만 켜지는 플래그 — 개별 카드 대신 목록 전체를 감싸서 하이라이트한다.
-      const [justCreated, setJustCreated] = useState(false);
+      // 카드별 제거 타이머를 독립적으로 보관 — effect의 cleanup에 묶어두면 카드가
+      // 스트리밍으로 연달아 들어올 때(2초 안에 cardNamesKey가 계속 바뀔 때) 이전 라운드의
+      // 타이머가 취소되기만 하고 다시 걸리지 않아 그 카드들의 박스가 영영 안 사라지는 버그가 있었다.
+      const removalTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
       useEffect(() => {
         if (cards.length === 0) {
           globalSeenCardNames.clear();
           setNewCardNames(new Set());
+          removalTimers.current.forEach(t => clearTimeout(t));
+          removalTimers.current.clear();
           return;
         }
-        const isFirstPopulation = globalSeenCardNames.size === 0;
         const fresh: string[] = [];
         for (const c of cards) {
           const name = c.name || c.id;
           if (name && !globalSeenCardNames.has(name)) { fresh.push(name); globalSeenCardNames.add(name); }
         }
-        if (isFirstPopulation) {
-          setJustCreated(true);
-          const t = setTimeout(() => setJustCreated(false), 2000);
-          return () => clearTimeout(t);
-        } else if (fresh.length > 0) {
-          setNewCardNames(prev => new Set([...prev, ...fresh]));
+        if (fresh.length === 0) return;
+
+        setNewCardNames(prev => new Set([...prev, ...fresh]));
+        const scheduled: ReturnType<typeof setTimeout>[] = fresh.map((name) => {
           const t = setTimeout(() => {
             setNewCardNames(prev => {
               const next = new Set(prev);
-              fresh.forEach(n => next.delete(n));
+              next.delete(name);
               return next;
             });
-          }, 2000); // highlight-wrap 애니메이션 길이(2s)와 맞춤
-          return () => clearTimeout(t);
-        }
+            removalTimers.current.delete(name);
+          }, 750); // highlight-wrap 애니메이션 길이(0.65s) + 여유
+          removalTimers.current.set(name, t);
+          return t;
+        });
+
+        // StrictMode(dev)는 마운트 시 effect를 run→cleanup→run으로 두 번 호출한다. 이 cleanup이
+        // 없으면: 1차 run이 타이머를 걸고 globalSeenCardNames에 이름을 커밋 → 시뮬레이션된 cleanup이
+        // (아래 마운트 전용 effect를 통해) 그 타이머만 취소 → 2차 run은 이미 seen 처리된 이름이라
+        // fresh가 비어 재스케줄을 안 해서, 타이머 없이 newCardNames에만 영원히 남는 카드가 생겼다
+        // (실제로 재현된 버그). 그래서 이 pass가 방금 한 일(타이머/글로벌 seen/후보 표시)을 정확히
+        // 이 pass의 클로저 범위 안에서만 되돌려, 재실행되는 2차 run이 다시 fresh로 인식하고
+        // 정상적으로 재스케줄하도록 한다 — 스트리밍 중 다른 라운드의 타이머는 건드리지 않는다.
+        return () => {
+          scheduled.forEach(t => clearTimeout(t));
+          setNewCardNames(prev => {
+            const next = new Set(prev);
+            fresh.forEach(name => next.delete(name));
+            return next;
+          });
+          fresh.forEach(name => {
+            removalTimers.current.delete(name);
+            globalSeenCardNames.delete(name);
+          });
+        };
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [cardNamesKey]);
 
+      useEffect(() => {
+        return () => { removalTimers.current.forEach(t => clearTimeout(t)); };
+      }, []);
+
       return (
-        <div className={`grid grid-cols-2 gap-3 w-full min-w-0 px-6${justCreated ? ' animate-highlight-wrap' : ''}`}>
+        <div className="grid grid-cols-2 gap-3 w-full min-w-0 px-6">
           {/* popLayout: 카드가 삭제되면 그 카드만 페이드아웃하며 flow에서 빠지고,
               남은 카드들은 layout 애니메이션으로 새 위치까지 부드럽게 이동한다.
               정렬(sort)로 순서만 바뀔 때도 같은 layout 애니메이션이 재사용된다. */}

@@ -1,8 +1,8 @@
 import { generateObject, type ModelMessage } from "ai";
-import { openai } from "@ai-sdk/openai";
+import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 
-export const INTENT_MODEL = "gpt-4o-mini" as const;
+export const INTENT_MODEL = "claude-haiku-4-5" as const;
 
 export const IntentAnalysisSchema = z.object({
   user_goal: z.string().describe("A detailed 1-2 sentence description of what the user is trying to accomplish. e.g. 'The user wants to find a robot vacuum under 800,000 KRW that is quiet and suitable for a household with pets.'"),
@@ -25,6 +25,14 @@ Analyze the user's LATEST message and identify their intent.
 3. Describe only what the user explicitly asked for in the latest message (resolved with history if needed). Do NOT infer or assume unstated motivations or context beyond what history makes explicit.
 4. Include constraints and preferences only if explicitly mentioned (in the latest message or a turn it refers to).
 5. If the latest message is meaningless/unrelated filler with nothing to interpret, say so plainly instead of reaching for unrelated context (e.g. leftover criteria or specs) to manufacture a goal.
+6. Preserve "in addition to what's already shown" framing when the message signals it (Korean particles like
+   "도"/"추가로", English "also"/"too"/"as well"). Write "wants to add X to the current list", not just "wants
+   to see X" — a downstream router decides whether to replace or append based on this wording, so collapsing
+   an additive request into a plain viewing request changes what happens on screen.
+7. When converting Korean currency units to English/numerals, convert carefully — 만 = 10,000 (NOT "million").
+   "50만원" = 500,000 KRW, NOT "50 million won". Double-check the digit count before writing a converted amount;
+   a wrong conversion here silently changes the user's actual budget by orders of magnitude for downstream
+   price filtering and ranking.
 
 [Output]
 {
@@ -40,7 +48,7 @@ export async function analyzeIntent(userMessage: string, history: ModelMessage[]
   console.log(`\x1b[90m[Input] User Message:\x1b[0m ${latestText}`);
 
   const { object } = await generateObject({
-    model: openai(INTENT_MODEL),
+    model: anthropic(INTENT_MODEL),
     schema: IntentAnalysisSchema,
     system: buildAnalyzerPrompt(),
     messages: [...history, { role: "user", content: latestText }],

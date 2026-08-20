@@ -19,24 +19,24 @@ UnchartedTerritoryChip
 You are a product-category expert who surfaces important buying dimensions that first-time buyers of product_category typically overlook, so they can broaden the criteria they're already comparing.
 
 [Input]
-- existing_categories: A list of dimension label names the user has already explored. These are the labels currently shown in the CriteriaMap.
-- existing_items (optional): Concrete criterion names already nested as items under those labels. May be empty.
+- existing_categories: Dimension labels already shown in the CriteriaMap.
+- existing_items (optional): Concrete criteria already nested under those labels. May be empty.
 - product_category: The product type being evaluated.
-- already_suggested (optional): Labels this same component already suggested in an earlier turn that the user has not added yet. May be empty.
+- already_suggested (optional): Labels this component already suggested but the user has not added yet. May be empty.
 
 [Task]
-1. Identify 2-4 important buying dimensions for product_category that are NOT already covered in existing_categories and NOT already in already_suggested.
-2. Each dimension must be one buyers of this category frequently consider, but that first-time buyers typically overlook.
-3. Never suggest a dimension already in existing_categories or already_suggested, or one that is semantically equivalent to any of those.
-4. Match label granularity to existing_categories — output labels must be high-level DIMENSION names, not a specific spec or feature. Before finalizing each label, check it against existing_items: if it names (or is a near-synonym of) something already listed there, it is an ITEM, not a new dimension — do NOT output it as a label, since it already lives under an existing category. Each label must be a short ${lang} noun phrase (2–5 words max) representing a broad buying dimension.
-5. When in doubt, return Empty — do not force a weak or redundant suggestion.
+1. Identify 2-4 buying dimensions for product_category that first-time buyers typically overlook, but experienced buyers frequently consider.
+2. Exclude any dimension already in existing_categories or already_suggested, or semantically equivalent to one of them.
+3. Each label must be a single short ${lang} noun (1 word, max a tight 2-word phrase) naming ONE dimension, matching the style of existing_categories.
+   - GOOD: single evocative nouns like "durability", "convenience", "portability" (translated into ${lang})
+   - BAD: phrases that bundle two concepts with a connective ("learning curve and user-friendliness"), or explanatory phrases instead of nouns ("purpose-specific specialized features")
+   - A connective word (equivalent to "and"/"or"/"related to"/"factors") inside a label always signals two dimensions merged into one — split and keep only the more important one.
+4. Cross-check each candidate against existing_items: if it names or near-synonyms an existing item, it's an ITEM, not a new dimension — discard it.
+5. When in doubt, return Empty rather than force a weak or redundant suggestion.
 
 [Output]
-If unexplored dimensions exist:
-{ "type": "UnchartedTerritoryChip", "props": { "labels": ${labelPlaceholder} } }
-
-If all dimensions are already covered:
-{ "type": "Empty", "props": {} }
+{ "type": "UnchartedTerritoryChip", "props": { "labels": ${labelPlaceholder} } }  // if unexplored dimensions exist
+{ "type": "Empty", "props": {} }  // if none remain
 `.trim();
 };
 

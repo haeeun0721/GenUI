@@ -1,9 +1,9 @@
 import { generateObject } from "ai";
-import { openai } from "@ai-sdk/openai";
+import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import type { IntentAnalysis } from "./intent_analyzer";
 
-export const SELECTOR_MODEL = "gpt-4o-mini" as const;
+export const SELECTOR_MODEL = "claude-haiku-4-5" as const;
 
 export const TemplateSelectionSchema = z.object({
   template: z
@@ -124,7 +124,7 @@ export async function selectTemplate(
   const cleanPrompt = sanitize(promptText);
 
   const { object } = await generateObject({
-    model: openai(SELECTOR_MODEL),
+    model: anthropic(SELECTOR_MODEL),
     schema: TemplateSelectionSchema,
     system: buildSelectorPrompt(),
     prompt: cleanPrompt,

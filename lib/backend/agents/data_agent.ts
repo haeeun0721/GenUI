@@ -1,10 +1,11 @@
 import { tool, generateText, generateObject } from "ai";
-import { openai } from "@ai-sdk/openai";
+import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import * as cheerio from "cheerio";
 import * as fs from "fs";
 import * as path from "path";
-import { currentOptionListCards } from "../tools/sidebar-store";
+import { currentOptionListCards, currentParticipantId } from "../tools/sidebar-store";
+import { getCachedSpec, setCachedSpec } from "../services/spec-cache";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -797,18 +798,85 @@ export function expandFieldKeySynonyms(fieldKey: string): string[] {
   return [fieldKey];
 }
 
+// 소음/흡입력/배터리처럼 "모드"에 따라 값이 갈리는 기준은, 화면에 이미 떠 있는 스펙이 그
+// 제품의 표준/일반 모드 값일 뿐인데 fieldKey는 "조용한 모드"처럼 특정 모드를 콕 집어 묻는
+// 경우가 있다 — 이때 화면 값을 그대로 재사용하면 다른 조건의 값을 정답으로 오인시킨다.
+// fieldKey에 이런 모드 수식어가 있는데 매칭된 스펙 원문에 그 수식어가 전혀 없으면 이 후보를
+// 건너뛰어(재검색으로 넘겨) 잘못된 재사용을 막는다.
+const MODE_QUALIFIER_WORDS = [
+  "조용한", "저소음", "무소음", "quiet", "silent",
+  "터보", "turbo", "부스트", "boost", "강력", "파워", "맥스", "max", "최대",
+  "절전", "에코", "eco", "저전력",
+  "일반", "표준", "normal", "standard",
+];
+
+function hasUnmatchedModeQualifier(fieldKey: string, candidateSpec: string): boolean {
+  const fieldLower = fieldKey.toLowerCase();
+  const specLower = candidateSpec.toLowerCase();
+  const fieldQualifiers = MODE_QUALIFIER_WORDS.filter(w => fieldLower.includes(w));
+  if (fieldQualifiers.length === 0) return false;
+  return !fieldQualifiers.some(w => specLower.includes(w));
+}
+
+/**
+ * "무게 150g의 초경량 콤팩트"처럼 콜론 없는 자유 문장 안에, fieldKey가 속한 단위군의
+ * 숫자+단위가 정확히 하나만 등장하면 그것을 뽑아 반환한다(예: "150g"). UNIT_RULES에
+ * 정의된, 그 기준이 실제로 쓰는 단위(무게라면 kg/g)만 찾으므로 "5년 무상 A/S" 같은
+ * 무관한 숫자를 잘못 집어올 위험이 없다. 여러 개(또는 0개) 나오면 어느 게 맞는 값인지
+ * 확신할 수 없으므로 null을 반환해 호출부가 재검색하게 한다 — 억지로 하나를 고르지 않는다.
+ */
+function extractValueFromFreeText(fieldKey: string, text: string): string | null {
+  const rule = UNIT_RULES.find(r => r.pattern.test(fieldKey));
+  if (!rule) return null;
+
+  const matches = new Set<string>();
+  for (const [unitPattern] of rule.units) {
+    const unitSrc = unitPattern.source.replace(/^\^/, "").replace(/\$$/, "");
+    // 단위 뒤에 한글 조사가 바로 붙는 게 정상 표기다(예: "150g의", "1.2kg으로") — 그 경우까지
+    // 걸러내면 정상 매칭이 전부 실패한다. 알파벳만 걸러 "5generation" 같은 오매칭을 막는다.
+    const re = new RegExp(`([\\d,]+(?:\\.\\d+)?)\\s?(${unitSrc})(?![a-zA-Z])`, unitPattern.flags.includes("i") ? "gi" : "g");
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) matches.add(`${m[1]}${m[2]}`);
+  }
+  return matches.size === 1 ? [...matches][0] : null;
+}
+
 /**
  * 스펙 문자열 목록("흡입력: 30,000Pa" 등)에서 fieldKey에 해당하는 값을 찾는다.
  * findProductSpecInDB(로컬 DB)와 lookupKnownSpecValue(화면에 이미 떠 있는 카드/테이블 값)가
  * 공유하는 핵심 매칭 로직 — 동의어 확장 후 단위 불일치를 걸러내며 값을 뽑는다.
  */
-export function findSpecValueInList(specs: string[], fieldKey: string): string | null {
+export function findSpecValueInList(
+  specs: string[],
+  fieldKey: string,
+  criterionType?: "value" | "boolean"
+): string | null {
   const synonyms = expandFieldKeySynonyms(fieldKey);
+  // 명시적으로 안 넘어오면 detectCriterionType의 키워드 휴리스틱으로 폴백 — "무게"/"가격"/
+  // "크기" 등은 여기서 "value"로 분류된다(data_agent.ts VALUE_KEYWORDS 참고).
+  const type = criterionType ?? detectCriterionType(fieldKey);
   for (const key of synonyms) {
     const keyNormalized = key.toLowerCase().replace(/\s+/g, "");
     const candidates = specs.filter(s => s.toLowerCase().replace(/\s+/g, "").includes(keyNormalized));
     for (const matchedSpec of candidates) {
+      if (hasUnmatchedModeQualifier(fieldKey, matchedSpec)) continue;
       const { rawValue } = parseSpecEntry(matchedSpec);
+      // 콜론 없는 스펙 문구엔 두 가지 경우가 섞여 있다: (a) "USB충전 지원"처럼 진짜 태그형
+      // boolean 스펙 — key 매칭 자체가 "있음"의 근거라 "○"로 확정해도 안전하다. (b) "무게
+      // 150g의 초경량 콤팩트"처럼 값(150g)이 문장 속에 자연어로 녹아있는 value형 기준 —
+      // 이걸 "○"로 확정하면 Comparison Table의 무게 칸에 숫자 대신 체크마크가 붙는 오류가
+      // 된다. criterionType이 "value"면 먼저 그 기준의 단위(무게라면 kg/g)로 문장 속에서
+      // 숫자를 직접 뽑아본다 — 이미 있는 정보를 재검색 없이 바로 쓰기 위함. 그 단위의
+      // 숫자가 정확히 하나만 나오면(모호하지 않으면) 그 값을 쓰고, 못 찾거나 여러 개
+      // 겹치면 억지로 고르지 않고 건너뛰어(=아직 못 찾음) 호출부가 재검색하게 한다.
+      if (!rawValue) {
+        if (type === "value") {
+          const extracted = extractValueFromFreeText(fieldKey, matchedSpec);
+          if (extracted) return toDisplayValue(extracted, fieldKey);
+          continue;
+        }
+        return "○";
+      }
       if (hasUnitDimensionMismatch(fieldKey, rawValue)) continue;
       return toDisplayValue(rawValue, fieldKey);
     }
@@ -821,20 +889,50 @@ export interface KnownProductSpecs {
   specs: string[];
 }
 
+function normalizeProductName(name: string): string {
+  return name.toLowerCase().replace(/\s+/g, "");
+}
+
+/**
+ * 후보 목록에서 queryName과 "같은 제품"인 항목을 찾는다. 정규화 후 완전 일치를 최우선으로
+ * 하고, 완전 일치가 없을 때만 느슨한 포함 관계(접두어 등)를 보되 그 조건을 만족하는 후보가
+ * 정확히 하나일 때만 채택한다.
+ *
+ * 원래는 "한쪽 이름이 다른 쪽 이름을 포함하면 같은 제품"이라는 단순 includes() 매칭이었는데,
+ * "로보락 S10 MaxV Slim"과 "로보락 S10 MaxV Slim 직배수"처럼 실제로는 다른 두 SKU인데 한쪽
+ * 이름이 다른 쪽 이름의 접두어인 경우까지 같은 제품으로 오판했다 — 그 결과 Comparison Table이
+ * "직배수" 카드의 필터 종류 값을 가져와 "Slim"(비직배수) 컬럼에 붙이는 등, 실제로 다른 두
+ * 제품의 스펙이 섞이는 문제로 이어졌다. 후보가 여럿이면(=어느 쪽인지 확신할 수 없으면)
+ * 틀린 값을 자신 있게 반환하는 대신 null(모름)을 반환해 상위 호출부가 새로 검색하게 한다.
+ */
+export function findExactMatchingProduct<T extends { name: string }>(
+  queryName: string,
+  candidates: T[]
+): T | null {
+  const qNorm = normalizeProductName(queryName);
+
+  const exact = candidates.filter(c => normalizeProductName(c.name) === qNorm);
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) return null; // 동명이인 — 어느 것인지 확신 불가
+
+  const loose = candidates.filter(c => {
+    const cNorm = normalizeProductName(c.name);
+    return cNorm.includes(qNorm) || qNorm.includes(cNorm);
+  });
+  return loose.length === 1 ? loose[0] : null;
+}
+
 /** productName/fieldKey가 knownProducts(화면에 이미 떠 있는 카드/테이블 값) 안에 있으면 그 값을 반환. */
 export function lookupKnownSpecValue(
   productName: string,
   fieldKey: string,
-  knownProducts?: KnownProductSpecs[]
+  knownProducts?: KnownProductSpecs[],
+  criterionType?: "value" | "boolean"
 ): string | null {
   if (!knownProducts || knownProducts.length === 0) return null;
-  const qLower = productName.toLowerCase();
-  const matched = knownProducts.find(p => {
-    const pLower = p.name.toLowerCase();
-    return pLower === qLower || pLower.includes(qLower) || qLower.includes(pLower);
-  });
+  const matched = findExactMatchingProduct(productName, knownProducts);
   if (!matched) return null;
-  return findSpecValueInList(matched.specs, fieldKey);
+  return findSpecValueInList(matched.specs, fieldKey, criterionType);
 }
 
 // ── 유의어 캐시 (프로세스 수명 동안 유지) ─────────────────────────────
@@ -851,7 +949,7 @@ export async function expandCriterionSynonyms(criteria: string[]): Promise<Recor
   }
 
   const { text } = await generateText({
-    model: openai("gpt-4o"),
+    model: anthropic("claude-haiku-4-5"),
     system: "You are a Korean product spec synonym generator. Given a list of product criteria in Korean, return a JSON object where each key is the criterion and the value is an array of 2-3 Korean synonyms or related search terms. Output only valid JSON.",
     prompt: `Generate synonyms for these criteria: ${JSON.stringify(criteria)}`,
     temperature: 0,
@@ -883,6 +981,15 @@ export interface CriterionMeta {
    * 하도록 넘긴다. 조건에 따라 갈리지 않는 기준(예: 무게, 가격)은 null.
    */
   preferredCondition: string | null;
+  /**
+   * "boolean": 예/아니오로 답할 수 있는 단일 특징 유무 질문(예: "자동 충전 기능", "DSLR 여부") —
+   * 답은 ○/X 두 값뿐이고, 원문에 딸려온 세부 스펙(수치 등)은 각자의 행에 속하므로 버린다.
+   * "value": "무엇인지/어떤 것들이 있는지"를 묻는 질문(예: "필터 종류", "스마트 기능") — 원문에
+   * 나열된 구체적인 항목을 그대로 답으로 남긴다(항목이 없으면 "○"로 축약).
+   * detectCriterionType()의 키워드 휴리스틱은 이 필드가 없을 때(예: 배치 호출 전 폴백)만 쓰는
+   * 근사치다 — 새로 생기는 기준까지 정확히 분류하려면 이 값을 우선한다.
+   */
+  type: "value" | "boolean";
 }
 
 // Promise 자체를 캐시한다(값이 아니라) — enrichContextWithTavily/lookupProductSpec처럼 같은
@@ -908,14 +1015,15 @@ export async function expandCriterionMeta(
   const promise = (async (): Promise<Record<string, CriterionMeta>> => {
     try {
       const { text } = await generateText({
-        model: openai("gpt-4o"),
+        model: anthropic("claude-haiku-4-5"),
         system: `You are a product spec analyst. For each Korean product criterion, provide:
 1. "formatHint": ONE short Korean sentence describing (a) what unit or format the correct value should take, and (b) what commonly-confused OTHER spec it must NOT be mistaken for. Be specific and concrete — this will be injected into an extraction prompt to prevent a model from picking the wrong kind of value.
 2. "canonicalUnit": the standard unit abbreviation this criterion's numeric values should be normalized to (e.g. "mm", "kg", "dB", "Pa", "mAh", "L", "분"). If the criterion has no meaningful single unit (e.g. it's a boolean/feature-presence criterion, or a list of named items, or a format/resolution criterion with multiple valid notations like "4K"/"6000x4000"), set this to null.
-3. "preferredCondition": if this criterion is COMMONLY reported by manufacturers under several different measurement conditions/modes that are NOT directly comparable to each other (e.g. battery life measured in standard-mode minutes vs. max-power-mode minutes vs. charge-cycle count vs. calendar lifespan; continuous shooting count measured via viewfinder vs. LCD), name the ONE standard/baseline condition that should be searched for and prioritized so values line up across products — a short Korean phrase usable inside a search query (e.g. "1회 완충 시 표준/일반 모드 기준 사용 시간"). If this criterion is normally reported only one way (e.g. weight, price, dimensions), set this to null — do not invent a condition that doesn't typically vary.
+3. "preferredCondition": if this criterion's value commonly depends on an operating mode/power setting that products report differently (quiet/eco/normal/turbo/max, etc.) — e.g. noise level, suction power, power consumption, battery life (standard-mode minutes vs. max-power minutes vs. charge-cycle count), continuous shooting count (viewfinder vs. LCD) — name the ONE standard/baseline condition to search for and prioritize so values line up across products, as a short Korean phrase usable inside a search query (e.g. "일반 모드 기준", "1회 완충 시 표준 모드 기준 사용 시간"). Prefer "일반/표준 모드" and exclude the quietest/most-flattering marketing mode. If this criterion is normally reported only one way (e.g. weight, price, dimensions), set this to null — do not invent a condition that doesn't typically vary.
+4. "type": "boolean" if this criterion is a single yes/no feature-presence check whose name already fully identifies ONE specific thing (e.g. "자동 충전 기능", "DSLR 여부", "손떨림 보정") — any extra detail found alongside it belongs in other rows, so a plain ○/X is the correct answer. "value" if the criterion is asking WHAT something is or WHICH ones it has — this covers any criterion naming a category rather than one specific fact: endings like "종류"/"방식"/"유형"/"타입" (asks what kind), umbrella/collective nouns like "기능"/"서비스"/"모드" without a specific action named (e.g. "스마트 기능", "부가 서비스", "청소 모드" — these ask "which ones", not "does it have one"), plus anything with a unit/number/name/category answer (weight, price, brand, filter type, etc.). When genuinely unsure whether a request wants yes/no or a specific answer, prefer "value" — it degrades gracefully to "○" when the source text truly has no further detail, whereas "boolean" would have destroyed real detail if it existed.
 
 Output ONLY valid JSON in this exact shape:
-{ "<criterion>": { "formatHint": "...", "canonicalUnit": "mm" | null, "preferredCondition": "..." | null }, ... }`,
+{ "<criterion>": { "formatHint": "...", "canonicalUnit": "mm" | null, "preferredCondition": "..." | null, "type": "value" | "boolean" }, ... }`,
         prompt: `Criteria: ${JSON.stringify(criteria)}`,
         temperature: 0,
       });
@@ -955,9 +1063,24 @@ export function detectCriterionType(criterion: string): "value" | "boolean" {
     // 기준 — 여기 없으면 boolean으로 분류돼 "○/X/하위기능목록" 프롬프트가 걸리는데, 애초에
     // 안 맞는 질문 형태라 LLM이 "원산지 지원"처럼 근거 문장의 조사만 값으로 뽑는 일이 있었다.
     "원산지", "생산지", "제조국", "색상", "소재", "재질", "브랜드", "제조사", "모델명", "등급",
+    // "종류"/"방식"/"유형"/"타입"으로 끝나는 기준은 "무엇인지"를 묻는 것이라 예/아니오로
+    // 답할 수 없다 — 예: "필터 종류" → "HEPA 필터, 워터필터" (boolean으로 잘못 분류되면
+    // 이 detail이 통째로 버려지고 "○"(=원문 그대로 "지원")만 남는다).
+    "종류", "방식", "유형", "타입",
   ];
   const lower = criterion.toLowerCase();
-  return VALUE_KEYWORDS.some(k => lower.includes(k)) ? "value" : "boolean";
+  if (VALUE_KEYWORDS.some(k => lower.includes(k))) return "value";
+
+  // "OO 기능"에서 OO가 "자동 충전"/"AI 사물 인식"처럼 특정 동작 하나를 가리키면 예/아니오가
+  // 맞지만(그 자체로 이미 하나의 완결된 기능명), "스마트"/"편의"처럼 포괄적인 수식어가 붙으면
+  // "구체적으로 어떤 기능들이 있는지"를 묻는 것이다 — 이 경우도 boolean으로 분류되면 원문에
+  // 나열된 구체적 기능명이 전부 버려지고 "○"(=지원)만 남는다.
+  const UMBRELLA_FEATURE_PREFIXES = ["스마트", "편의", "특수", "부가", "추가", "다양한"];
+  if (/기능$/.test(criterion.trim()) && UMBRELLA_FEATURE_PREFIXES.some(p => criterion.includes(p))) {
+    return "value";
+  }
+
+  return "boolean";
 }
 
 /**
@@ -985,7 +1108,7 @@ async function classifyFieldApplicability(
 ): Promise<boolean> {
   try {
     const { object } = await generateObject({
-      model: openai("gpt-4o-mini"),
+      model: anthropic("claude-haiku-4-5"),
       schema: z.object({
         notApplicable: z.boolean().describe(
           `True ONLY if "${criterion}" is a property that products of this general type structurally never ` +
@@ -1006,7 +1129,7 @@ async function classifyFieldApplicability(
   }
 }
 
-const NOT_APPLICABLE_TEXT: Record<string, string> = { ko: "스펙 없음", en: "Not applicable" };
+export const NOT_APPLICABLE_TEXT: Record<string, string> = { ko: "스펙 없음", en: "Not applicable" };
 
 export async function extractCellValueLight(
   productName: string,
@@ -1058,7 +1181,7 @@ export async function extractCellValueLight(
 
   try {
     const { object } = await generateObject({
-      model: openai("gpt-4o-mini"),
+      model: anthropic("claude-haiku-4-5"),
       schema: z.object({
         value: z.string().describe(
           `The "${criterion}" value for "${productName}" as explicitly stated in the answer text. Strip filler ` +
@@ -1141,7 +1264,7 @@ export async function normalizeCriterionRowAcrossProducts(
 
   try {
     const { object } = await generateObject({
-      model: openai("gpt-4o"),
+      model: anthropic("claude-haiku-4-5"),
       schema: z.object({
         values: z.array(z.object({
           key: z.string().describe("The exact product key as given (must match one of the input keys)."),
@@ -1228,6 +1351,10 @@ function lookupCellValue(label: string, specs: string[]): string {
     const { key, rawValue } = parseSpecEntry(spec);
     const keyLower = key.toLowerCase().replace(/\s+/g, "");
     if (keyLower === labelLower || keyLower.includes(labelLower) || labelLower.includes(keyLower)) {
+      // 콜론 없는 태그형 스펙(예: "미러리스 카메라", "5축 광학식 손떨림보정")은 값이 아니라
+      // 문구 전체가 key로 파싱되어 rawValue가 빈 문자열이다 — 키 매칭까지 됐다는 것 자체가
+      // 이미 "해당 기능 있음"의 근거이므로, 빈 값을 "-"로 흘려보내지 않고 "○"로 확정한다.
+      if (!rawValue) return "○";
       if (hasUnitDimensionMismatch(label, rawValue)) continue;
       return toDisplayValue(rawValue, label);
     }
@@ -1241,6 +1368,7 @@ function lookupCellValue(label: string, specs: string[]): string {
     const keyLower = key.toLowerCase().replace(/\s+/g, "");
     if (hasUnitDimensionMismatch(label, rawValue)) continue;
     if (keywords.some(kw => keyLower.includes(kw) || kw.includes(keyLower))) {
+      if (!rawValue) return "○";
       return toDisplayValue(rawValue, label);
     }
   }
@@ -1347,6 +1475,17 @@ export async function enrichCompTableCells(
   const productCols = columns.filter(c => c.key !== "criterion");
   const allRows = tableJson.props?.rows ?? [];
 
+  // 표에 등장하는 모든 기준(criterion)에 대해 한 번에 형식 힌트/정규 단위/조건/타입을
+  // 배치 요청(캐싱됨) — STEP 1.5의 boolean/value 판단과 STEP 4의 추출 힌트 양쪽에서 이
+  // 값을 그대로 재사용한다(뒤에서 다시 계산하지 않음). "센서 크기"처럼 하드코딩 못 한 새
+  // 기준도, "필터 종류"처럼 boolean으로 잘못 분류되면 세부 답이 통째로 버려지는 기준도
+  // 여기서 LLM이 매번 판단한다 — detectCriterionType()의 키워드 휴리스틱은 이 값이 없을
+  // 때(예: 이 배치 호출과 무관한 다른 진입점)만 쓰는 폴백이다.
+  const allRowCriteria = [...new Set(
+    allRows.map(r => r["criterion"] ?? "").filter(c => c && c !== "순위" && c !== "Rank")
+  )];
+  const criterionMeta = await expandCriterionMeta(allRowCriteria);
+
   // shortLabel → 전체 제품명 매핑
   // prebuiltFullNameMap이 있으면 buildAndAssembleTable()에서 이미 정확히 만들었으므로 그대로 사용.
   // 없으면 uiContext 파싱으로 복원 (하위 호환성 유지).
@@ -1413,7 +1552,7 @@ export async function enrichCompTableCells(
   for (const row of allRows) {
     const criterion = row["criterion"] ?? "";
     if (!criterion || criterion === "순위" || criterion === "Rank") continue;
-    let rowType = detectCriterionType(criterion);
+    let rowType = criterionMeta[criterion]?.type ?? detectCriterionType(criterion);
     for (const col of productCols) {
       const val = String((row as Record<string, string>)[col.key] ?? "");
       if (val && val !== "-" && val !== "○" && val !== "X") { rowType = "value"; break; }
@@ -1560,20 +1699,18 @@ export async function enrichCompTableCells(
   }
   console.log(`\x1b[33m[CompTable STEP 3-A] 정적 유의어 사전 적용 (LLM 없음):${uniqueCriteria.map(c => `\n         "${c}" → [${synonymMap[c].join(", ")}]`).join("")}\x1b[0m`);
 
-  // 형식 힌트 + 정규 단위 — 표에 등장하는 모든 기준을 한 번에 배치 요청(캐싱됨).
-  // "센서 크기" vs "화소 수"처럼 개발자가 미리 정규식을 하드코딩 못 한 새 기준도
-  // judgeCell 프롬프트에 구분 힌트가 실리게 한다.
-  const criterionMeta = await expandCriterionMeta(uniqueCriteria);
+  // criterionMeta는 함수 상단에서 allRowCriteria 기준으로 이미 배치 계산해뒀다(STEP 1.5와
+  // 공유) — uniqueCriteria는 그 결과의 부분집합이라 다시 요청할 필요 없다.
 
   // Tavily 검색 전 Pre-enrich 존재 여부 확인
   const rows = tableJson.props?.rows ?? [];
-  const needsTavily = allCellsToVerify.filter(({ rowCriterion, colKey, productLabel }) => {
+  const cellChecks = await Promise.all(allCellsToVerify.map(async ({ rowCriterion, colKey, productLabel }) => {
     // Pre-enrich 히트 (enrichContextWithTavily에서 이미 가져온 스니펫)
     const preSnippets = getPreEnrichedSnippets(productLabel, rowCriterion);
     if (preSnippets) {
       preEnrichedCells.push({ rowCriterion, colKey, productLabel, snippets: preSnippets });
       console.log(`\x1b[36m[Pre-enrich HIT] "${productLabel}" × "${rowCriterion}" → Tavily 생략\x1b[0m`);
-      return false;
+      return null;
     }
 
     // Option List가 이 제품×기준을 이미 화면에 표시 중이면(currentOptionListCards, 이번
@@ -1581,16 +1718,27 @@ export async function enrichCompTableCells(
     // Tavily 검색을 돌리면 두 컴포넌트가 같은 제품×기준을 독립적으로 재조회해 값이
     // 갈릴 수 있다(예: 초점거리가 Option List엔 "-", Comparison Table엔 "0.3m").
     const fullName = fullNameMap.get(productLabel) ?? productLabel;
-    const known = lookupKnownSpecValue(fullName, rowCriterion, currentOptionListCards);
+    const known = lookupKnownSpecValue(fullName, rowCriterion, currentOptionListCards, rowTypeMap.get(rowCriterion));
     if (known) {
       const targetRow = rows.find(r => r["criterion"] === rowCriterion);
       if (targetRow) (targetRow as Record<string, string>)[colKey] = known;
       console.log(`\x1b[36m🔗 [Screen HIT] "${productLabel}" × "${rowCriterion}" → "${known}" (source=screen, Tavily 생략)\x1b[0m`);
-      return false;
+      return null;
     }
 
-    return true;
-  });
+    // 화면에 없어도, 이 참가자가 예전 턴/다른 패널에서 같은 제품×기준을 이미 조회한
+    // 적이 있으면(spec-cache.ts, 참가자별로 격리됨) 그 값을 재사용한다 — 화면 상태
+    // 유무와 무관하게 같은 참가자 안에서는 항상 같은 값으로 수렴하게 한다.
+    const cached = await getCachedSpec(currentParticipantId, fullName, rowCriterion);
+    if (cached) {
+      const targetRow = rows.find(r => r["criterion"] === rowCriterion);
+      if (targetRow) (targetRow as Record<string, string>)[colKey] = cached;
+      return null;
+    }
+
+    return { rowCriterion, colKey, productLabel };
+  }));
+  const needsTavily = cellChecks.filter((c): c is NonNullable<typeof c> => c !== null);
 
   if (needsTavily.length === 0) {
     console.log("\x1b[32m[CompTable STEP 3-B] 모든 셀 Pre-enrich로 확인 → Tavily 생략\x1b[0m");
@@ -1665,6 +1813,10 @@ export async function enrichCompTableCells(
         const displayValue = (uncertain && value !== "-") ? `${value} (추정)` : value;
         const targetRow = rows.find(r => r["criterion"] === rowCriterion);
         if (targetRow) targetRow[colKey] = displayValue;
+        if (value !== "-" && !uncertain) {
+          const fullName = fullNameMap.get(productLabel) ?? productLabel;
+          void setCachedSpec(currentParticipantId, fullName, rowCriterion, value);
+        }
         const symbol = value === "○" ? "\x1b[32m○\x1b[0m" : value === "X" ? "\x1b[31mX\x1b[0m" : uncertain ? "\x1b[33m?\x1b[0m" : "\x1b[90m-\x1b[0m";
         console.log(`         ${symbol} ${productLabel} × "${rowCriterion}" → "${displayValue}"${sourceUrl ? ` ← ${sourceUrl.slice(0, 60)}` : " (증거 없음)"}`);
         if (value === "-") console.log(`         \x1b[90m🕳️  [LookupTrace] stage=${trace.stage}${trace.detail ? ` | ${trace.detail}` : ""}\x1b[0m`);
@@ -1805,17 +1957,10 @@ export function findProductInLocalDB(productCategory: string, name: string): str
   try {
     const products = loadLocalDbProducts(fileName);
 
-    // 정확히 일치하는 제품 먼저 탐색
-    let found = products.find((p) => p.name === name);
-
-    // 없으면 부분 일치 (RAG가 이름을 약간 다르게 저장한 경우 대비)
-    if (!found) {
-      found = products.find(
-        (p) =>
-          p.name?.includes(name) ||
-          name.includes(p.name ?? "")
-      );
-    }
+    // 정확히 일치, 그게 없으면 후보가 유일할 때만 부분 일치(RAG가 이름을 약간 다르게 저장한
+    // 경우 대비) — 후보가 여럿이면(예: "로보락 S10 MaxV Slim" vs "...Slim 직배수"처럼 실제로
+    // 다른 두 제품이 서로를 포함하는 경우) 확신할 수 없으므로 null을 반환한다.
+    const found = findExactMatchingProduct(name, products);
 
     if (!found) return null;
 
@@ -1949,7 +2094,7 @@ export async function reRankByAI(
     : `사용자 요청: ${userQuery}`;
 
   const { text } = await generateText({
-    model: openai("gpt-4o"),
+    model: anthropic("claude-haiku-4-5"),
     system: `You are a qualitative product ranker. You receive a list of pre-filtered products from a Korean price comparison site.
 All products have already passed hard filters (price, brand, numeric specs). Do NOT re-check or re-verify those conditions.
 Your ONLY job: select the best-matching products by qualitative fit (use case, lifestyle, feature presence).
@@ -1992,8 +2137,18 @@ Output index array only:`,
     return RAG_NOT_FOUND;
   }
 
+  // 이 인덱스 배열은 LLM 자유 텍스트 출력을 파싱한 것이라(generateObject 스키마 검증 없음)
+  // 같은 인덱스를 두 번 내놓는 걸 막을 장치가 없다 — 그러면 같은 제품이 카드 두 장으로
+  // 중복 생성되고, 프론트에서 카드 name을 React key로 쓰므로(ProductCardList) 키 충돌로
+  // 이어진다. 처음 등장한 순서만 유지하고 재등장은 버린다.
+  const seenIdx = new Set<number>();
   const validated: RankedProduct[] = indices
     .filter((idx) => typeof idx === "number" && idx >= 0 && idx < candidates.length)
+    .filter((idx) => {
+      if (seenIdx.has(idx)) return false;
+      seenIdx.add(idx);
+      return true;
+    })
     .map((idx) => ({ index: idx, reason: "", appliedCriteria: [] }));
 
   if (validated.length === 0) {

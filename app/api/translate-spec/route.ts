@@ -1,5 +1,5 @@
 import { generateText } from "ai";
-import { openai } from "@ai-sdk/openai";
+import { anthropic } from "@ai-sdk/anthropic";
 import { NextRequest } from "next/server";
 import { logElapsed } from "@/lib/backend/timing";
 
@@ -57,7 +57,7 @@ Rules:
     const t0 = Date.now();
     try {
       const { text } = await generateText({
-        model: openai("gpt-4o"),
+        model: anthropic("claude-haiku-4-5"),
         system: systemPrompt,
         prompt: `Translate all specs in this object to ${lang}:\n\n${JSON.stringify(batchInput, null, 2)}`,
         temperature: 0,
@@ -101,7 +101,7 @@ Rules:
   const t0Single = Date.now();
   try {
     const { text } = await generateText({
-      model: openai("gpt-4o"),
+      model: anthropic("claude-haiku-4-5"),
       system: systemPrompt,
       prompt: `Translate this UI spec to ${lang}:\n\n${JSON.stringify(spec, null, 2)}`,
       temperature: 0,

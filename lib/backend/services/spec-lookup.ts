@@ -15,12 +15,17 @@ import {
   expandFieldKeySynonyms,
   findSpecValueInList,
   lookupKnownSpecValue,
+  findExactMatchingProduct,
+  detectCriterionType,
+  expandCriterionMeta,
   type KnownProductSpecs,
 } from "@/lib/backend/agents/data_agent";
 import {
   currentOptionListCards,
   currentComparisonTableCells,
+  currentParticipantId,
 } from "@/lib/backend/tools/sidebar-store";
+import { getCachedSpec, setCachedSpec } from "./spec-cache";
 
 // lookupKnownSpecValue/KnownProductSpecs는 data_agent.ts로 옮겨졌다(enrichCompTableCells도
 // 필요해져서) — 이 파일을 그대로 import하던 다른 파일들이 깨지지 않도록 여기서 re-export.
@@ -50,22 +55,23 @@ function loadDbLookupProducts(category: string): { name: string; specs: string[]
   return products;
 }
 
-export function findProductSpecInDB(productName: string, fieldKey: string, category: string): string | null {
+export function findProductSpecInDB(
+  productName: string,
+  fieldKey: string,
+  category: string,
+  criterionType?: "value" | "boolean"
+): string | null {
   try {
     const products = loadDbLookupProducts(category);
     if (!products) return null;
-    const qLower = productName.toLowerCase();
-    const matched = products.find(p => {
-      const pLower = p.name.toLowerCase();
-      return pLower === qLower || pLower.includes(qLower) || qLower.includes(pLower);
-    });
+    const matched = findExactMatchingProduct(productName, products);
     if (!matched) {
-      console.log(`[DB lookup] ❌ "${productName}" — DB에 제품 없음`);
+      console.log(`[DB lookup] ❌ "${productName}" — DB에 제품 없음 (또는 이름이 겹치는 동명이인 후보가 여럿이라 확신 불가)`);
       return null;
     }
     // 매핑된 DB 제품명이 검색어와 다르면 명시
     const nameMatched = matched.name === productName ? "" : ` (DB명: "${matched.name}")`;
-    const displayValue = findSpecValueInList(matched.specs, fieldKey);
+    const displayValue = findSpecValueInList(matched.specs, fieldKey, criterionType);
     if (displayValue != null) {
       console.log(`[DB lookup] ✅ "${productName}"${nameMatched} (key="${fieldKey}") → "${displayValue}"`);
       return displayValue;
@@ -183,7 +189,8 @@ async function attemptTavilyLookup(
   siblingTokens: string[],
   formatHint?: string,
   canonicalUnit?: string | null,
-  preferredCondition?: string | null
+  preferredCondition?: string | null,
+  criterionType?: "value" | "boolean"
 ): Promise<TavilyJudge | null> {
   const res = await tavilySearch(query, "advanced", {
     maxResults: 20, chunksPerSource: 5, includeAnswer: "advanced",
@@ -198,7 +205,7 @@ async function attemptTavilyLookup(
   const resultsWithAnswer = [...answerSegment, ...res.results];
   if (resultsWithAnswer.length === 0) return null;
 
-  const c = await extractCellValueLight(productName, fieldKey, resultsWithAnswer, locale, siblingTokens, formatHint, canonicalUnit, preferredCondition);
+  const c = await extractCellValueLight(productName, fieldKey, resultsWithAnswer, locale, siblingTokens, formatHint, canonicalUnit, preferredCondition, criterionType ?? detectCriterionType(fieldKey));
   return c.value !== "-" ? c : null;
 }
 
@@ -219,11 +226,12 @@ export async function lookupProductSpec(
   locale: string = "ko",
   formatHint?: string,
   canonicalUnit?: string | null,
-  preferredCondition?: string | null
+  preferredCondition?: string | null,
+  criterionType?: "value" | "boolean"
 ): Promise<SpecLookupResult> {
 
   // Step 1: 로컬 DB
-  const dbSpec = findProductSpecInDB(productName, fieldKey, category);
+  const dbSpec = findProductSpecInDB(productName, fieldKey, category, criterionType);
   if (dbSpec && dbSpec !== "-") {
     return { value: dbSpec, source: "db" };
   }
@@ -234,14 +242,14 @@ export async function lookupProductSpec(
   // 그래야 제품마다 서로 다른 조건의 값을 랜덤하게 주워오는 대신 같은 조건으로 맞춰진다.
   const siblingTokens = getSiblingExcludeTokens(productName, category);
   const q1 = preferredCondition ? `${productName} ${fieldKey} ${preferredCondition}` : `${productName} ${fieldKey}`;
-  let judge = await attemptTavilyLookup(productName, fieldKey, q1, locale, siblingTokens, formatHint, canonicalUnit, preferredCondition);
+  let judge = await attemptTavilyLookup(productName, fieldKey, q1, locale, siblingTokens, formatHint, canonicalUnit, preferredCondition, criterionType);
 
   // Step 3: 1차가 비어있으면(검색 0건 또는 답변에 필드 언급 없음) 재구성 쿼리로 1회만 재시도
   if (!judge) {
     const q2base = buildRetryQuery(productName, fieldKey);
     const q2 = preferredCondition ? `${q2base} ${preferredCondition}` : q2base;
     console.log(`🔁 [Tavily Retry] "${productName} × ${fieldKey}" → 1차 실패, 재구성 쿼리로 재시도: "${q2}"`);
-    judge = await attemptTavilyLookup(productName, fieldKey, q2, locale, siblingTokens, formatHint, canonicalUnit, preferredCondition);
+    judge = await attemptTavilyLookup(productName, fieldKey, q2, locale, siblingTokens, formatHint, canonicalUnit, preferredCondition, criterionType);
   }
 
   if (!judge) {
@@ -277,16 +285,28 @@ export async function resolveSpecValue(
   locale: string = "ko",
   formatHint?: string,
   canonicalUnit?: string | null,
-  preferredCondition?: string | null
+  preferredCondition?: string | null,
+  criterionType?: "value" | "boolean"
 ): Promise<SpecLookupResult> {
   const known =
-    lookupKnownSpecValue(productName, fieldKey, currentOptionListCards) ??
-    lookupKnownSpecValue(productName, fieldKey, currentComparisonTableCells);
+    lookupKnownSpecValue(productName, fieldKey, currentOptionListCards, criterionType) ??
+    lookupKnownSpecValue(productName, fieldKey, currentComparisonTableCells, criterionType);
   if (known) {
     console.log(`🔗 [resolveSpecValue] "${productName}" × "${fieldKey}" → "${known}" (source=screen, 재검색 생략)`);
     return { value: known, source: "screen" };
   }
-  return lookupProductSpec(productName, fieldKey, category, locale, formatHint, canonicalUnit, preferredCondition);
+
+  // 화면에 없어도, 이 참가자가 이전 턴/다른 패널에서 이미 같은 제품×기준을 조회해
+  // 캐시에 남아있으면 그 값을 재사용한다 — Option List/Comparison Table이 서로 다른
+  // 시점에 독립적으로 검색해 값이 갈리는 걸 화면 상태와 무관하게 막는다.
+  const cached = await getCachedSpec(currentParticipantId, productName, fieldKey);
+  if (cached) return { value: cached, source: "screen" };
+
+  const result = await lookupProductSpec(productName, fieldKey, category, locale, formatHint, canonicalUnit, preferredCondition, criterionType);
+  if (result.value !== "-" && !result.uncertain) {
+    await setCachedSpec(currentParticipantId, productName, fieldKey, result.value);
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +337,102 @@ export interface ProductLogForContext {
   webResults: WebResultForContext[];
 }
 
+interface CoverageBlock {
+  header: string;
+  body: string;
+  productName: string | null;
+  localSpecs: string[];
+  coveredCriteria: string[];
+  missingCriteria: string[];
+}
+
+// 기준명에서 [중요/보통/낮음]과 괄호 설명 제거 후 키워드 추출
+function cleanCriterion(c: string): string {
+  return c.replace(/\s*\[.*?\]/g, "").replace(/\s*\(.*?\)/g, "").trim().toLowerCase();
+}
+
+/**
+ * 컨텍스트를 [Product N] 블록으로 쪼개 제품별 로컬 DB 커버리지(coveredCriteria/
+ * missingCriteria)를 계산한다. 네트워크 호출 없음 — enrichContextWithTavily(Tavily까지
+ * 도는 버전)와 computeSpecCoverage(coverage만 필요한 소비자용, 아래 참고) 양쪽이 공유한다.
+ */
+function computeCoverageBlocks(contextSummary: string, decisionCriteria: string[]): CoverageBlock[] {
+  const parts = contextSummary.split(/(\[Product \d+\])/);
+  const rawBlocks: Array<{ header: string; body: string }> = [];
+  for (let i = 0; i < parts.length; i++) {
+    if (/^\[Product \d+\]$/.test(parts[i].trim())) {
+      rawBlocks.push({ header: parts[i], body: parts[i + 1] ?? "" });
+      i++;
+    }
+  }
+
+  return rawBlocks.map(({ header, body }) => {
+    const nameMatch = body.match(/Name:\s*(.+)/);
+    if (!nameMatch) {
+      return { header, body, productName: null, localSpecs: [], coveredCriteria: [], missingCriteria: [] };
+    }
+    const productName = nameMatch[1].trim();
+
+    const specsMatch = body.match(/Specs:\s*(.+)/);
+    const localSpecs = specsMatch?.[1]?.split(" / ").map(s => s.trim()).filter(Boolean) ?? [];
+
+    // 스펙 키만 추출 ("손떨림보정: 5축광학식" → "손떨림보정")
+    const specKeys = localSpecs.map(s => s.split(":")[0].trim().toLowerCase());
+
+    // 스펙 키 기반 커버리지 판단:
+    // 기준의 키워드 "전부"가 같은 스펙 키 안에 있어야 covered.
+    // (예: "센서 크기" → ["센서","크기"] 중 "센서"만 매칭돼도 통과시키면, "풀프레임 센서"처럼
+    // 관련은 있지만 실제로 "크기" 정보는 없는 스펙도 커버된 걸로 오판해 웹 검색 기회를 놓친다.
+    // 단어 하나라도 안 맞으면 미확정으로 보고 Tavily로 한 번 더 확인하는 게 안전하다.)
+    function isCoveredBySpecKey(criterion: string): boolean {
+      const clean = cleanCriterion(criterion);
+      const keywords = clean.split(/\s+/).filter(w => w.length >= 2);
+      return specKeys.some(key =>
+        keywords.every(kw => key.includes(kw) || kw.includes(key))
+      );
+    }
+
+    const coveredCriteria: string[] = [];
+    const missingCriteria: string[] = [];
+
+    decisionCriteria.forEach((criterion) => {
+      if (isCoveredBySpecKey(criterion)) coveredCriteria.push(criterion);
+      else missingCriteria.push(criterion);
+    });
+
+    console.log(`\n\x1b[36m[Spec Coverage] "${productName}"\x1b[0m`);
+    console.log(`  Danawa 스펙 (${localSpecs.length}개): ${localSpecs.slice(0, 5).join(" / ")}${localSpecs.length > 5 ? " ..." : ""}`);
+    coveredCriteria.forEach(c => console.log(`  ✅ "${c}" → DB에서 커버`));
+    missingCriteria.forEach(c => console.log(`  ❌ "${c}" → DB 미커버 (웹 검색 필요)`));
+
+    return { header, body, productName, localSpecs, coveredCriteria, missingCriteria };
+  });
+}
+
+/**
+ * computeCoverageBlocks 결과만 필요한 소비자(ComparisonTable 경로의 research 로그)를 위한
+ * coverage-only 버전 — Tavily 호출을 하지 않는다. ComparisonTable은 이 정보 없이도
+ * buildAndAssembleTable(STEP0, DB 값만 즉시 채움) → enrichCompTableCells(STEP2, 미확인
+ * 셀 전부를 한 번의 병렬 배치로 검색)만으로 셀을 다 채울 수 있어서, 여기서 미리 Tavily를
+ * 돌려두면 그 결과를 기다리는 순차 barrier가 하나 더 생길 뿐이다 — enrichCompTableCells의
+ * 병렬 배치 하나로 합치기 위해 이 경로는 검색을 하지 않고 coverage 로그만 만든다.
+ */
+export function computeSpecCoverage(
+  contextSummary: string,
+  decisionCriteria: string[]
+): ProductLogForContext[] {
+  if (!contextSummary.trim() || decisionCriteria.length === 0) return [];
+  return computeCoverageBlocks(contextSummary, decisionCriteria)
+    .filter((b): b is CoverageBlock & { productName: string } => b.productName !== null)
+    .map(b => ({
+      name: b.productName,
+      localSpecs: b.localSpecs,
+      coveredCriteria: b.coveredCriteria,
+      missingCriteria: b.missingCriteria,
+      webResults: [],
+    }));
+}
+
 export async function enrichContextWithTavily(
   contextSummary: string,
   decisionCriteria: string[],
@@ -330,60 +446,17 @@ export async function enrichContextWithTavily(
     return { enriched: contextSummary, productLogs };
   }
 
-  const parts = contextSummary.split(/(\[Product \d+\])/);
-  const blocks: Array<{ header: string; body: string }> = [];
+  const coverageBlocks = computeCoverageBlocks(contextSummary, decisionCriteria);
+  if (coverageBlocks.length === 0) return { enriched: contextSummary, productLogs };
 
-  for (let i = 0; i < parts.length; i++) {
-    if (/^\[Product \d+\]$/.test(parts[i].trim())) {
-      blocks.push({ header: parts[i], body: parts[i + 1] ?? "" });
-      i++;
-    }
-  }
-
-  if (blocks.length === 0) return { enriched: contextSummary, productLogs };
+  // 청소 모드 등에 따라 값이 갈리는 기준(소음/흡입력 등)은 제품마다 독립 검색하면 서로
+  // 다른 조건의 값을 주워와 비교가 불공정해진다 — data_agent.ts의 enrichCompTableCells/
+  // auto-enrich와 동일하게 여기서도 미리 힌트를 구해 lookupProductSpec에 흘려보낸다.
+  const criterionMeta = await expandCriterionMeta(decisionCriteria.map(cleanCriterion));
 
   const enrichedBlocks = await Promise.all(
-    blocks.map(async ({ header, body }) => {
-      const nameMatch = body.match(/Name:\s*(.+)/);
-      if (!nameMatch) return header + body;
-      const productName = nameMatch[1].trim();
-
-      const specsMatch = body.match(/Specs:\s*(.+)/);
-      const localSpecs = specsMatch?.[1]?.split(" / ").map(s => s.trim()).filter(Boolean) ?? [];
-
-      // 스펙 키만 추출 ("손떨림보정: 5축광학식" → "손떨림보정")
-      const specKeys = localSpecs.map(s => s.split(":")[0].trim().toLowerCase());
-
-      // 기준명에서 [중요/보통/낮음]과 괄호 설명 제거 후 키워드 추출
-      function cleanCriterion(c: string): string {
-        return c.replace(/\s*\[.*?\]/g, "").replace(/\s*\(.*?\)/g, "").trim().toLowerCase();
-      }
-
-      // 스펙 키 기반 커버리지 판단:
-      // 기준의 키워드 "전부"가 같은 스펙 키 안에 있어야 covered.
-      // (예: "센서 크기" → ["센서","크기"] 중 "센서"만 매칭돼도 통과시키면, "풀프레임 센서"처럼
-      // 관련은 있지만 실제로 "크기" 정보는 없는 스펙도 커버된 걸로 오판해 웹 검색 기회를 놓친다.
-      // 단어 하나라도 안 맞으면 미확정으로 보고 Tavily로 한 번 더 확인하는 게 안전하다.)
-      function isCoveredBySpecKey(criterion: string): boolean {
-        const clean = cleanCriterion(criterion);
-        const keywords = clean.split(/\s+/).filter(w => w.length >= 2);
-        return specKeys.some(key =>
-          keywords.every(kw => key.includes(kw) || kw.includes(key))
-        );
-      }
-
-      const coveredCriteria: string[] = [];
-      const missingCriteria: string[] = [];
-
-      decisionCriteria.forEach((criterion) => {
-        if (isCoveredBySpecKey(criterion)) coveredCriteria.push(criterion);
-        else missingCriteria.push(criterion);
-      });
-
-      console.log(`\n\x1b[36m[Spec Coverage] "${productName}"\x1b[0m`);
-      console.log(`  Danawa 스펙 (${localSpecs.length}개): ${localSpecs.slice(0, 5).join(" / ")}${localSpecs.length > 5 ? " ..." : ""}`);
-      coveredCriteria.forEach(c => console.log(`  ✅ "${c}" → DB에서 커버`));
-      missingCriteria.forEach(c => console.log(`  ❌ "${c}" → DB 미커버 (웹 검색 필요)`));
+    coverageBlocks.map(async ({ header, body, productName, localSpecs, coveredCriteria, missingCriteria }) => {
+      if (productName === null) return header + body;
 
       if (missingCriteria.length === 0) {
         productLogs.push({ name: productName, localSpecs, coveredCriteria, missingCriteria, webResults: [] });
@@ -399,15 +472,25 @@ export async function enrichContextWithTavily(
           // 확인한다 — Option List/Comparison Table이 각자 독립적으로 실시간 검색을 돌려
           // 같은 제품×기준인데 값이 갈리는 걸 막는다(update-table STRATEGY A의
           // prefetchedValues와 같은 취지).
-          const knownValue = lookupKnownSpecValue(productName, cleanedCriterion, knownProducts);
+          const meta = criterionMeta[cleanedCriterion];
+          const knownValue = lookupKnownSpecValue(productName, cleanedCriterion, knownProducts, meta?.type);
           if (knownValue) {
             console.log(`   🔗 "${productName}" × "${cleanedCriterion}" → "${knownValue}" (source=screen, 재검색 생략)`);
             return { criterion, url: "", snippet: knownValue };
           }
 
-          const result = await lookupProductSpec(productName, cleanedCriterion, category, locale);
+          // 화면에 없어도, 이 참가자가 예전 턴/다른 패널에서 이미 조회해둔 값이 있으면
+          // 재사용한다(spec-cache.ts, 참가자별로 격리됨).
+          const cachedValue = await getCachedSpec(currentParticipantId, productName, cleanedCriterion);
+          if (cachedValue) {
+            console.log(`   🗄️  "${productName}" × "${cleanedCriterion}" → "${cachedValue}" (source=participant-cache, 재검색 생략)`);
+            return { criterion, url: "", snippet: cachedValue };
+          }
+
+          const result = await lookupProductSpec(productName, cleanedCriterion, category, locale, meta?.formatHint, meta?.canonicalUnit, meta?.preferredCondition, meta?.type);
           if (result.value !== "-" && !result.uncertain) {
             console.log(`   🔍 "${productName}" × "${cleanedCriterion}" → "${result.value}" (source=${result.source})`);
+            void setCachedSpec(currentParticipantId, productName, cleanedCriterion, result.value);
             return { criterion, url: result.sourceUrl ?? "", snippet: result.value };
           }
           console.log(`   🔍 "${productName}" × "${cleanedCriterion}" → 결과 없음${result.uncertain ? " (불확실)" : ""}`);

@@ -11,13 +11,13 @@
  */
 
 import { generateObject } from "ai";
-import { openai } from "@ai-sdk/openai";
+import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import type { IntentAnalysis } from "./intent_analyzer";
 import type { Locale } from "./generators/shared";
 import { currentProductCategory, currentUserContext, currentDecisionCriteria } from "../tools/sidebar-store";
 
-export const EDIT_AGENT_MODEL = "gpt-4o-mini" as const;
+export const EDIT_AGENT_MODEL = "claude-haiku-4-5" as const;
 
 // z.discriminatedUnion would compile to JSON Schema's `oneOf`, which OpenAI's
 // Responses API structured-outputs mode rejects ("'oneOf' is not permitted").
@@ -38,7 +38,7 @@ function buildEditPlanSchema(locale: Locale) {
     z.object({
       target_surface: z.literal("optionList"),
       ...opSummaryField,
-      op: z.enum(["filter", "sort", "add", "remove_field"]),
+      op: z.enum(["filter", "sort", "add"]),
       result_card_names: z.array(z.string()).nullable()
         .describe("filter/sort: the matching cards' `id`s (not names) copied from CURRENT_OPTION_LIST, in final order to keep/show."),
       products_to_add: z.array(z.string()).nullable()
@@ -48,8 +48,8 @@ function buildEditPlanSchema(locale: Locale) {
       sort_order: z.enum(["asc", "desc"]).nullable(),
       field_updates: z.array(z.object({
         product_name: z.string().describe("The matching card's `id` (not name) copied from CURRENT_OPTION_LIST."),
-        field_key: z.string().describe(`Short ${lang} spec keyword, e.g. ${locale === "en" ? "'weight', 'battery'" : "'무게', '배터리'"}. For "add" this is looked up; for "remove_field" it identifies which existing spec line to delete — never a value either way.`),
-      })).nullable().describe("add: spec fields to look up for existing cards. remove_field: spec fields to delete from existing cards (no lookup — just removes the matching spec line)."),
+        field_key: z.string().describe(`Short ${lang} spec keyword, e.g. ${locale === "en" ? "'weight', 'battery'" : "'무게', '배터리'"}, to be looked up — never a value.`),
+      })).nullable().describe("add: spec fields to look up for existing cards."),
       original_query: z.string().nullable()
         .describe(`add: original search constraints (e.g. ${locale === "en" ? "'suction power 4500pa or higher'" : "'흡입력 4500pa 이상'"}) to hard-filter newly added products.`),
     }),
@@ -59,7 +59,7 @@ function buildEditPlanSchema(locale: Locale) {
     z.object({
       target_surface: z.literal("comparisonTable"),
       ...opSummaryField,
-      op: z.enum(["add_criteria", "remove_criteria", "add_product", "remove_product"])
+      op: z.enum(["add_criteria", "remove_criteria", "add_product", "remove_product", "replace_products"])
         .describe("If the request needs something outside this scope (e.g. re-checking one specific cell), " +
           "target_surface must not be 'comparisonTable' — explain the limitation in op_summary via another surface " +
           "or a conversational reply instead."),
@@ -68,7 +68,7 @@ function buildEditPlanSchema(locale: Locale) {
       criteria_to_remove: z.array(z.string()).nullable()
         .describe("remove_criteria: exact row `id`s (e.g. 'crit_1') copied from CURRENT_COMPARISON_TABLE to remove — NOT the label."),
       products_to_add: z.array(z.string()).nullable()
-        .describe(`add_product: product names/brands to search for and add as new columns (e.g. ${locale === "en" ? "'Xiaomi', 'Roborock S9'" : "'샤오미', '로보락 S9'"}).`),
+        .describe(`add_product: product names/brands to search for and add as new columns ON TOP of the current ones (e.g. ${locale === "en" ? "'Xiaomi', 'Roborock S9'" : "'샤오미', '로보락 S9'"}). replace_products: the SAME field, but for the full replacement set — the complete list of product names the table should show after this op (existing columns not in this list are dropped).`),
       products_to_remove: z.array(z.string()).nullable()
         .describe("remove_product: exact column `key`s (e.g. 'prod_1') copied from CURRENT_COMPARISON_TABLE to remove — NOT the label."),
     }),
@@ -186,19 +186,22 @@ Only surfaces that are actually present in the input may be targeted. Never targ
   already filtered by it and the user has no reason to expect that constraint to silently disappear just
   because this request doesn't repeat it. Only omit it if the current request explicitly changes/removes
   that constraint (e.g. "이제 가격 상관없이 보여줘").
-- "remove_field": delete an existing spec field/line from the cards. Signals: "remove the release-year info",
-  "get rid of the battery life line", "이 정보 지워줘", "삭제해줘" targeting a specific spec that is already
-  shown on the cards (not the cards themselves — that's a different request, out of scope for this op set).
-  → field_updates = one entry per card that currently shows that field, with product_name = that card's id and
-  field_key = the same short keyword used to identify it. No lookup happens for this op — do not confuse with "add".
 
 [comparisonTable ops] (single-cell re-verification is out of scope — see schema note)
 - "add_criteria": add one or more new criterion rows to compare. Signals: "compare this criterion too", "also check the direct-drain feature".
   → criteria_to_add.
 - "remove_criteria": remove one or more existing criterion rows. Signals: "remove this criterion".
   → criteria_to_remove = the matching row's 'id' (e.g. "crit_1") from current_comparisonTable.criteria — NOT its label.
-- "add_product": add one or more new products as columns to compare. Signals: "add Xiaomi products to the comparison too", "also look at the Roborock S9".
+- "add_product": add one or more new products as columns ON TOP of what's already shown. Signals: explicit additive
+  framing — "add Xiaomi products to the comparison too", "also look at the Roborock S9", Korean "~도"/"추가로"/"또".
   → products_to_add = product names/brands to search for (a downstream system resolves the actual product via search — do not invent specs).
+- "replace_products": the user names a specific, closed set of products to compare and the request does NOT carry
+  additive framing — e.g. "A, B, C 비교해줘", "A랑 B 비교해줄 수 있어?", "compare A and B", "A vs B 어때?". This is
+  the DEFAULT reading whenever a request names products for comparison without an explicit "on top of/also/too"
+  cue — do not fall back to add_product just because a table already exists on screen; a bare list of names is a
+  request to see a comparison of exactly those names, not those names plus whatever was already there.
+  → products_to_add = the FULL list of product names the table should show afterward (current columns not in this
+  list are dropped — this reuses add_product's field, but here it's the complete replacement set, not an addition).
 - "remove_product": remove one or more existing product columns. Signals: "remove this product from the table".
   → products_to_remove = the matching column's 'key' (e.g. "prod_1") from current_comparisonTable.products — NOT its label.
 
@@ -281,7 +284,7 @@ export async function planEdit(
   const editPlanRequestSchema = z.object({ plan: buildEditPlanSchema(locale) });
 
   const { object } = await generateObject({
-    model: openai(EDIT_AGENT_MODEL),
+    model: anthropic(EDIT_AGENT_MODEL),
     schema: editPlanRequestSchema,
     system: buildEditAgentPrompt(locale),
     prompt: cleanPrompt,

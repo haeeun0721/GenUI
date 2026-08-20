@@ -1,9 +1,8 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { generateUISpec } from "../agents/ui_agent";
-import { enrichContextWithTavily } from "../services/spec-lookup";
+import { computeSpecCoverage } from "../services/spec-lookup";
 import { writeCompTableLog } from "../logger";
-import { time } from "../timing";
 import {
   currentRequestId,
   pushCompTableResult,
@@ -11,9 +10,6 @@ import {
   currentSavedItems,
   currentDecisionCriteria,
   currentMyItemsContextSummary,
-  currentProductCategory,
-  currentLocale,
-  currentOptionListCards,
 } from "./sidebar-store";
 
 
@@ -52,31 +48,21 @@ export const renderToCompTable = tool({
     console.log("[renderToCompTable] saved_items:", currentSavedItems);
     console.log("[renderToCompTable] product_data length:", rawContext.length);
 
-    console.log("\n[Pre-enrich] Local DB 스펙 vs. Decision Criteria 커버리지 점검 시작...");
-    const { enriched: enrichedContext, productLogs } = await time(
-      "comp_table.pre_enrich_tavily",
-      capturedRequestId,
-      () => enrichContextWithTavily(
-        rawContext,
-        currentDecisionCriteria,
-        currentProductCategory,
-        currentLocale,
-        currentOptionListCards
-      )
-    );
-    const wasEnriched = enrichedContext !== rawContext;
-    console.log(
-      wasEnriched
-        ? "[Pre-enrich] ✅ 웹 스펙 보강 완료 → 보강된 context로 Claude 호출"
-        : "[Pre-enrich] ✅ Local DB 스펙만으로 충분 → 원본 context로 Claude 호출"
-    );
+    // 로컬 DB 커버리지만 계산(네트워크 호출 없음) — 미커버 기준의 실제 검색/판단은
+    // buildAndAssembleTable(STEP0) → enrichCompTableCells(STEP2)가 한 번의 병렬 배치로
+    // 처리한다. 예전엔 여기서 Tavily까지 미리 돌려(enrichContextWithTavily) 그 결과를
+    // 기다린 뒤에야 STEP2가 시작됐는데, STEP2가 어차피 남은 기준을 전부 커버하므로
+    // 그 대기는 순수한 순차 barrier였다 — 제거하면 두 단계가 합쳐져 지연이 줄어든다.
+    console.log("\n[Coverage] Local DB 스펙 vs. Decision Criteria 커버리지 점검 시작...");
+    const productLogs = computeSpecCoverage(rawContext, currentDecisionCriteria);
+    console.log("[Coverage] ✅ 커버리지 점검 완료 — 미커버 기준은 enrichCompTableCells(STEP2)에서 병렬 검색");
 
     // MD 로그 저장
     writeCompTableLog(productLogs, currentDecisionCriteria);
 
     try {
       const uiSpecString = await generateUISpec(
-        enrichedContext,
+        rawContext,
         intent_summary,
         ui_intent_category,
         1,
