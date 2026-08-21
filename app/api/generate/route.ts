@@ -111,7 +111,7 @@ export async function POST(req: Request) {
     : "";
 
   const turnIndex = uiMessages.length;
-  const result = streamChatReply(locale, memoryBlock, modelMessages as any, {
+  const result = await streamChatReply(locale, memoryBlock, modelMessages as any, {
     onFinish: ({ text, steps }) => {
       if (!participantId) return;
       appendMemoryTurn(participantId, {

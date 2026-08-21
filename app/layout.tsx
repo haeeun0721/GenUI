@@ -28,7 +28,7 @@ export default async function RootLayout({
         <style dangerouslySetInnerHTML={{
           __html: `
             * {
-              font-family: 'NanumSquareNeo', -apple-system, BlinkMacSystemFont, system-ui, Roboto, sans-serif !important;
+              font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, Roboto, sans-serif !important;
             }
           `
         }} />

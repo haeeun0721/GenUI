@@ -9,7 +9,7 @@
  */
 
 import { generateText } from "ai";
-import { openai } from "@ai-sdk/openai";
+import { anthropic } from "@ai-sdk/anthropic";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -59,7 +59,7 @@ export async function reRankByAI(
     : `사용자 요청: ${userQuery}`;
 
   const { text } = await generateText({
-    model: openai("gpt-4o"),
+    model: anthropic("claude-haiku-4-5"),
     system: `You are a qualitative product ranker. You receive a list of pre-filtered products from a Korean price comparison site.
 All products have already passed hard filters (price, brand, numeric specs). Do NOT re-check or re-verify those conditions.
 Your ONLY job: select the best-matching products by qualitative fit (use case, lifestyle, feature presence).
@@ -102,8 +102,18 @@ Output index array only:`,
     return RAG_NOT_FOUND;
   }
 
+  // 이 인덱스 배열은 LLM 자유 텍스트 출력을 파싱한 것이라(generateObject 스키마 검증 없음)
+  // 같은 인덱스를 두 번 내놓는 걸 막을 장치가 없다 — main처럼 React key 충돌은 없지만,
+  // baseline 텍스트 답변에 같은 제품이 두 번 설명되는 품질 저하로 이어진다. 처음 등장한
+  // 순서만 유지하고 재등장은 버린다 (main의 reRankByAI와 동일한 dedup 로직).
+  const seenIdx = new Set<number>();
   const validated: RankedProduct[] = indices
     .filter((idx) => typeof idx === "number" && idx >= 0 && idx < candidates.length)
+    .filter((idx) => {
+      if (seenIdx.has(idx)) return false;
+      seenIdx.add(idx);
+      return true;
+    })
     .map((idx) => ({ index: idx, reason: "", appliedCriteria: [] }));
 
   if (validated.length === 0) {

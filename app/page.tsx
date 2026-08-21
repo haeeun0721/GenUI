@@ -26,6 +26,10 @@ type AppMessage = UIMessage;
 
 const transport = new DefaultChatTransport({ api: "/api/generate" });
 
+// 참여자가 "구매 목적 및 상황"에 최소한의 구체성을 담도록 강제하는 하한선 —
+// 한두 단어짜리 성의 없는 답만 걸러내는 낮은 문턱이라 값을 크게 올리지 않는다.
+const MIN_CONTEXT_LENGTH = 20;
+
 // =============================================================================
 // Tool Call Display
 // =============================================================================
@@ -161,7 +165,7 @@ const MessageBubble = memo(({
           <div
             className="rounded-2xl px-4 py-2.5 leading-relaxed whitespace-pre-wrap bg-slate-900 text-white rounded-tr-md break-words"
             style={{
-              fontSize: userText.length > 120 ? '10px' : userText.length > 60 ? '11px' : '13px',
+              fontSize: userText.length > 120 ? '13px' : userText.length > 60 ? '14px' : '15px',
             }}
           >
             {userText}
@@ -179,9 +183,9 @@ const MessageBubble = memo(({
           return (
             <div
               key={`text-${i}`}
-              className="relative z-10 text-sm leading-relaxed text-slate-800 [&_p+p]:mt-3 [&_ul]:mt-2 [&_ol]:mt-2 [&_pre]:mt-2 select-none [&_table]:mt-2! [&_table]:w-full! [&_table]:border-collapse! [&_table]:overflow-hidden! [&_table]:rounded-xl! [&_table]:border! [&_table]:border-indigo-100! [&_thead]:bg-indigo-100! [&_th]:text-indigo-900! [&_th]:font-bold! [&_th]:border-b! [&_th]:border-indigo-200! [&_td]:border-b! [&_td]:border-indigo-50! [&_tbody_tr:hover]:bg-indigo-50! [&_tbody_tr:last-child_td]:border-b-0! [&_table_a]:text-indigo-600! [&_table_a]:no-underline! [&_table_a:hover]:underline!"
+              className="relative z-10 text-[15px] leading-relaxed text-slate-800 [&_p+p]:mt-3 [&_ul]:mt-2 [&_ol]:mt-2 [&_pre]:mt-2 [&_table]:mt-2! [&_table]:w-full! [&_table]:border-collapse! [&_table]:overflow-hidden! [&_table]:rounded-xl! [&_table]:border! [&_table]:border-indigo-100! [&_thead]:bg-indigo-100! [&_th]:text-indigo-900! [&_th]:font-bold! [&_th]:border-b! [&_th]:border-indigo-200! [&_td]:border-b! [&_td]:border-indigo-50! [&_tbody_tr:hover]:bg-indigo-50! [&_tbody_tr:last-child_td]:border-b-0! [&_table_a]:text-indigo-600! [&_table_a]:no-underline! [&_table_a:hover]:underline!"
             >
-              <Streamdown plugins={{ code }} animated={false}>
+              <Streamdown plugins={{ code }} animated={false} linkSafety={{ enabled: false }} controls={{ table: false }}>
                 {seg.content}
               </Streamdown>
             </div>
@@ -249,15 +253,18 @@ export default function ChatPage() {
     purchaseContext: locale === 'en' ? 'PURCHASE CONTEXT' : '구매 목적 및 상황',
     contextPlaceholder: locale === 'en'
       ? (assignedItem === 'B'
-        ? 'e.g. I have a cat and need strong suction and mopping.'
+        ? 'e.g. I have a cat and want to keep my home clean without much effort every day. I don\'t have much time to spend on cleaning.'
         : assignedItem === 'C'
           ? 'e.g. I want to take beautiful landscape and portrait photos while traveling. I will also shoot vlogs.'
           : 'e.g. I go out often alone. Lightweight and portable is important.')
       : (assignedItem === 'B'
-        ? '저 고양이를 키우고 있어서 흡입력이 강하고 물걸레 기능도 있는 제품이 필요해요.'
+        ? '고양이를 키우고 있어서 매일 편하게 집을 청소하고 싶어요. 청소에 시간을 많이 쓰기는 어려운 편이에요.'
         : assignedItem === 'C'
           ? '여행 다니면서 풍경이나 인물 사진을 예쁘게 찍고 싶어요. 브이로그 촬영도 할 거예요.'
           : '외출이 잦아서 혼자 쓰기에 가볍고 휴대성이 좋은 게 중요해요.'),
+    contextMinHint: locale === 'en'
+      ? (n: number) => `At least ${MIN_CONTEXT_LENGTH} characters (${n}/${MIN_CONTEXT_LENGTH})`
+      : (n: number) => `최소 ${MIN_CONTEXT_LENGTH}자 이상 (${n}/${MIN_CONTEXT_LENGTH})`,
     getStarted: locale === 'en' ? 'Get Started' : '시작하기',
     robotVacuum: locale === 'en' ? 'Robot Vacuum' : '로봇 청소기',
     camera: locale === 'en' ? 'Camera' : '카메라',
@@ -426,6 +433,7 @@ export default function ChatPage() {
   if (!isMounted) return null;
 
   if (!hasStarted) {
+    const isContextLongEnough = userContext.trim().length >= MIN_CONTEXT_LENGTH;
     return (
       <div className="h-screen w-full flex items-center justify-center bg-[#FAFAFA]">
         <div className="w-full max-w-lg flex flex-col gap-10 px-8">
@@ -456,7 +464,7 @@ export default function ChatPage() {
               type="text"
               value={participantId}
               onChange={(e) => setParticipantId(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && participantId.trim() && assignedItem && userContext.trim()) setHasStarted(true); }}
+              onKeyDown={(e) => { if (e.key === "Enter" && participantId.trim() && assignedItem && isContextLongEnough) setHasStarted(true); }}
               placeholder="P1"
               className="w-full border border-slate-200 rounded-[8px] px-5 py-4 text-[18px] font-medium text-slate-800 placeholder:text-slate-300 outline-none focus:border-slate-400 transition-colors bg-[#FAFAFA]"
               autoFocus
@@ -502,12 +510,15 @@ export default function ChatPage() {
               rows={3}
               className="w-full border border-slate-200 rounded-[8px] px-5 py-4 text-[15px] font-medium text-slate-800 placeholder:text-slate-300 outline-none focus:border-slate-400 transition-colors bg-[#FAFAFA] resize-none leading-relaxed"
             />
+            <span className={`text-[12px] font-medium ${isContextLongEnough ? 'text-emerald-500' : 'text-slate-400'}`}>
+              {T.contextMinHint(userContext.trim().length)}
+            </span>
           </div>
 
           {/* Start button */}
           <button
             onClick={() => {
-              if (participantId.trim() && assignedItem && userContext.trim()) {
+              if (participantId.trim() && assignedItem && isContextLongEnough) {
                 const assignedItemLabel = assignedItem === "B" ? "로봇 청소기" : assignedItem === "C" ? "카메라" : assignedItem;
                 fetch('/api/log-event', {
                   method: 'POST',
@@ -523,7 +534,7 @@ export default function ChatPage() {
                 setHasStarted(true);
               }
             }}
-            disabled={!participantId.trim() || !assignedItem || !userContext.trim()}
+            disabled={!participantId.trim() || !assignedItem || !isContextLongEnough}
             className="w-full py-4 rounded-[8px] text-white text-[16px] font-semibold tracking-tight active:scale-[0.98] transition-all disabled:opacity-30 disabled:cursor-not-allowed"
             style={{ backgroundColor: "#000000" }}
           >
@@ -582,6 +593,13 @@ export default function ChatPage() {
                 isStreaming={isStreaming && idx === messages.length - 1}
               />
             ))}
+            {isStreaming && messages[messages.length - 1]?.role === "user" && (
+              <div className="flex items-center gap-1 h-4" aria-label={locale === "en" ? "Thinking" : "생각 중"}>
+                <span className="typing-dot h-1.5 w-1.5 rounded-full bg-muted-foreground" style={{ animationDelay: "0ms" }} />
+                <span className="typing-dot h-1.5 w-1.5 rounded-full bg-muted-foreground" style={{ animationDelay: "0.2s" }} />
+                <span className="typing-dot h-1.5 w-1.5 rounded-full bg-muted-foreground" style={{ animationDelay: "0.4s" }} />
+              </div>
+            )}
             {error && (
               <div className="p-4 rounded-2xl bg-red-50 border border-red-100 text-red-600 text-sm font-medium">
                 {error.message}
@@ -612,7 +630,7 @@ export default function ChatPage() {
                 onKeyDown={handleKeyDown}
                 placeholder={T.askAnything}
                 rows={1}
-                className="flex-1 min-w-[120px] bg-transparent border-none focus:ring-0 focus:outline-none focus-visible:ring-0 resize-none text-slate-800 placeholder:text-slate-400 py-0.5 text-[14px] font-medium"
+                className="flex-1 min-w-[120px] bg-transparent border-none focus:ring-0 focus:outline-none focus-visible:ring-0 resize-none text-slate-800 placeholder:text-slate-400 py-0.5 text-[15px] font-medium"
               />
             </div>
             <button
