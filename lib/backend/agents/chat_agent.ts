@@ -5,9 +5,9 @@
  * treatment(main)의 action_router → template_selector → generator 파이프라인을 그대로
  * 재사용한다 (같은 모델 claude-haiku-4-5, 같은 판단 로직, 같은 user_context 사용 범위).
  * 유일한 차이는 마지막 출력 형식뿐이다: JSON UI 스키마 대신 단일 선형 채팅 텍스트로
- * 스트리밍한다. 패널이 없으므로 screen_state는 항상 비어있고, action_router가 그래도
- * "edit"를 고르는 극단적인 경우엔 generate와 동일하게 처리한다(수정할 패널 자체가 없으므로
- * conversation_history를 참고한 새 답변으로 자연스럽게 대체됨).
+ * 스트리밍한다. main에는 있는 "edit(기존 UI 수정)" 액션은 baseline엔 없다 — 수정할 대상이
+ * 되는 영속 패널(Option List/Comparison Table/Criteria Map) 자체가 없기 때문에 제거했다
+ * (action_router.ts 헤더 참고).
  */
 
 import { streamText, generateText, generateObject, stepCountIs, tool, type ModelMessage } from "ai";
@@ -17,7 +17,7 @@ import { currentProductCategory, currentUserContext } from "../tools/sidebar-sto
 import { ragSearch, findExactProduct } from "../rag/search";
 import { reRankByAI, RAG_NOT_FOUND, tavilySearchSnippet, type ProductData } from "./data_agent";
 import { analyzeIntent, type IntentAnalysis } from "./intent_analyzer";
-import { routeAction, type ScreenState } from "./action_router";
+import { routeAction } from "./action_router";
 import { selectTemplate } from "./template_selector";
 import { buildCriteriaMapSystemText, buildCriteriaMapPromptText } from "./generators/criteria_map";
 import { buildInformationCardSystemText, buildInformationCardPromptText } from "./generators/information_card";
@@ -30,12 +30,6 @@ export type Locale = "ko" | "en";
 // main과 동일 모델 — task-type별로 나뉘지 않고 action_router/template_selector/generator가
 // 전부 이 모델 하나다(main도 최근 전체를 claude-haiku-4-5로 통일했음).
 const CHAT_MODEL = "claude-haiku-4-5";
-
-const EMPTY_SCREEN_STATE: ScreenState = {
-  hasOptionList: false,
-  hasComparisonTable: false,
-  hasCriteriaMap: false,
-};
 
 // ---------------------------------------------------------------------------
 // 공용 제품 검색 — main의 findExactMatchingProduct 같은 정밀 매칭 대신 ragSearch+
@@ -123,10 +117,13 @@ async function extractDecisionCriteria(userText: string): Promise<string[]> {
   const { text } = await generateText({
     model: anthropic(CHAT_MODEL),
     system:
-      "Extract explicit purchase decision criteria the user stated in their message — a minimum/maximum spec " +
-      "value, a required feature, a brand preference, etc. Output a JSON array of short criteria phrases in the " +
-      "same language as the message, e.g. [\"흡입력 4500pa 이상\", \"물걸레 기능\"]. If the user stated no specific " +
-      "criteria (e.g. they just said \"추천해줘\" with no conditions), output []. JSON array only, no explanation.",
+      "Extract explicit purchase decision criteria AND specific specs the user is asking to see the value of, " +
+      "from their message — a minimum/maximum spec value, a required feature, a brand preference, OR a named " +
+      "spec/attribute they want to know about even without a condition attached (e.g. \"가로 세로 사이즈 알고 " +
+      "싶어요\" → [\"가로/세로 사이즈\"]). Output a JSON array of short criteria phrases in the same language as " +
+      "the message, e.g. [\"흡입력 4500pa 이상\", \"물걸레 기능\", \"가로/세로 사이즈\"]. If the user stated no " +
+      "specific criteria or spec question (e.g. they just said \"추천해줘\" with no conditions), output []. JSON " +
+      "array only, no explanation.",
     prompt: userText,
     temperature: 0,
     maxOutputTokens: 200,
@@ -420,17 +417,15 @@ export async function streamChatReply(
   const history = messages.slice(0, Math.max(0, messages.length - 1));
 
   const intentAnalysis: IntentAnalysis = await analyzeIntent(userText, history);
-  const actionRoute = await routeAction(intentAnalysis, EMPTY_SCREEN_STATE, "", userText);
+  const actionRoute = await routeAction(intentAnalysis, userText);
 
   let system: string;
   const noneTools = { search_products: searchProductsTool, web_search: webSearchTool };
   let tools: typeof noneTools | undefined;
 
   let turn: { system: string; prompt: string } | null = null;
-  if (actionRoute.action !== "none") {
-    // "generate" 및 (패널이 없어 사실상 발생하지 않는) "edit" fallback — 둘 다 동일하게
-    // template_selector로 어떤 종류의 답변인지 고른 뒤 텍스트 전용 판단 로직을 태운다.
-    const selection = await selectTemplate(intentAnalysis, false, [], "");
+  if (actionRoute.action === "generate") {
+    const selection = await selectTemplate(intentAnalysis);
     turn = await buildGenerateTurn(locale, selection.template, userText, intentAnalysis.user_goal);
   }
 

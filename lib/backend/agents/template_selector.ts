@@ -22,9 +22,6 @@ whether to generate at all, and you never modify an existing UI surface.
 
 [Input]
 - intent_analysis: The user's interpreted goal.
-- screen_summary (optional): what's actually shown on screen right now (option list products, comparison
-  table products/criteria, criteria map categories) — use this to avoid picking a template whose content
-  would just duplicate or conflict with what's already there.
 
 [Task]
 Choose the template to generate.
@@ -37,8 +34,7 @@ Choose the template to generate.
   given domain. The answer is a structured list of purchasing dimensions that can later be reused as
   filter, comparison, or scoring criteria.
 
-- ComparisonTable: The user names two or more specific products (by name/model, or via a phrase like
-  "these", "the ones you just showed me" referring to CURRENT_OPTION_LIST) and wants them evaluated
+- ComparisonTable: The user names two or more specific products (by name/model) and wants them evaluated
   side-by-side. The response is a structured table comparing those products across specs.
 
 - ProductCardList: The user wants to see a list of actual buyable products with prices and specs, without
@@ -56,11 +52,8 @@ Choose the template to generate.
       → Former → InformationCard. Latter → CriteriaMap.
 
 2. ComparisonTable vs ProductCardList:
-   a. Does the user name 2+ specific products (explicitly, or via a reference to CURRENT_OPTION_LIST)?
+   a. Does the user name 2+ specific products explicitly?
       → Yes → ComparisonTable. No (open-ended "show me some products") → ProductCardList.
-   b. If the user says "pick the best one of these" / "which of these is better", referring to
-      CURRENT_OPTION_LIST with 3+ items and no new narrowing criteria stated → still ComparisonTable
-      (they want the existing set evaluated side-by-side, not a new browsable list).
 
 3. If a message could plausibly fit two templates even after the tests above, prefer the template that
    requires the MOST specific information already given (ComparisonTable > ProductCardList > CriteriaMap
@@ -80,10 +73,6 @@ Input: "Compare the Roborock S10 and the Dreame X50."
 → { "template": "ComparisonTable" }
 (Two specific named products.)
 
-Input: "Which of these is the best?" (CURRENT_OPTION_LIST has 4 products shown)
-→ { "template": "ComparisonTable" }
-(References an existing named set for side-by-side evaluation, not a new browsable list.)
-
 Input: "Recommend a cordless vacuum around $200."
 → { "template": "ProductCardList" }
 (No specific products named — a browsable set to discover options from.)
@@ -102,22 +91,15 @@ Respond with ONLY a JSON object:
 
 
 export async function selectTemplate(
-  intentAnalysis: IntentAnalysis,
-  hasOptionList: boolean,
-  currentProductNames: string[] = [],
-  screenSummary: string = ""
+  intentAnalysis: IntentAnalysis
 ): Promise<TemplateSelection> {
   console.log(`\n\x1b[33m========== [3] Template Selector ==========\x1b[0m`);
-  console.log(`\x1b[90m[Input] hasOptionList:\x1b[0m ${hasOptionList}`);
-  console.log(`\x1b[90m[Input] currentProductNames:\x1b[0m [${currentProductNames.join(', ')}]`);
-  console.log(`\x1b[90m[Input] screenSummary:\x1b[0m ${screenSummary || "(none)"}`);
   console.log(`\x1b[90m[Input] IntentAnalysis:\x1b[0m ${JSON.stringify(intentAnalysis, null, 2)}`);
 
   const promptText = [
     `intent_analysis: "${intentAnalysis.user_goal}"`,
-    screenSummary ? `screen_summary:\n${screenSummary}` : '',
     "Select the appropriate template.",
-  ].filter(Boolean).join('\n');
+  ].join('\n');
 
   // 제어 문자 제거:  등 비가시 문자가 LLM에 들어가면 garbage output 발생
   const sanitize = (s: string) => s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');

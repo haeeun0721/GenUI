@@ -11,7 +11,7 @@
  * 맞춘다.
  */
 
-import { callLLM, buildCommonSystemInstructionsText, Locale } from "./shared";
+import { Locale } from "./shared";
 import type { ProductData } from "../data_agent";
 
 const buildSystemText = (locale: Locale): string => {
@@ -45,10 +45,13 @@ using exclusively the data given in product_data, never external knowledge or in
    aren't measuring the same thing) such that they cannot be directly compared, do NOT judge one product as
    better than another on that criterion. Mention each product's characteristic on it neutrally instead.
 3. If products are genuinely too close to call overall, say so explicitly rather than forcing a winner.
-4. Connect the recommendation to THIS user's stated user_context — name the concrete situation/purpose and
-   explain why the winning spec(s) matter for it (e.g. instead of "흡입력이 충분합니다", say something like
-   "반려동물 털 청소가 우선이라고 하셨는데, 두 제품 모두 그 정도 흡입력이면 충분합니다"). If user_context is
-   empty, fall back to referencing decision_criteria instead.
+4. Connect the recommendation to THIS user's stated user_context ONLY when it's actually relevant to the
+   criteria you judged this turn — name the concrete situation/purpose and explain why the winning spec(s)
+   matter for it (e.g. instead of "흡입력이 충분합니다", say something like "반려동물 털 청소가 우선이라고
+   하셨는데, 두 제품 모두 그 정도 흡입력이면 충분합니다"). If decision_criteria this turn has nothing to do
+   with user_context (e.g. a plain spec lookup like product dimensions), do NOT force in a reference to
+   user_context — just answer what was actually asked. If user_context is empty, fall back to referencing
+   decision_criteria instead.
 5. Never invent, guess, or add a spec/price not explicitly present in product_data. If something needed to
    judge a criterion isn't in product_data, say it's unknown rather than assuming a value.
 
@@ -80,18 +83,3 @@ export const buildComparisonTablePromptText = (
   ]
     .filter(Boolean)
     .join("\n\n");
-
-export async function generateComparisonTableText(
-  locale: Locale,
-  productCategory: string,
-  products: ProductData[],
-  userContext: string,
-  decisionCriteria: string[]
-): Promise<string> {
-  const system = [
-    buildCommonSystemInstructionsText(productCategory, locale),
-    buildSystemText(locale),
-  ].join("\n\n");
-
-  return callLLM(system, buildComparisonTablePromptText(products, userContext, decisionCriteria));
-}

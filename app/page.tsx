@@ -6,7 +6,6 @@ import { DefaultChatTransport, type UIMessage } from "ai";
 import {
   ArrowDown,
   ArrowUp,
-  ChevronRight,
   Loader2,
   Sparkles,
   User,
@@ -51,13 +50,10 @@ function extractUserDisplayText(rawText: string): string {
 function ToolCallDisplay({
   toolName,
   state,
-  result,
 }: {
   toolName: string;
   state: string;
-  result: unknown;
 }) {
-  const [expanded, setExpanded] = useState(false);
   const isLoading =
     state !== "output-available" &&
     state !== "output-error" &&
@@ -66,32 +62,12 @@ function ToolCallDisplay({
   const label = labels ? (isLoading ? labels[0] : labels[1]) : toolName;
 
   return (
-    <div className="text-sm group">
-      <button
-        type="button"
-        className="flex items-center gap-1.5"
-        onClick={() => setExpanded((e) => !e)}
+    <div className="text-sm">
+      <span
+        className={`text-muted-foreground ${isLoading ? "animate-shimmer" : ""}`}
       >
-        <span
-          className={`text-muted-foreground ${isLoading ? "animate-shimmer" : ""}`}
-        >
-          {label}
-        </span>
-        {!isLoading && (
-          <ChevronRight
-            className={`h-3 w-3 text-muted-foreground/0 group-hover:text-muted-foreground transition-all ${expanded ? "rotate-90" : ""}`}
-          />
-        )}
-      </button>
-      {expanded && !isLoading && result != null && (
-        <div className="mt-1 max-h-64 overflow-auto">
-          <pre className="text-xs text-muted-foreground whitespace-pre-wrap break-all">
-            {typeof result === "string"
-              ? result
-              : JSON.stringify(result, null, 2)}
-          </pre>
-        </div>
-      )}
+        {label}
+      </span>
     </div>
   );
 }
@@ -200,7 +176,6 @@ const MessageBubble = memo(({
                   key={t.toolCallId}
                   toolName={t.toolName}
                   state={t.state}
-                  result={t.output}
                 />
               ))}
             </div>
