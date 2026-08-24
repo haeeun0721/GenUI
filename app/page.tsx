@@ -492,20 +492,24 @@ export default function ChatPage() {
 
           {/* Start button */}
           <button
-            onClick={() => {
+            onClick={async () => {
               if (participantId.trim() && assignedItem && isContextLongEnough) {
                 const assignedItemLabel = assignedItem === "B" ? "로봇 청소기" : assignedItem === "C" ? "카메라" : assignedItem;
-                fetch('/api/log-event', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    type: 'session_start',
-                    participantId: participantId.trim(),
-                    assignedItem: assignedItemLabel,
-                    purchaseContext: userContext.trim(),
-                    locale,
-                  }),
-                }).catch((err) => console.error('[logEvent] session_start failed:', err));
+                try {
+                  await fetch('/api/log-event', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      type: 'session_start',
+                      participantId: participantId.trim(),
+                      assignedItem: assignedItemLabel,
+                      purchaseContext: userContext.trim(),
+                      locale,
+                    }),
+                  });
+                } catch (err) {
+                  console.error('[logEvent] session_start failed:', err);
+                }
                 setHasStarted(true);
               }
             }}

@@ -113,7 +113,11 @@ export async function POST(req: Request) {
   const turnIndex = uiMessages.length;
   const result = await streamChatReply(locale, memoryBlock, modelMessages as any, {
     onFinish: ({ text, steps }) => {
-      if (!participantId) return;
+      console.log("[ResearchLog] onFinish — participantId:", participantId, "turnIndex:", turnIndex, "steps.length:", steps?.length ?? "undefined");
+      if (!participantId) {
+        console.warn("[ResearchLog] participantId 없음 — logChatTurn 스킵");
+        return;
+      }
       appendMemoryTurn(participantId, {
         turn: turnIndex,
         userText: strippedLatest,
@@ -122,20 +126,24 @@ export async function POST(req: Request) {
         note: text.trim(),
       }).catch((err) => console.error("[SessionMemory] append 실패:", err));
 
-      const toolCalls: ChatTurnToolCall[] = steps.flatMap((step) =>
-        step.toolCalls.map((call) => {
-          const result = step.toolResults.find((r) => r.toolCallId === call.toolCallId);
-          return { tool: call.toolName, input: call.input, output: result?.output ?? null };
-        })
-      );
+      try {
+        const toolCalls: ChatTurnToolCall[] = (steps ?? []).flatMap((step) =>
+          (step.toolCalls ?? []).map((call) => {
+            const result = (step.toolResults ?? []).find((r) => r.toolCallId === call.toolCallId);
+            return { tool: call.toolName, input: call.input, output: result?.output ?? null };
+          })
+        );
 
-      logChatTurn({
-        participantId,
-        turnIndex,
-        userText: strippedLatest,
-        assistantText: text.trim(),
-        toolCalls,
-      }).catch((err) => console.error("[ResearchLog] logChatTurn 실패:", err));
+        logChatTurn({
+          participantId,
+          turnIndex,
+          userText: strippedLatest,
+          assistantText: text.trim(),
+          toolCalls,
+        }).catch((err) => console.error("[ResearchLog] logChatTurn 실패:", err));
+      } catch (err) {
+        console.error("[ResearchLog] onFinish 처리 중 예외:", err);
+      }
     },
   });
 
