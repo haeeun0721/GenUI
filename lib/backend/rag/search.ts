@@ -197,7 +197,7 @@ function parseSpecNumber(specs: string[], keyPatterns: RegExp[]): number | null 
   return null;
 }
 
-function parseConstraints(query: string): NumericConstraints {
+function parseConstraints(query: string, knownBrands: string[] = BRAND_NAMES): NumericConstraints {
   const c: NumericConstraints = {};
 
   const maxPriceMan = query.match(/([\d.]+)\s*만\s*원?\s*(?:이하|미만)/i);
@@ -221,9 +221,17 @@ function parseConstraints(query: string): NumericConstraints {
   const maxNoise = query.match(/([\d.]+)\s*[dD][bB]\s*(?:이하|미만)/i) ?? query.match(/소음\s*([\d.]+)/i);
   if (maxNoise) c.maxNoiseDb = parseFloat(maxNoise[1]);
 
+  // 쿼리에 언급된 모든 브랜드를 모은다 — 배열 순서가 아니라 실제로 몇 개나 언급됐는지가 중요하다.
+  // 브랜드가 정확히 하나만 언급되면(예: "로보락 제품 추천해줘") 그 브랜드로 좁히는 게 맞지만,
+  // 두 개 이상이 동시에 언급되면(예: "드리미 A랑 로보락 B 비교해줘") 서로 다른 브랜드끼리
+  // 비교하려는 의도이므로 브랜드로 필터링하면 안 된다 — 상대 브랜드 제품이 통째로 제거된다.
   const queryLower = query.toLowerCase();
-  for (const brand of BRAND_NAMES) {
-    if (queryLower.includes(brand.toLowerCase())) { c.brand = brand.toLowerCase(); break; }
+  const matchedBrands = new Set<string>();
+  for (const brand of knownBrands) {
+    if (brand && queryLower.includes(brand.toLowerCase())) matchedBrands.add(brand.toLowerCase());
+  }
+  if (matchedBrands.size === 1) {
+    c.brand = [...matchedBrands][0];
   }
 
   if (Object.keys(c).length > 0) console.log("[RAG] 하드필터 조건 감지:", JSON.stringify(c));
@@ -280,8 +288,16 @@ export function findExactProduct(query: string, category: string): ProductData |
 
   // 1) 정확히 일치 (공백/대소문자 차이만 허용)
   let match = data.products.find((p) => normalizeProductName(p.name) === qNorm);
-  // 2) DB 이름이 쿼리를 통째로 포함 (쿼리가 DB 이름의 일부 — 흔치 않음)
-  if (!match) match = data.products.find((p) => normalizeProductName(p.name).includes(qNorm));
+  // 2) DB 이름이 쿼리를 통째로 포함 (쿼리가 DB 이름의 일부 — 흔치 않음).
+  //    "DC-S5"처럼 짧은 쿼리는 "DC-S5 바디"와 "DC-S5 II 바디" 양쪽 다 부분 일치하므로,
+  //    배열 순서로 아무거나 고르지 않고 가장 짧게(=가장 타이트하게) 맞아떨어지는 이름을
+  //    우선한다 — 더 긴 변형(II/IIx 등)이 실수로 먼저 걸리는 걸 방지.
+  if (!match) {
+    const candidates = data.products
+      .filter((p) => normalizeProductName(p.name).includes(qNorm))
+      .sort((a, b) => a.name.length - b.name.length);
+    match = candidates[0];
+  }
   // 3) 쿼리가 DB 이름을 통째로 포함 (쿼리에 수식어가 더 붙은 경우)
   if (!match) match = data.products.find((p) => qNorm.includes(normalizeProductName(p.name)));
   if (!match) return null;
@@ -316,8 +332,13 @@ export async function ragSearch(
   if (!data) return [];
   const { products, embeddings } = data;
 
+  // BRAND_NAMES 하드코딩 목록엔 없는 브랜드(DJI, 모바, 나르왈 등)도 실제 DB에 있는 그대로
+  // 인식하도록, 이번 카테고리에 실제로 존재하는 브랜드 값을 합쳐서 브랜드 후보로 쓴다.
+  const dbBrands = [...new Set(products.map((p) => p.brand).filter((b): b is string => Boolean(b)))];
+  const knownBrands = [...new Set([...BRAND_NAMES, ...dbBrands])];
+
   // 하드필터(로컬) + 쿼리 임베딩(Google API) 병렬 실행
-  const constraints = parseConstraints(query);
+  const constraints = parseConstraints(query, knownBrands);
   const [queryVec, rawFiltered] = await Promise.all([
     embedQuery(query),
     Promise.resolve(applyHardFilter(products, constraints)),
