@@ -324,13 +324,29 @@ export async function ragSearch(
   ]);
   console.log(`[RAG] 쿼리 임베딩 완료 (${queryVec.length}D)`);
 
+  // 사용자가 명시한 가격 조건은 마지막 단계 전까지 절대 버리지 않는다 — 예전엔 하드필터
+  // 통과 상품이 0개면(브랜드 완화 후에도) 가격까지 포함해 조건을 통째로 버리고 전체 후보를
+  // 반환했는데, 그러면 "50만원 이하"라고 명시한 사용자에게 100만원대 상품이 아무 경고 없이
+  // 섞여 나가는 문제가 있었다(DG2: 명시된 제약이 지켜진다는 전제를 조용히 깨뜨림).
   let filteredProducts = rawFiltered;
   if (filteredProducts.length === 0 && constraints.brand) {
     console.warn("[RAG] 브랜드 조건 완화");
     filteredProducts = applyHardFilter(products, { ...constraints, brand: undefined });
   }
+  if (
+    filteredProducts.length === 0 &&
+    (constraints.maxWeightKg !== undefined || constraints.minWeightKg !== undefined ||
+     constraints.minSuctionPa !== undefined || constraints.maxSuctionPa !== undefined ||
+     constraints.maxNoiseDb !== undefined)
+  ) {
+    console.warn("[RAG] 무게/흡입력/소음 조건 완화 (가격 조건은 유지)");
+    filteredProducts = applyHardFilter(products, {
+      maxPriceWon: constraints.maxPriceWon,
+      minPriceWon: constraints.minPriceWon,
+    });
+  }
   if (filteredProducts.length === 0) {
-    console.warn("[RAG] 모든 조건 완화 — 전체 후보 사용");
+    console.warn("[RAG] 가격 조건까지 완화 — DB에 해당 조건을 만족하는 상품이 없음, 전체 후보 사용");
     filteredProducts = products;
   }
 
